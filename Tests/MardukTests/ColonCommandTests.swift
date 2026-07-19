@@ -127,12 +127,12 @@ final class ColonCommandTests: XCTestCase {
     // MARK: - Fuzzy search
 
     func testFuzzyScoreBasics() {
-        XCTAssertNotNil(ColonCommand.fuzzyScore(query: "rat", target: "config rate "))
-        XCTAssertNotNil(ColonCommand.fuzzyScore(query: "cfgr", target: "config rate "))
-        XCTAssertNil(ColonCommand.fuzzyScore(query: "xyz", target: "config rate "))
+        XCTAssertNotNil(CommandCompleter.fuzzyScore(query: "rat", target: "config rate "))
+        XCTAssertNotNil(CommandCompleter.fuzzyScore(query: "cfgr", target: "config rate "))
+        XCTAssertNil(CommandCompleter.fuzzyScore(query: "xyz", target: "config rate "))
         // Tighter match scores lower
-        let exact = ColonCommand.fuzzyScore(query: "log", target: "log")!
-        let spread = ColonCommand.fuzzyScore(query: "log", target: "level orange gap")!
+        let exact = CommandCompleter.fuzzyScore(query: "log", target: "log")!
+        let spread = CommandCompleter.fuzzyScore(query: "log", target: "level orange gap")!
         XCTAssertLessThan(exact, spread)
     }
 

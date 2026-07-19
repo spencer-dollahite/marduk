@@ -295,9 +295,26 @@ case "install":
         exit(1)
     }
     let reinstall = LaunchAgent.isInstalled
-    // Safe even though install runs FROM this binary — sign() swaps in a
-    // signed copy; the running process keeps the old inode.
-    Codesign.sign(binaryAt: binary)
+
+    // Assemble Marduk.app and install THAT — the bundle carries the stable
+    // TCC identity, the icon, and the usage descriptions. Fall back to the
+    // bare binary only when no project directory can be found (binary
+    // copied out of the repo). Bundle-ness is detected, never assumed.
+    let installTarget: String
+    if let dir = Bundler.projectDir(fromExecutable: binary)
+        ?? (FileManager.default.fileExists(atPath: "Package.swift")
+                ? FileManager.default.currentDirectoryPath : nil),
+       let bundleExec = Bundler.assemble(binaryPath: binary, projectDir: dir) {
+        installTarget = bundleExec
+    } else {
+        fputs("WARNING: no project directory — installing the bare binary "
+            + "(no bundle, TCC-fragile).\n", stderr)
+        // Safe even though install runs FROM this binary — sign() swaps in
+        // a signed copy; the running process keeps the old inode.
+        Codesign.sign(binaryAt: binary)
+        installTarget = binary
+    }
+
     // A foreground daemon holds the socket, which would make the launchd
     // instance exit at startup — stop it first.
     if DaemonClient.isRunning {
@@ -308,14 +325,14 @@ case "install":
             if !DaemonClient.isRunning { break }
         }
     }
-    guard LaunchAgent.install(binaryPath: binary) else { exit(1) }
+    guard LaunchAgent.install(binaryPath: installTarget) else { exit(1) }
     var ready = false
     for _ in 0..<20 {
         Thread.sleep(forTimeInterval: 0.25)
         if DaemonClient.isRunning { ready = true; break }
     }
     print("\(reinstall ? "Reinstalled" : "Installed") launch agent \(LaunchAgent.label)")
-    print("  binary: \(binary)")
+    print("  binary: \(installTarget)")
     print("  log:    \(LaunchAgent.logPath)")
     if ready {
         print("Daemon is running under launchd.")
@@ -359,7 +376,12 @@ case "update":
         exit(1)
     }
     fputs("[update] Build clean\n", stderr)
-    Codesign.sign(binaryAt: ".build/debug/marduk")
+    let updateCwd = FileManager.default.currentDirectoryPath
+    guard let updateBundleExec = Bundler.assemble(
+        binaryPath: updateCwd + "/.build/debug/marduk", projectDir: updateCwd) else {
+        fputs("[update] Bundle assembly failed\n", stderr)
+        exit(1)
+    }
 
     if DaemonClient.isRunning {
         fputs("[update] Stopping old daemon...\n", stderr)
@@ -373,12 +395,21 @@ case "update":
 
     fputs("[update] Starting new daemon...\n", stderr)
     if LaunchAgent.isInstalled {
-        // kickstart -k if the old daemon ignored the reload — kill + restart
-        // under launchd either way, so the new binary stays supervised.
-        LaunchAgent.kickstart(kill: DaemonClient.isRunning)
+        if LaunchAgent.installedProgramPath() != updateBundleExec {
+            // Migration: the plist still points at the old bare binary.
+            // Synchronous bootout/bootstrap is SAFE here — the CLI is not
+            // the daemon.
+            fputs("[update] Migrating launch agent to \(updateBundleExec)\n", stderr)
+            guard LaunchAgent.install(binaryPath: updateBundleExec) else { exit(1) }
+        } else {
+            // kickstart -k if the old daemon ignored the reload — kill +
+            // restart under launchd either way, so the new binary stays
+            // supervised.
+            LaunchAgent.kickstart(kill: DaemonClient.isRunning)
+        }
     } else {
         let daemon = Process()
-        daemon.executableURL = URL(fileURLWithPath: ".build/debug/marduk")
+        daemon.executableURL = URL(fileURLWithPath: updateBundleExec)
         daemon.arguments = ["start"]
         do {
             try daemon.run()

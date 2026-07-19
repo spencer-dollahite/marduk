@@ -881,18 +881,9 @@ final class DaemonServer {
     // MARK: - Hot Update
 
     private var projectDir: String? {
-        // Walk up from the binary until Package.swift appears. The depth
-        // varies: .build/debug/marduk from a terminal, but the launchd plist
-        // stores the resolved .build/arm64-apple-macosx/debug/marduk.
-        var url = URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0]).standardized
-        for _ in 0..<6 where url.path != "/" {
-            url.deleteLastPathComponent()
-            if FileManager.default.fileExists(
-                atPath: url.appendingPathComponent("Package.swift").path) {
-                return url.path
-            }
-        }
-        return nil
+        // Walk up from the binary until Package.swift appears — handles the
+        // bare-binary, SPM-triple, and Marduk.app layouts alike.
+        Bundler.projectDir(fromExecutable: ProcessInfo.processInfo.arguments[0])
     }
 
     /// silent: the periodic auto-update path — no announcements at all
@@ -937,12 +928,30 @@ final class DaemonServer {
                 return
             }
             fputs("[update] Build clean\n", stderr)
-            Codesign.sign(binaryAt: dir + "/.build/debug/marduk")
+            guard let bundleExec = Bundler.assemble(binaryPath: dir + "/.build/debug/marduk",
+                                                    projectDir: dir) else {
+                fputs("[update] Bundle assembly failed\n", stderr)
+                failed()
+                return
+            }
+
+            // Migration: the installed plist still points at the old bare
+            // binary. The daemon cannot bootout itself (deadlock) — write
+            // the new plist FILE, hand the rebootstrap to a detached
+            // helper, and exit CLEAN so KeepAlive can't race-relaunch the
+            // old path before the helper boots it out.
+            let installed = LaunchAgent.isInstalled
+            let migration = installed && LaunchAgent.installedProgramPath() != bundleExec
 
             let restart = { [self] in
                 // Give unduck time to complete before restarting
                 DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.5) { [self] in
-                    if LaunchAgent.isInstalled {
+                    if migration {
+                        if LaunchAgent.writePlist(binaryPath: bundleExec) {
+                            LaunchAgent.relaunchDetached()
+                        }
+                        DispatchQueue.main.async { [self] in running = false }  // exit 0
+                    } else if installed {
                         // Exit non-zero after clean teardown; launchd
                         // relaunches the freshly built binary supervised
                         // (a Process spawn here would be an orphan).
@@ -951,9 +960,8 @@ final class DaemonServer {
                             running = false
                         }
                     } else {
-                        let binary = dir + "/.build/debug/marduk"
                         let daemon = Process()
-                        daemon.executableURL = URL(fileURLWithPath: binary)
+                        daemon.executableURL = URL(fileURLWithPath: bundleExec)
                         daemon.arguments = ["start"]
                         do {
                             try daemon.run()
@@ -970,8 +978,14 @@ final class DaemonServer {
             // finish, then restart. The completion is tied to this specific
             // utterance and fires on finish or cancel, so the restart can't
             // be lost to a stale didCancel or an Escape mid-announcement.
+            // A migration is a one-time structural event — it speaks even
+            // on the silent periodic path.
             DispatchQueue.main.async { [self] in
-                if silent {
+                if migration {
+                    speech.announce("Update complete. Marduk is now an app "
+                        + "bundle. If keyboard commands stop, grant "
+                        + "Accessibility to Marduk again.") { restart() }
+                } else if silent {
                     restart()
                 } else {
                     speech.announce("Update complete. Restarting.") { restart() }

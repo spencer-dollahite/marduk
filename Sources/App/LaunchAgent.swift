@@ -27,10 +27,11 @@ enum LaunchAgent {
         return resolved
     }
 
-    /// Writes the plist and (re)bootstraps the service. Idempotent: an
-    /// already-loaded service is booted out first so a changed binary path
-    /// or plist takes effect.
-    static func install(binaryPath: String) -> Bool {
+    /// Writes the plist file only — no launchctl calls. Split out so the
+    /// DAEMON can repoint the agent during a bundle migration without
+    /// booting itself out (a synchronous self-bootout deadlocks: launchd
+    /// waits for our exit while we wait for launchctl).
+    static func writePlist(binaryPath: String) -> Bool {
         let fm = FileManager.default
         do {
             try fm.createDirectory(atPath: (plistPath as NSString).deletingLastPathComponent,
@@ -49,6 +50,8 @@ enum LaunchAgent {
         // service. KeepAlive on SuccessfulExit=false: crash/non-zero exit →
         // relaunch (launchd throttles rapid loops ~10s); clean exit 0
         // (marduk stop) stays stopped until next login or kickstart.
+        // AbandonProcessGroup: a future migration helper must not be
+        // SIGKILLed with the daemon's process group when the job exits.
         let plist: [String: Any] = [
             "Label": label,
             "ProgramArguments": [binaryPath, "start", "--foreground"],
@@ -57,6 +60,7 @@ enum LaunchAgent {
             "StandardOutPath": logPath,
             "StandardErrorPath": logPath,
             "ProcessType": "Interactive",
+            "AbandonProcessGroup": true,
         ]
         do {
             let data = try PropertyListSerialization.data(
@@ -66,6 +70,15 @@ enum LaunchAgent {
             fputs("[agent] Failed to write plist: \(error.localizedDescription)\n", stderr)
             return false
         }
+        return true
+    }
+
+    /// Writes the plist and (re)bootstraps the service. Idempotent: an
+    /// already-loaded service is booted out first so a changed binary path
+    /// or plist takes effect. Safe from the CLI; the daemon must never call
+    /// this on itself (see writePlist).
+    static func install(binaryPath: String) -> Bool {
+        guard writePlist(binaryPath: binaryPath) else { return false }
 
         _ = launchctl("bootout", serviceTarget)  // not-loaded failure is fine
         let bootstrap = launchctl("bootstrap", "gui/\(getuid())", plistPath)
@@ -75,6 +88,54 @@ enum LaunchAgent {
         }
         _ = launchctl("enable", serviceTarget)
         return true
+    }
+
+    /// The program path the installed plist currently points at — the
+    /// migration detector (bare binary vs bundle executable).
+    static func installedProgramPath() -> String? {
+        guard let data = FileManager.default.contents(atPath: plistPath),
+              let plist = try? PropertyListSerialization.propertyList(
+                  from: data, format: nil) as? [String: Any],
+              let args = plist["ProgramArguments"] as? [String] else { return nil }
+        return args.first
+    }
+
+    /// Migration helper: rebootstraps the service from OUTSIDE the daemon.
+    /// The running (old-plist) job lacks AbandonProcessGroup, so launchd
+    /// SIGKILLs the daemon's process group on exit — the helper survives by
+    /// starting its own session (POSIX_SPAWN_SETSID). It waits for the
+    /// daemon's clean exit, boots the old job out, and bootstraps the new
+    /// plist; RunAtLoad starts the bundle daemon. Output lands in the log.
+    static func relaunchDetached() {
+        let uid = getuid()
+        let script = """
+            exec >> \(logPath) 2>&1
+            echo "[agent] migration helper: rebootstrapping \(label)"
+            sleep 2
+            /bin/launchctl bootout gui/\(uid)/\(label)
+            sleep 1
+            /bin/launchctl bootstrap gui/\(uid) \(plistPath)
+            /bin/launchctl enable gui/\(uid)/\(label)
+            /bin/launchctl kickstart gui/\(uid)/\(label)
+            echo "[agent] migration helper: done"
+            """
+
+        var attr = posix_spawnattr_t(nil as OpaquePointer?)
+        posix_spawnattr_init(&attr)
+        // POSIX_SPAWN_SETSID (spawn.h): new session — survives the group kill
+        posix_spawnattr_setflags(&attr, Int16(0x0400))
+        var pid: pid_t = 0
+        let argv: [String] = ["/bin/sh", "-c", script]
+        var cArgs: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) }
+        cArgs.append(nil)
+        let rc = posix_spawn(&pid, "/bin/sh", nil, &attr, &cArgs, environ)
+        posix_spawnattr_destroy(&attr)
+        for arg in cArgs where arg != nil { free(arg) }
+        if rc == 0 {
+            fputs("[agent] migration helper spawned (pid \(pid))\n", stderr)
+        } else {
+            fputs("[agent] migration helper spawn failed (rc \(rc))\n", stderr)
+        }
     }
 
     /// Boots the service out (SIGTERM → the daemon's graceful shutdown) and

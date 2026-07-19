@@ -18,13 +18,14 @@ final class CommandPalette {
     private final class PaletteView: NSView {
         var lineHeight: CGFloat = 26
         var padding: CGFloat = 14
+        var headerLines = 1   // logo + prompt lines above the candidate rows
         var rowCount = 0
         var onRowClick: ((Int) -> Void)?
 
         override func mouseDown(with event: NSEvent) {
             let point = convert(event.locationInWindow, from: nil)
             let fromTop = bounds.height - padding - point.y
-            let row = Int(floor(fromTop / lineHeight)) - 1
+            let row = Int(floor(fromTop / lineHeight)) - headerLines
             if row >= 0 && row < rowCount { onRowClick?(row) }
         }
     }
@@ -46,14 +47,26 @@ final class CommandPalette {
     // see always matches what the options speech says.
     private let maxRows = 16
 
+    /// The white M, matching the repo logo — rendered above the prompt.
+    private static let logoLines = [
+        "███╗   ███╗",
+        "████╗ ████║",
+        "██╔████╔██║",
+        "██║╚██╔╝██║",
+        "██║ ╚═╝ ██║",
+        "╚═╝     ╚═╝",
+    ]
+
     func update(buffer: String, candidates: [CommandCompleter.Candidate], selected: Int) {
         DispatchQueue.main.async { [self] in
             let visible = min(candidates.count, maxRows)
             let overflow = candidates.count - visible
             let text = composed(buffer: buffer, candidates: candidates,
                                 selected: selected, overflow: overflow)
-            let lines = 1 + visible + (overflow > 0 ? 1 : 0)
-            layoutAndShow(text: text, lines: lines, rowCount: visible)
+            let headerLines = Self.logoLines.count + 1
+            let lines = headerLines + visible + (overflow > 0 ? 1 : 0)
+            layoutAndShow(text: text, lines: lines,
+                          headerLines: headerLines, rowCount: visible)
         }
     }
 
@@ -75,6 +88,11 @@ final class CommandPalette {
         let font = NSFont.monospacedSystemFont(ofSize: 16, weight: .regular)
         let result = NSMutableAttributedString()
 
+        for line in Self.logoLines {
+            result.append(NSAttributedString(
+                string: line + "\n",
+                attributes: [.font: font, .foregroundColor: NSColor.white]))
+        }
         result.append(NSAttributedString(
             string: ": \(buffer)\u{258F}\n",
             attributes: [.font: font, .foregroundColor: NSColor.white]))
@@ -103,7 +121,8 @@ final class CommandPalette {
         return result
     }
 
-    private func layoutAndShow(text: NSAttributedString, lines: Int, rowCount: Int) {
+    private func layoutAndShow(text: NSAttributedString, lines: Int,
+                               headerLines: Int, rowCount: Int) {
         let (panel, field) = ensurePanel()
         field.attributedStringValue = text
         let height = padding * 2 + CGFloat(lines) * lineHeight
@@ -122,6 +141,7 @@ final class CommandPalette {
                              width: width - padding * 2, height: height - padding * 2)
         paletteView?.lineHeight = lineHeight
         paletteView?.padding = padding
+        paletteView?.headerLines = headerLines
         paletteView?.rowCount = rowCount   // excludes any "… and N more" row
 
         if !isShown {

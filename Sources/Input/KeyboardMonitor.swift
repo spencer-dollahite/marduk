@@ -383,6 +383,14 @@ final class KeyboardMonitor {
             switch keycode {
             case 36: // Return — submit (empty buffer = cancel)
                 let cmd = commandBuffer
+                if cmd.hasPrefix("/") {
+                    // Fuzzy search: Enter accepts the selection. Stay in
+                    // COMMAND mode — the daemon either executes (and ends
+                    // the mode) or expands the buffer for further typing.
+                    fputs("[keyboard] : \(cmd) (search accept)\n", stderr)
+                    DispatchQueue.main.async { [self] in onCommandSubmit?(cmd) }
+                    return nil
+                }
                 commandBuffer = ""
                 commandIdleTimer?.cancel()
                 mode = .normal
@@ -430,6 +438,19 @@ final class KeyboardMonitor {
 
             case 44 where flags.contains(.maskShift): // "?" — speak options now
                 DispatchQueue.main.async { [self] in onCommandHelp?() }
+                return nil
+
+            case 44: // "/" on an empty buffer — fuzzy search over everything
+                if commandBuffer.isEmpty {
+                    commandBuffer = "/"
+                    scheduleCommandIdle()
+                    DispatchQueue.main.async { [self] in
+                        if commandEchoEnabled { onAnnounce?("search") }
+                        onCommandChange?("/", false)
+                    }
+                } else {
+                    DispatchQueue.main.async { Earcon.error() }
+                }
                 return nil
 
             default:

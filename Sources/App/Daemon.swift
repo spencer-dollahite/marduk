@@ -97,6 +97,7 @@ final class DaemonServer {
     // with autoupdate on).
     private var updateArmedUntil: Date?
     private var lastAnnouncedRemote = ""
+    private var autoRetryScheduled = false
     private var updateCheckTimer: DispatchSourceTimer?
     private var autoUpdate: Bool
     private var updateCheckHours: Int
@@ -104,7 +105,7 @@ final class DaemonServer {
     init(config: MardukConfig) {
         self.config = config
         paletteEnabled = config.keyboard?.commandPalette ?? true
-        autoUpdate = config.update?.auto ?? false
+        autoUpdate = config.update?.auto ?? true
         updateCheckHours = config.update?.checkHours ?? 24
         escapeHoldThreshold = TimeInterval(config.keyboard?.escapeHoldMs ?? 400) / 1000.0
         typingBurstThreshold = TimeInterval(config.keyboard?.typingBurstMs ?? 300) / 1000.0
@@ -375,6 +376,26 @@ final class DaemonServer {
 
     private func handleColonCommand(_ raw: String) {
         fputs("[command] \(raw)\n", stderr)
+
+        // Fuzzy-search accept: run or expand the selected candidate
+        if raw.hasPrefix("/") {
+            guard commandCandidates.indices.contains(commandSelected),
+                  let completion = commandCandidates[commandSelected].completion else {
+                Earcon.error()
+                speech.announce("No match.")
+                return
+            }
+            if completion.hasSuffix(" ") {
+                // A config key — keep typing the value
+                speech.announce(completion.trimmingCharacters(in: .whitespaces))
+                keyboardMonitor?.replaceCommandBuffer(completion)
+            } else {
+                keyboardMonitor?.endCommandMode()
+                handleColonCommand(completion)
+            }
+            return
+        }
+
         switch ColonCommand.parse(raw) {
         case .help:
             speech.speak(HelpText.help)
@@ -455,10 +476,11 @@ final class DaemonServer {
         case .feedback:
             speech.announce("Opening GitHub issues. If you paste log lines, "
                 + "remember they contain text Marduk has spoken.")
-            let opener = Process()
-            opener.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            opener.arguments = ["https://github.com/spencer-dollahite/marduk/issues/new/choose"]
-            try? opener.run()
+            openURL("https://github.com/spencer-dollahite/marduk/issues/new/choose")
+        case .bug:
+            speech.announce("Opening a bug report. If you paste log lines, "
+                + "remember they contain text Marduk has spoken.")
+            openURL("https://github.com/spencer-dollahite/marduk/issues/new?template=bug_report.md")
         case .config(let key, let value):
             applyConfig(key: key, value: value)
         case .unknown(let name):
@@ -547,8 +569,20 @@ final class DaemonServer {
             speech.speak(text)
         case .periodic:
             if autoUpdate {
-                speech.announce("Update initiated")
-                performUpdate()
+                // Never interrupt: no announcements, and never restart while
+                // something is being spoken — retry in 10 minutes instead.
+                if speech.isSpeaking {
+                    guard !autoRetryScheduled else { return }
+                    autoRetryScheduled = true
+                    fputs("[update] speech active — deferring auto-update\n", stderr)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 600) { [self] in
+                        autoRetryScheduled = false
+                        checkForUpdates(origin: .periodic)
+                    }
+                } else {
+                    fputs("[update] auto-installing silently\n", stderr)
+                    performUpdate(silent: true)
+                }
             } else if lastAnnouncedRemote != remote {
                 // Announce each new remote head exactly once — no nagging
                 lastAnnouncedRemote = remote
@@ -571,6 +605,13 @@ final class DaemonServer {
         }
         timer.resume()
         updateCheckTimer = timer
+    }
+
+    private func openURL(_ url: String) {
+        let opener = Process()
+        opener.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        opener.arguments = [url]
+        try? opener.run()
     }
 
     /// "?" or a typing pause in COMMAND mode: speak what can come next.
@@ -820,11 +861,18 @@ final class DaemonServer {
         return nil
     }
 
-    private func performUpdate() {
+    /// silent: the periodic auto-update path — no announcements at all
+    /// (failures log only; success restarts without a word).
+    private func performUpdate(silent: Bool = false) {
         DispatchQueue.global(qos: .userInitiated).async { [self] in
+            func failed() {
+                guard !silent else { return }
+                DispatchQueue.main.async { [self] in speech.announce("Update failed") }
+            }
+
             guard let dir = projectDir else {
                 fputs("[update] Cannot find project directory\n", stderr)
-                DispatchQueue.main.async { [self] in speech.announce("Update failed") }
+                failed()
                 return
             }
 
@@ -835,7 +883,7 @@ final class DaemonServer {
             let pull = Self.shell("git", "pull", "--ff-only", "origin", "main", cwd: dir)
             if pull.status != 0 {
                 fputs("[update] Pull failed: \(pull.output)\n", stderr)
-                DispatchQueue.main.async { [self] in speech.announce("Update failed") }
+                failed()
                 return
             }
             fputs("[update] \(pull.output.trimmingCharacters(in: .whitespacesAndNewlines))\n", stderr)
@@ -845,48 +893,54 @@ final class DaemonServer {
             let build = Self.shell("swift", "build", cwd: dir)
             if build.status != 0 {
                 fputs("[update] Build FAILED:\n\(build.output)\n", stderr)
-                DispatchQueue.main.async { [self] in speech.announce("Update failed") }
+                failed()
                 return
             }
             if build.output.range(of: "warning:", options: .caseInsensitive) != nil {
                 let count = build.output.components(separatedBy: "warning:").count - 1
                 fputs("[update] Build has \(count) warning(s) — NOT reloading\n", stderr)
-                DispatchQueue.main.async { [self] in speech.announce("Update failed") }
+                failed()
                 return
             }
             fputs("[update] Build clean\n", stderr)
             Codesign.sign(binaryAt: dir + "/.build/debug/marduk")
 
-            // Announce success, wait for speech + unduck to finish, then restart.
-            // The completion is tied to this specific utterance and fires on
-            // finish or cancel, so the restart can't be lost to a stale
-            // didCancel or a user pressing Escape mid-announcement.
-            DispatchQueue.main.async { [self] in
-                speech.announce("Update complete. Restarting.") { [self] in
-                    // Give unduck time to complete before restarting
-                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.5) { [self] in
-                        if LaunchAgent.isInstalled {
-                            // Exit non-zero after clean teardown; launchd
-                            // relaunches the freshly built binary supervised
-                            // (a Process spawn here would be an orphan).
-                            DispatchQueue.main.async { [self] in
-                                pendingExitCode = 75  // EX_TEMPFAIL
-                                running = false
-                            }
-                        } else {
-                            let binary = dir + "/.build/debug/marduk"
-                            let daemon = Process()
-                            daemon.executableURL = URL(fileURLWithPath: binary)
-                            daemon.arguments = ["start"]
-                            do {
-                                try daemon.run()
-                            } catch {
-                                fputs("[update] Failed to start new daemon: \(error)\n", stderr)
-                            }
-                            // Stop ourselves
-                            DispatchQueue.main.async { [self] in running = false }
+            let restart = { [self] in
+                // Give unduck time to complete before restarting
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.5) { [self] in
+                    if LaunchAgent.isInstalled {
+                        // Exit non-zero after clean teardown; launchd
+                        // relaunches the freshly built binary supervised
+                        // (a Process spawn here would be an orphan).
+                        DispatchQueue.main.async { [self] in
+                            pendingExitCode = 75  // EX_TEMPFAIL
+                            running = false
                         }
+                    } else {
+                        let binary = dir + "/.build/debug/marduk"
+                        let daemon = Process()
+                        daemon.executableURL = URL(fileURLWithPath: binary)
+                        daemon.arguments = ["start"]
+                        do {
+                            try daemon.run()
+                        } catch {
+                            fputs("[update] Failed to start new daemon: \(error)\n", stderr)
+                        }
+                        // Stop ourselves
+                        DispatchQueue.main.async { [self] in running = false }
                     }
+                }
+            }
+
+            // Announce success (unless silent), wait for speech + unduck to
+            // finish, then restart. The completion is tied to this specific
+            // utterance and fires on finish or cancel, so the restart can't
+            // be lost to a stale didCancel or an Escape mid-announcement.
+            DispatchQueue.main.async { [self] in
+                if silent {
+                    restart()
+                } else {
+                    speech.announce("Update complete. Restarting.") { restart() }
                 }
             }
         }

@@ -13,12 +13,13 @@ enum ColonCommand: Equatable {
     case uninstall
     case log
     case feedback
+    case bug
     case unknown(String)
 
     // No name may be a prefix of another — auto-accept relies on it
     static let commandNames = ["help", "commands", "tutorial", "tip", "config",
                                "quit", "restart", "update", "uninstall", "log",
-                               "feedback"]
+                               "feedback", "bug"]
 
     static func parse(_ raw: String) -> ColonCommand {
         let tokens = raw.lowercased().split(separator: " ").map(String.init)
@@ -54,6 +55,8 @@ enum ColonCommand: Equatable {
             return .log
         case "feedback":
             return .feedback
+        case "bug":
+            return .bug
         case "config":
             guard tokens.count == 3 else { return .unknown(raw) }
             // Expand key and (for enum kinds) value the same way, so
@@ -100,6 +103,8 @@ enum ColonCommand: Equatable {
 
     static func autoResolve(_ buffer: String) -> AutoResolution {
         let lowered = buffer.lowercased()
+        // Fuzzy-search buffers ("/query") only resolve by explicit pick
+        guard !lowered.hasPrefix("/") else { return .none }
         // A trailing space means "next token not started" — nothing to resolve
         guard !lowered.isEmpty, !lowered.hasSuffix(" ") else { return .none }
         let tokens = lowered.split(separator: " ").map(String.init)
@@ -183,6 +188,7 @@ enum CommandCompleter {
         "uninstall": "remove the launch agent",
         "log": "open the log file",
         "feedback": "open GitHub issues",
+        "bug": "report a bug on GitHub",
     ]
 
     private static func commandDisplay(_ name: String) -> String {
@@ -190,10 +196,59 @@ enum CommandCompleter {
         return "\(name) — \(description)"
     }
 
+    /// Everything "/" search can land on: all commands + all config keys.
+    private static func catalogEntries(values: [String: String]) -> [Candidate] {
+        var entries = ColonCommand.commandNames.map {
+            Candidate(display: commandDisplay($0),
+                      completion: $0 == "config" ? "config " : $0)
+        }
+        entries += ColonCommand.settings.map { setting in
+            let current = values[setting.key].map { " — \($0)" } ?? ""
+            return Candidate(display: "config \(setting.key)\(current)",
+                             completion: "config \(setting.key) ")
+        }
+        return entries
+    }
+
+    /// Greedy subsequence match; lower score = tighter match (gaps and a
+    /// late start cost points). Nil = no match.
+    static func fuzzyScore(query: String, target: String) -> Int? {
+        guard !query.isEmpty else { return 0 }
+        var score = 0
+        var lastIndex = -1
+        var qi = query.startIndex
+        for (i, ch) in target.enumerated() {
+            guard qi < query.endIndex else { break }
+            if ch == query[qi] {
+                score += lastIndex >= 0 ? (i - lastIndex - 1) : i
+                lastIndex = i
+                qi = query.index(after: qi)
+            }
+        }
+        return qi == query.endIndex ? score : nil
+    }
+
     /// Candidates for the current buffer. `values` maps setting key → spoken
     /// current value, so the palette shows "rate — 200" style rows.
     static func candidates(for buffer: String, values: [String: String]) -> [Candidate] {
         let lowered = buffer.lowercased()
+
+        // "/query" — fuzzy search across the whole catalog (commands +
+        // every config setting), ranked by match tightness
+        if lowered.hasPrefix("/") {
+            let query = String(lowered.dropFirst()).replacingOccurrences(of: " ", with: "")
+            let catalog = catalogEntries(values: values)
+            guard !query.isEmpty else { return catalog }
+            return catalog
+                .compactMap { entry -> (Candidate, Int)? in
+                    let key = (entry.completion ?? entry.display).lowercased()
+                    guard let score = fuzzyScore(query: query, target: key) else { return nil }
+                    return (entry, score)
+                }
+                .sorted { $0.1 < $1.1 }
+                .map(\.0)
+        }
+
         let tokens = lowered.split(separator: " ").map(String.init)
         let trailingSpace = lowered.hasSuffix(" ")
 

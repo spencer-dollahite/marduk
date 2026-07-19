@@ -27,7 +27,7 @@ struct MardukConfig: Codable {
 
     struct UpdateConfig: Codable {
         var checkHours: Int? = 24   // periodic update-check interval; 0 disables
-        var auto: Bool? = false     // install automatically when an update is found
+        var auto: Bool? = true      // install automatically (silently, never mid-read)
     }
 
     struct VerbalizerConfig: Codable {

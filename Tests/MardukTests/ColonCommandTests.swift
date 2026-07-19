@@ -63,6 +63,7 @@ final class ColonCommandTests: XCTestCase {
         XCTAssertEqual(ColonCommand.parse("un"), .uninstall)
         XCTAssertEqual(ColonCommand.parse("log"), .log)
         XCTAssertEqual(ColonCommand.parse("f"), .feedback)
+        XCTAssertEqual(ColonCommand.parse("b"), .bug)
         XCTAssertEqual(ColonCommand.autoResolve("q"), .execute("quit"))
     }
 
@@ -113,6 +114,32 @@ final class ColonCommandTests: XCTestCase {
         XCTAssertEqual(ColonCommand.autoResolve(""), .none)
     }
 
+    // MARK: - Fuzzy search
+
+    func testFuzzyScoreBasics() {
+        XCTAssertNotNil(ColonCommand.fuzzyScore(query: "rat", target: "config rate "))
+        XCTAssertNotNil(ColonCommand.fuzzyScore(query: "cfgr", target: "config rate "))
+        XCTAssertNil(ColonCommand.fuzzyScore(query: "xyz", target: "config rate "))
+        // Tighter match scores lower
+        let exact = ColonCommand.fuzzyScore(query: "log", target: "log")!
+        let spread = ColonCommand.fuzzyScore(query: "log", target: "level orange gap")!
+        XCTAssertLessThan(exact, spread)
+    }
+
+    func testSlashSearchesWholeCatalog() {
+        let all = completions("/", values: ["rate": "200 wpm"])
+        XCTAssertEqual(all.count,
+                       ColonCommand.commandNames.count + ColonCommand.settings.count)
+        let rate = completions("/rate", values: ["rate": "200 wpm"])
+        XCTAssertTrue(rate.contains("config rate — 200 wpm"))
+        XCTAssertFalse(rate.contains("quit — stop Marduk"))
+    }
+
+    func testSlashBufferNeverAutoResolves() {
+        XCTAssertEqual(ColonCommand.autoResolve("/h"), .none)
+        XCTAssertEqual(ColonCommand.autoResolve("/quit"), .none)
+    }
+
     func testExpandHelper() {
         XCTAssertEqual(ColonCommand.expand("tu", in: ColonCommand.commandNames), "tutorial")
         XCTAssertEqual(ColonCommand.expand("help", in: ColonCommand.commandNames), "help")
@@ -140,6 +167,7 @@ final class ColonCommandTests: XCTestCase {
         "uninstall — remove the launch agent",
         "log — open the log file",
         "feedback — open GitHub issues",
+        "bug — report a bug on GitHub",
     ]
 
     func testEmptyBufferListsAllCommands() {

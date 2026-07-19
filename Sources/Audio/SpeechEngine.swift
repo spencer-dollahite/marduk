@@ -117,10 +117,21 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         }
         currentUtterance = utterance
         ducker.prepareToDuck()
+        // Belt and braces against the paused-wedge (see stop())
+        if synthesizer.isPaused {
+            fputs("[speech] synthesizer was left paused — resuming before speak\n", stderr)
+            synthesizer.continueSpeaking()
+        }
         synthesizer.speak(utterance)
     }
 
     func stop() {
+        // Un-wedge first: a synthesizer stopped WHILE PAUSED can stay stuck
+        // in the paused state, silently queueing every future utterance —
+        // the whole engine goes mute until the daemon restarts.
+        if synthesizer.isPaused {
+            synthesizer.continueSpeaking()
+        }
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
         }

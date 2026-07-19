@@ -1034,16 +1034,31 @@ final class DaemonServer {
             // utterance and fires on finish or cancel, so the restart can't
             // be lost to a stale didCancel or an Escape mid-announcement.
             // A migration is a one-time structural event — it speaks even
-            // on the silent periodic path.
+            // on the silent periodic path. FAILSAFE: a wedged speech engine
+            // (whose completions never fire) once stranded fully-built
+            // updates — the restart also fires on a 12s timer, whichever
+            // comes first.
             DispatchQueue.main.async { [self] in
+                var restarted = false
+                let restartOnce = {
+                    guard !restarted else { return }
+                    restarted = true
+                    restart()
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+                    if !restarted {
+                        fputs("[update] announcement never completed — failsafe restart\n", stderr)
+                    }
+                    restartOnce()
+                }
                 if migration {
                     speech.announce("Update complete. Marduk is now an app "
                         + "bundle. If keyboard commands stop, grant "
-                        + "Accessibility to Marduk again.") { restart() }
+                        + "Accessibility to Marduk again.") { restartOnce() }
                 } else if silent {
-                    restart()
+                    restartOnce()
                 } else {
-                    speech.announce("Update complete. Restarting.") { restart() }
+                    speech.announce("Update complete. Restarting.") { restartOnce() }
                 }
             }
         }

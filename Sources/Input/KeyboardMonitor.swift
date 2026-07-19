@@ -433,10 +433,9 @@ final class KeyboardMonitor {
                 return nil
 
             default:
-                if hasOption {
-                    DispatchQueue.main.async { Earcon.error() }
-                    return nil
-                }
+                // Option combos are system/app shortcuts (the user's zoom
+                // keys ride on Option) — never command input. Pass them.
+                if hasOption { return pass }
                 if let ch = Self.commandKeyChars[keycode] {
                     commandBuffer.append(ch)
                     let buffer = commandBuffer
@@ -448,8 +447,16 @@ final class KeyboardMonitor {
                     }
                     return nil
                 }
-                DispatchQueue.main.async { Earcon.error() }
-                return nil
+                // Typing-shaped keys (punctuation) buzz — they'd otherwise
+                // leak into the app mid-command. Anything else (F-keys,
+                // keypad, media keys, zoom shortcuts on custom codes)
+                // passes through untouched.
+                if Self.typingPunctuationKeys.contains(keycode) {
+                    fputs("[keyboard] command mode rejected keycode \(keycode)\n", stderr)
+                    DispatchQueue.main.async { Earcon.error() }
+                    return nil
+                }
+                return pass
             }
         }
 
@@ -1044,6 +1051,13 @@ final class KeyboardMonitor {
         29: "0", 18: "1", 19: "2", 20: "3", 21: "4",
         23: "5", 22: "6", 26: "7", 28: "8", 25: "9",
         49: " ",
+    ]
+
+    /// Unmapped keys that are still "typing" (punctuation row) — in COMMAND
+    /// mode these buzz instead of leaking into the app. Everything else
+    /// unmapped passes through (F-keys, keypad, custom shortcut codes).
+    private static let typingPunctuationKeys: Set<Int64> = [
+        24, 27, 30, 33, 39, 41, 42, 43, 44, 47, 50,  // = - ] [ ' ; \ , / . `
     ]
 
     private static let alphaKeyCodes: Set<Int64> = [

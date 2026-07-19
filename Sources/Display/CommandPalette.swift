@@ -40,9 +40,22 @@ final class CommandPalette {
     /// reaches it — user-verified). Set from the main queue.
     var positionMode: PositionMode = .center
 
+    /// Real, focused text view for the prompt so macOS treats the palette
+    /// like any text box: a genuine blinking insertion caret plus the AX
+    /// focus/caret notifications that zoom's follow-focus modes track
+    /// natively. All input still comes from the event tap — real keystrokes
+    /// that reach this view are swallowed so nothing double-types.
+    private final class PromptTextView: NSTextView {
+        override var acceptsFirstResponder: Bool { true }
+        override func keyDown(with event: NSEvent) {}       // the tap owns input
+        override func insertText(_ string: Any, replacementRange: NSRange) {}
+        override func doCommand(by selector: Selector) {}   // no beeps on arrows
+    }
+
     private var panel: NSPanel?
     private var paletteView: PaletteView?
     private var textField: NSTextField?
+    private var promptView: PromptTextView?
     private var previousApp: NSRunningApplication?
     private var sessionAnchor: NSPoint?   // pointer mode: fixed per session
     private var isShown = false
@@ -82,6 +95,14 @@ final class CommandPalette {
             let contentHeight = headerHeight + CGFloat(rowLines) * lineHeight
             layoutAndShow(text: text, contentHeight: contentHeight,
                           headerHeight: headerHeight, rowCount: visible)
+            // Real prompt text + caret-at-end. setSelectedRange on a focused
+            // view fires the AX caret notification zoom follows.
+            if let prompt = promptView {
+                let line = ": \(buffer)"
+                prompt.string = line
+                prompt.setSelectedRange(NSRange(location: (line as NSString).length,
+                                                length: 0))
+            }
         }
     }
 
@@ -121,10 +142,11 @@ final class CommandPalette {
                 attributes: [.font: logoFont, .foregroundColor: NSColor.white,
                              .paragraphStyle: logoStyle]))
         }
+        // Spacer where the prompt line sits — the real PromptTextView (with
+        // its native caret) is overlaid on this line
         result.append(NSAttributedString(
-            string: ": \(buffer)\u{258F}\n",
-            attributes: [.font: font, .foregroundColor: NSColor.white,
-                         .paragraphStyle: promptStyle]))
+            string: "\n",
+            attributes: [.font: font, .paragraphStyle: promptStyle]))
 
         for (index, candidate) in candidates.prefix(maxRows).enumerated() {
             var attributes: [NSAttributedString.Key: Any] = [.font: font,
@@ -187,6 +209,9 @@ final class CommandPalette {
         paletteView?.padding = padding
         paletteView?.headerHeight = headerHeight
         paletteView?.rowCount = rowCount   // excludes any "… and N more" row
+        // Overlay the real prompt view on its spacer line
+        promptView?.frame = NSRect(x: padding, y: height - padding - headerHeight,
+                                   width: width - padding * 2, height: lineHeight)
 
         if !isShown {
             isShown = true
@@ -207,14 +232,17 @@ final class CommandPalette {
                     NSApp.perform(selector, with: true)
                 }
                 self.panel?.makeKeyAndOrderFront(nil)
+                if let prompt = self.promptView { self.panel?.makeFirstResponder(prompt) }
             }
             // NOTE: no pointer warping/gliding — macOS zoom pans only on
             // hardware pointer deltas (user-verified: warps, synthetic
             // moves, and interpolated glides all failed to pan it). The
-            // zoom answer is positionMode == .pointer, which opens the
-            // palette where the cursor — and therefore the viewport — is.
+            // zoom answers are positionMode == .pointer, and the REAL
+            // focused prompt caret below, which zoom's follow-focus modes
+            // track natively.
         }
         panel.makeKeyAndOrderFront(nil)
+        if let prompt = promptView { panel.makeFirstResponder(prompt) }
     }
 
     private func ensurePanel() -> (NSPanel, NSTextField) {
@@ -244,10 +272,21 @@ final class CommandPalette {
         field.lineBreakMode = .byClipping
         content.addSubview(field)
 
+        let prompt = PromptTextView()
+        prompt.isEditable = true          // a real, blinking insertion caret
+        prompt.isRichText = false
+        prompt.drawsBackground = false
+        prompt.font = NSFont.monospacedSystemFont(ofSize: 16, weight: .regular)
+        prompt.textColor = .white
+        prompt.insertionPointColor = .white
+        prompt.setAccessibilityLabel("Marduk command")
+        content.addSubview(prompt)
+
         panel.contentView = content
         self.panel = panel
         self.paletteView = content
         self.textField = field
+        self.promptView = prompt
         return (panel, field)
     }
 }

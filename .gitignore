@@ -43,3 +43,8 @@ credentials.json
 # Never commit runtime artifacts — logs contain spoken text (user content)
 *.log
 config.json
+
+# Assembled app bundle (built on the Mac, never committed)
+Marduk.app/
+Marduk.app.new/
+Marduk.app.old/

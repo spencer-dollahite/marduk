@@ -51,9 +51,7 @@ Add `.build/debug` to your PATH or symlink the binary somewhere convenient; the 
 
 Marduk is assistive technology: it needs deep hooks, and macOS makes you grant each one.
 
-1. **Accessibility** — System Settings → Privacy & Security → Accessibility → **+** → press <kbd>Cmd+Shift+G</kbd> and enter the *resolved* binary path:
-   `<repo>/.build/arm64-apple-macosx/debug/marduk`
-   (not the `.build/debug` symlink — the permission is tied to the real file). If the grant is missing or broken, Marduk **tells you out loud** and re-checks every 10 seconds — no restart needed after you fix it. If a rebuild ever breaks the grant (it shouldn't once builds are signed), remove the entry and re-add it; toggling is not enough.
+1. **Accessibility** — System Settings → Privacy & Security → Accessibility → **+** → pick **`Marduk.app`** at the top of your cloned repo (a normal Finder pick — `marduk install` assembles the app bundle for you). The grant is anchored to the bundle identity, so rebuilds don't break it. If the grant is ever missing or broken, Marduk **tells you out loud** and re-checks every 10 seconds — no restart needed after you fix it; if it ever seems stuck, remove the entry and re-add it (toggling is not enough).
 2. **Automation** — the first time speech ducks your media, macOS will ask permission for Marduk to control System Events / Music / Spotify. Allow them.
 3. Sign in to Xcode once (Settings → Accounts) so a free "Apple Development" certificate exists in your keychain; `marduk update` and `marduk install` sign builds with it automatically.
 
@@ -110,6 +108,7 @@ These are deliberate trade-offs of the typing-rescue system, not bugs:
 - **A command followed quickly by `k` reads as typing** — protects words like "skip".
 - **Short reads pause your media briefly** even for a two-word utterance — pause/resume is deliberate (volume-ducking a browser can't stop a video, and lowering system volume would quiet Marduk itself).
 - Hand-edits to config.json need a daemon restart — use `:config` from inside Marduk (or `marduk config rate`) for live changes.
+- **Upgrading from a pre-bundle install:** the first update converts Marduk into `Marduk.app` and announces it aloud. If keyboard commands stop afterwards, re-grant Accessibility to `Marduk.app`; the Automation prompt also re-asks once (now explaining why Marduk wants media control).
 
 ## How it works
 

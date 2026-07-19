@@ -38,11 +38,14 @@
 
 ## Install
 
+First, sign in to Xcode once (Settings → Accounts) so a free "Apple Development" certificate exists in your keychain — Marduk signs its builds with it automatically, which is what keeps macOS permissions stable across updates. Then:
+
 ```bash
 git clone https://github.com/spencer-dollahite/marduk.git
 cd marduk
 swift build
-.build/debug/marduk install     # installs the launchd agent (autostart + crash restart)
+.build/debug/marduk install     # assembles Marduk.app + installs the launchd
+                                # agent (autostart at login, crash restart)
 ```
 
 Add `.build/debug` to your PATH or symlink the binary somewhere convenient; the commands below assume `marduk` resolves.
@@ -51,9 +54,8 @@ Add `.build/debug` to your PATH or symlink the binary somewhere convenient; the 
 
 Marduk is assistive technology: it needs deep hooks, and macOS makes you grant each one.
 
-1. **Accessibility** — System Settings → Privacy & Security → Accessibility → **+** → pick **`Marduk.app`** at the top of your cloned repo (a normal Finder pick — `marduk install` assembles the app bundle for you). The grant is anchored to the bundle identity, so rebuilds don't break it. If the grant is ever missing or broken, Marduk **tells you out loud** and re-checks every 10 seconds — no restart needed after you fix it; if it ever seems stuck, remove the entry and re-add it (toggling is not enough).
+1. **Accessibility** — System Settings → Privacy & Security → Accessibility → **+** → pick **`Marduk.app`** at the top of your cloned repo (a normal Finder pick — install assembled it for you). The grant is anchored to the bundle identity, so rebuilds don't break it. If the grant is ever missing or broken, Marduk **tells you out loud** and re-checks every 10 seconds — no restart needed after you fix it; if it ever seems stuck, remove the entry and re-add it (toggling is not enough).
 2. **Automation** — the first time speech ducks your media, macOS will ask permission for Marduk to control System Events / Music / Spotify. Allow them.
-3. Sign in to Xcode once (Settings → Accounts) so a free "Apple Development" certificate exists in your keychain; `marduk update` and `marduk install` sign builds with it automatically.
 
 ## Usage
 

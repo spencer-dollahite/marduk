@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: swift --version
+
+      # Marduk's own update gate refuses builds with ANY warning —
+      # CI enforces the same bar so a push that would fail on the
+      # user's Mac fails here first.
+      - name: Build (zero warnings)
+        run: |
+          set -o pipefail
+          swift build 2>&1 | tee build.log
+          if grep -qi "warning:" build.log; then
+            echo "::error::warnings present — marduk's update gate would refuse this build"
+            exit 1
+          fi
+
+      - name: Test
+        run: swift test

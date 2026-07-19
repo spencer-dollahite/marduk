@@ -6,6 +6,8 @@
 
 <p align="center"><strong>An audio-first, vim-style reading and navigation layer for macOS, built for low-vision users.</strong></p>
 
+<p align="center"><a href="https://github.com/spencer-dollahite/marduk/actions/workflows/ci.yml"><img src="https://github.com/spencer-dollahite/marduk/actions/workflows/ci.yml/badge.svg" alt="CI status"></a></p>
+
 ---
 
 > [!WARNING]

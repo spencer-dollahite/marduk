@@ -554,19 +554,54 @@ final class DaemonServer {
                 .output.split(separator: "\n").map(String.init)
             let remote = Self.shell("git", "rev-parse", "origin/main", cwd: dir)
                 .output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let checks = subjects.isEmpty ? CheckStatus.none
+                                          : Self.remoteCheckStatus(sha: remote)
             DispatchQueue.main.async { [self] in
-                handleCheckResult(subjects: subjects, remote: remote, origin: origin)
+                handleCheckResult(subjects: subjects, remote: remote,
+                                  checks: checks, origin: origin)
             }
         }
     }
 
+    /// CI verdict for a commit, via GitHub's public check-runs API.
+    /// `.none` (no runs, or any API/network failure) must NEVER block an
+    /// update — pre-CI commits and offline checks still work.
+    private enum CheckStatus { case passed, failed, pending, none }
+
+    private static func remoteCheckStatus(sha: String) -> CheckStatus {
+        guard !sha.isEmpty else { return .none }
+        let result = shell("curl", "-s", "-m", "10",
+                           "-H", "User-Agent: marduk",
+                           "-H", "Accept: application/vnd.github+json",
+                           "https://api.github.com/repos/spencer-dollahite/marduk/commits/\(sha)/check-runs",
+                           cwd: "/tmp")
+        guard result.status == 0,
+              let json = try? JSONSerialization.jsonObject(
+                  with: Data(result.output.utf8)) as? [String: Any],
+              let runs = json["check_runs"] as? [[String: Any]],
+              !runs.isEmpty else { return .none }
+
+        var pending = false
+        for run in runs {
+            if run["status"] as? String != "completed" {
+                pending = true
+                continue
+            }
+            if let conclusion = run["conclusion"] as? String,
+               ["failure", "timed_out", "cancelled"].contains(conclusion) {
+                return .failed
+            }
+        }
+        return pending ? .pending : .passed
+    }
+
     private func handleCheckResult(subjects: [String], remote: String,
-                                   origin: UpdateCheckOrigin) {
+                                   checks: CheckStatus, origin: UpdateCheckOrigin) {
         guard !subjects.isEmpty else {
             if origin == .manual { speech.announce("Marduk is up to date.") }
             return
         }
-        fputs("[update] \(subjects.count) update(s) available\n", stderr)
+        fputs("[update] \(subjects.count) update(s) available, checks: \(checks)\n", stderr)
         switch origin {
         case .manual:
             // Release notes = commit subjects since the running build.
@@ -580,9 +615,23 @@ final class DaemonServer {
             if subjects.count > listed.count {
                 text += ". And \(subjects.count - listed.count) more"
             }
+            // CI verdict is informative here — the user decides; the local
+            // zero-warning build gate remains the hard floor either way.
+            switch checks {
+            case .passed:  text += ". Checks passing"
+            case .failed:  text += ". Warning: the latest update is failing its checks"
+            case .pending: text += ". Checks are still running"
+            case .none:    break
+            }
             text += ". Press u again to install."
             speech.speak(text)
         case .periodic:
+            // The silent auto-path is strict: only green (or check-less)
+            // commits install themselves. Next timer tick re-evaluates.
+            if checks == .failed || checks == .pending {
+                fputs("[update] checks \(checks) on remote — holding back auto-update\n", stderr)
+                return
+            }
             if autoUpdate {
                 // Never interrupt: no announcements, and never restart while
                 // something is being spoken — retry in 10 minutes instead.

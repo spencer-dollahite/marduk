@@ -48,7 +48,7 @@ func printUsage() {
 }
 
 func printVersion() {
-    print("Marduk 0.2.0 (Daemon Mode)")
+    print("Marduk \(Marduk.version) (Daemon Mode)")
 }
 
 func listVoices() {

@@ -61,6 +61,32 @@ enum Codesign {
         return true
     }
 
+    /// Signs an assembled .app bundle — one codesign call seals the nested
+    /// executable. No copy-swap needed here: this is only ever called on
+    /// the Marduk.app.new STAGING directory, which nothing executes from
+    /// (the swap discipline lives in Bundler). The explicit --identifier
+    /// keeps the designated requirement identical to the old bare-binary
+    /// signature, which is what may let existing TCC grants survive the
+    /// bundle migration.
+    @discardableResult
+    static func sign(bundleAt path: String) -> Bool {
+        guard let identity = findIdentity() else {
+            fputs("[sign] no code-signing identity in keychain — bundle "
+                + "unsigned (Accessibility grant will break on rebuilds)\n", stderr)
+            return false
+        }
+        let result = run("/usr/bin/codesign",
+                         "--force", "--sign", identity,
+                         "--identifier", identifier,
+                         "--timestamp=none", path)
+        if result.status == 0 {
+            fputs("[sign] bundle signed with \"\(identity)\"\n", stderr)
+            return true
+        }
+        fputs("[sign] bundle codesign failed: \(result.output)\n", stderr)
+        return false
+    }
+
     /// First valid code-signing identity, preferring the longer-lived kinds.
     private static func findIdentity() -> String? {
         let result = run("/usr/bin/security", "find-identity", "-v", "-p", "codesigning")

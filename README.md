@@ -74,6 +74,8 @@ Marduk is assistive technology: it needs deep hooks, and macOS makes you grant e
 
 ### Keyboard
 
+> **Start here: press `:` (Shift+;) in NORMAL mode.** The command palette opens, showing — and speaking — everything Marduk can do: help, the interactive tutorial, every setting with its current value. Type until your choice is unambiguous and it runs itself; `/` fuzzy-searches everything. You never have to memorize the reference below.
+
 **Always active:** `Ctrl+Option+M` toggles Marduk on/off · `Option+Escape` speaks the current selection, or stops speech if speaking.
 
 **Space (NORMAL/VISUAL):** pauses/resumes an active read — but only while something is actually being read; otherwise it's a normal Space, and in INSERT mode it is *always* a normal space. `Escape` cancels a paused read, freeing Space immediately.

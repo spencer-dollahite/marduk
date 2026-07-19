@@ -771,7 +771,8 @@ final class KeyboardMonitor {
                         // Fixed-length earcon (~0.11s), not speech — the
                         // stagger just keeps the buzz audible before speech.
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [self] in
-                            onAnnounce?("Type colon, then help, for spoken help.")
+                            onAnnounce?("Press colon, shift semicolon, to open "
+                                + "the command panel and see every option.")
                         }
                     }
                 }

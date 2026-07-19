@@ -72,8 +72,9 @@ enum HelpText {
         typing. Press i to type. Hold Escape for half a second to come back to \
         NORMAL. Press r to hear the paragraph under the cursor. Press Escape \
         to stop speech. \
-        For spoken help, press shift semicolon for colon, then type help, then \
-        Return. For a guided tour, type colon tutorial. This message plays \
-        only once.
+        The most important key is colon, that is shift semicolon: it opens \
+        the command panel, which shows and speaks everything Marduk can do. \
+        From there, type h for help, or t u for the guided tour. \
+        This message plays only once.
         """
 }

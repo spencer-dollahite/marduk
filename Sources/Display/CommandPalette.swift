@@ -151,6 +151,19 @@ final class CommandPalette {
             // any events the tap passes through.
             previousApp = NSWorkspace.shared.frontmostApplication
             NSApp.activate()
+            // Cooperative activation (the only non-deprecated call) can be
+            // REFUSED — fullscreen zoom does this. Verify it landed; if not,
+            // force it through the legacy path via the runtime (the direct
+            // call is deprecated and the build must stay warning-free).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                guard let self, self.isShown, !NSApp.isActive else { return }
+                fputs("[palette] cooperative activation refused — forcing\n", stderr)
+                let selector = NSSelectorFromString("activateIgnoringOtherApps:")
+                if NSApp.responds(to: selector) {
+                    NSApp.perform(selector, with: true)
+                }
+                self.panel?.makeKeyAndOrderFront(nil)
+            }
         }
         panel.makeKeyAndOrderFront(nil)
     }

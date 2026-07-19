@@ -30,7 +30,8 @@ enum HelpText {
         Colon commands: help. commands. tutorial. tip, one random feature \
         tip. config, change a setting. quit. restart. update, install \
         updates now. uninstall, remove the launch agent. log, open the log \
-        file. feedback, open GitHub issues. bug, report a bug. \
+        file. log copy, copy recent log lines to the clipboard. \
+        feedback, open GitHub issues. bug, report a bug. \
         Commands complete themselves: \
         type until yours is the only match, then just stop. \
         Slash starts a fuzzy search over every command and setting; \

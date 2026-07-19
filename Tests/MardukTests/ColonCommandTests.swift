@@ -67,6 +67,16 @@ final class ColonCommandTests: XCTestCase {
         XCTAssertEqual(ColonCommand.autoResolve("q"), .execute("quit"))
     }
 
+    func testLogCopy() {
+        XCTAssertEqual(ColonCommand.parse("log copy"), .logCopy)
+        XCTAssertEqual(ColonCommand.parse("log c"), .logCopy)
+        XCTAssertEqual(ColonCommand.parse("log bogus"), .unknown("log bogus"))
+        XCTAssertEqual(ColonCommand.autoResolve("log c"), .execute("log copy"))
+        XCTAssertEqual(completions("log "),
+                       ["copy — copy recent log lines to the clipboard"])
+        XCTAssertEqual(completions("log x"), [])
+    }
+
     func testPrefixExpandsKeysAndEnumValues() {
         XCTAssertEqual(ColonCommand.parse("config le m"),
                        .config(key: "level", value: "most"))

@@ -473,7 +473,19 @@ final class DaemonServer {
                 speech.announce("No log file yet. The log exists when running "
                     + "under the launch agent.")
             }
-        case .feedback:
+        case .logCopy:
+            guard let content = try? String(contentsOfFile: LaunchAgent.logPath,
+                                            encoding: .utf8) else {
+                Earcon.error()
+                speech.announce("No log file to copy.")
+                return
+            }
+            let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
+            let tail = lines.suffix(100).joined(separator: "\n")
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(tail, forType: .string)
+            speech.announce("Copied the last \(min(lines.count, 100)) log lines. "
+                + "They contain text Marduk has spoken — review before pasting.")
             speech.announce("Opening GitHub issues. If you paste log lines, "
                 + "remember they contain text Marduk has spoken.")
             openURL("https://github.com/spencer-dollahite/marduk/issues/new/choose")

@@ -12,6 +12,7 @@ enum ColonCommand: Equatable {
     case update
     case uninstall
     case log
+    case logCopy
     case feedback
     case bug
     case unknown(String)
@@ -52,7 +53,10 @@ enum ColonCommand: Equatable {
         case "uninstall":
             return .uninstall
         case "log":
-            return .log
+            if tokens.count == 2, expand(tokens[1], in: ["copy"]) == "copy" {
+                return .logCopy
+            }
+            return tokens.count == 1 ? .log : .unknown(raw)
         case "feedback":
             return .feedback
         case "bug":
@@ -113,6 +117,10 @@ enum ColonCommand: Equatable {
         case 1:
             guard let name = expand(tokens[0], in: commandNames) else { return .none }
             return name == "config" ? .expand("config ") : .execute(name)
+
+        case 2 where tokens[0] == "log":
+            guard expand(tokens[1], in: ["copy"]) == "copy" else { return .none }
+            return .execute("log copy")
 
         case 2 where tokens[0] == "config" || tokens[0] == "set":
             guard let key = expand(tokens[1], in: settings.map(\.key)) else { return .none }
@@ -265,6 +273,14 @@ enum CommandCompleter {
                 Candidate(display: commandDisplay($0),
                           completion: $0 == "config" ? "config " : $0)
             }
+        }
+
+        // "log" has one optional argument
+        if tokens[0] == "log" {
+            let partial = tokens.count == 2 && !trailingSpace ? tokens[1] : ""
+            guard tokens.count <= 2, "copy".hasPrefix(partial) else { return [] }
+            return [Candidate(display: "copy — copy recent log lines to the clipboard",
+                              completion: "log copy")]
         }
 
         // Stages 2/3 only exist under config (or its set alias)

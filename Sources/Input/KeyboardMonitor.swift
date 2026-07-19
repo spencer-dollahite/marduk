@@ -393,7 +393,13 @@ final class KeyboardMonitor {
             case 53, 9: // Escape or v/V — exit visual mode, collapse selection
                 mode = .normal
                 pendingCount = 0
-                DispatchQueue.main.async { [self] in collapseVisualSelection() }
+                DispatchQueue.main.async { [self] in
+                    collapseVisualSelection()
+                    // Audible exit — the rising sweep that always means
+                    // "back in NORMAL". (`r` skips it: the read that follows
+                    // is its own feedback.)
+                    Earcon.riseToNormal()
+                }
                 fputs("[keyboard] → NORMAL\n", stderr)
                 return nil
 
@@ -484,6 +490,9 @@ final class KeyboardMonitor {
             mode = .insert
             suppressInsertEntryRepeat = true
             fputs("[keyboard] → INSERT\n", stderr)
+            // Same falling sweep as the typing rescue — INSERT entry always
+            // sounds the same, however you got there.
+            DispatchQueue.main.async { Earcon.fallToInsert() }
             return nil
 
         case 32: // u — update (pull + build + restart)

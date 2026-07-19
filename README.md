@@ -94,6 +94,16 @@ Marduk is assistive technology: it needs deep hooks, and macOS makes you grant e
 
 Config is read at daemon start; restart (or `marduk update`) after editing.
 
+## Known quirks (read before filing bugs)
+
+These are deliberate trade-offs of the typing-rescue system, not bugs:
+
+- **Words starting with "i" lose their leading i** if you type them in NORMAL mode — `i` enters INSERT instantly (so `i`-then-type works), which means typing "is" in NORMAL becomes INSERT + "s". The falling earcon tells you it happened.
+- **Single-letter commands fire ~300 ms late** (`r`, `t`, `s`, `u` alone) — that's the typing-rescue window deciding you weren't typing a word. `v`+motion and `i` are instant. Set `keyboard.typingRescue: false` to make all commands instant at the cost of the rescue (and of `tt`).
+- **A command followed quickly by `k` reads as typing** — protects words like "skip".
+- **Short reads pause your media briefly** even for a two-word utterance — pause/resume is deliberate (volume-ducking a browser can't stop a video, and lowering system volume would quiet Marduk itself).
+- Config changes need a daemon restart; only `marduk config rate` applies live.
+
 ## How it works
 
 A background daemon (no UI) built on the C-level `AXUIElement` accessibility API, `CGEventTap` for the modal keyboard layer, `AVSpeechSynthesizer` for speech, and CoreAudio + AppleScript for media-aware ducking — the same primitives VoiceOver-class tools use, since Apple ships no third-party screen-reader SDK. Architecture notes live in [CLAUDE.md](CLAUDE.md) and the long-form design in [PLAN.md](PLAN.md).
@@ -111,6 +121,8 @@ Explicitly **out of scope**: braille, and full screen-reader parity with VoiceOv
 ## Contributing
 
 Issues, bug reports, and "this assumption doesn't survive contact with my setup" reports are very welcome — especially from low-vision users. This is a personal project maintained at personal-project pace; PRs are welcome but may sit.
+
+**When filing bugs:** your `~/Library/Logs/marduk.log` contains snippets of text Marduk has spoken (your emails, messages, articles) — redact before pasting.
 
 If Marduk is useful to you, you can [sponsor development](https://github.com/sponsors/spencer-dollahite).
 

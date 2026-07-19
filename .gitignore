@@ -39,3 +39,7 @@ credentials.json
 *.dylib
 *.a
 *.dSYM/
+
+# Never commit runtime artifacts — logs contain spoken text (user content)
+*.log
+config.json

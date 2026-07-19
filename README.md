@@ -72,7 +72,9 @@ Marduk is assistive technology: it needs deep hooks, and macOS makes you grant e
 
 ### Keyboard
 
-**Always active:** `Ctrl+Option+M` toggles Marduk on/off · `Option+Escape` speaks the current selection, or stops speech if speaking · `Space` pauses/resumes an active read (only while something is being read — otherwise it's a normal Space).
+**Always active:** `Ctrl+Option+M` toggles Marduk on/off · `Option+Escape` speaks the current selection, or stops speech if speaking.
+
+**Space (NORMAL/VISUAL):** pauses/resumes an active read — but only while something is actually being read; otherwise it's a normal Space, and in INSERT mode it is *always* a normal space. `Escape` cancels a paused read, freeing Space immediately.
 
 **NORMAL mode** (default): `i` → INSERT · `v` / `V` → VISUAL / VISUAL LINE · `r` reads the current line · `t` speaks the time (`tt` = time + date) · `s` toggles macOS speak-under-pointer · `u` self-update · `Escape` stops speech. Letters you type by mistake trigger the typing rescue (see above); numbers, arrows, and Cmd/Ctrl shortcuts always pass through.
 

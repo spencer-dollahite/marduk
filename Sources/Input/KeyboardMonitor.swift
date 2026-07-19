@@ -323,13 +323,16 @@ final class KeyboardMonitor {
             return nil
         }
 
-        // === Space: pause/resume an active read, in any mode ===
+        // === Space: pause/resume an active read (NORMAL/VISUAL only) ===
         // Only while a content read is speaking or paused — announcements
-        // never capture Space, and otherwise it types/passes as normal. A
-        // typing-rescue burst in flight means the user is typing, so Space
-        // stays typing there too. isReadActive is plain stored state on the
-        // speech engine, safe to read synchronously in the tap callback.
-        if keycode == 49, !hasCommand, !hasControl, !hasOption,
+        // never capture Space, and otherwise it types/passes as normal.
+        // INSERT means typing: Space is always a real space there, even
+        // mid-read. A typing-rescue burst in flight means the user is
+        // typing, so Space stays typing there too. Escape (NORMAL) cancels
+        // a paused read — a paused synthesizer still counts as speaking —
+        // which frees Space back to normal. isReadActive is plain stored
+        // state on the speech engine, safe to read in the tap callback.
+        if keycode == 49, mode != .insert, !hasCommand, !hasControl, !hasOption,
            !flags.contains(.maskShift), burstBuffer.isEmpty, isReadActive() {
             if isAutorepeat { return nil }
             DispatchQueue.main.async { [self] in onPauseToggle?() }

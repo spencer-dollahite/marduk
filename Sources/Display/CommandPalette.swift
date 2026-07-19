@@ -37,6 +37,7 @@ final class CommandPalette {
     private var paletteView: PaletteView?
     private var textField: NSTextField?
     private var previousApp: NSRunningApplication?
+    private var previousMouse: NSPoint?
     private var isShown = false
 
     private let width: CGFloat = 640
@@ -75,9 +76,14 @@ final class CommandPalette {
             guard isShown else { return }
             isShown = false
             panel?.orderOut(nil)
-            // Hand keyboard focus straight back to where the user was
+            // Hand keyboard focus straight back to where the user was,
+            // and the pointer (with the zoom viewport in tow) too
             _ = previousApp?.activate()
             previousApp = nil
+            if let mouse = previousMouse {
+                warpPointer(to: mouse)
+                previousMouse = nil
+            }
         }
     }
 
@@ -164,8 +170,22 @@ final class CommandPalette {
                 }
                 self.panel?.makeKeyAndOrderFront(nil)
             }
+            // Bring the ZOOM VIEWPORT here: zoom follows the pointer, and
+            // warping it to the palette is the only public way to pan a
+            // fullscreen-zoomed view to an arbitrary window. Restored on
+            // hide. (Handy unzoomed too — the pointer lands on the rows.)
+            previousMouse = NSEvent.mouseLocation
+            warpPointer(to: NSPoint(x: panel.frame.midX, y: panel.frame.midY))
         }
         panel.makeKeyAndOrderFront(nil)
+    }
+
+    /// Cocoa (bottom-left origin) → CG (top-left origin) pointer warp.
+    private func warpPointer(to cocoaPoint: NSPoint) {
+        let mainHeight = CGDisplayBounds(CGMainDisplayID()).height
+        let cgPoint = CGPoint(x: cocoaPoint.x, y: mainHeight - cocoaPoint.y)
+        CGWarpMouseCursorPosition(cgPoint)
+        CGAssociateMouseAndMouseCursorPosition(1)
     }
 
     private func ensurePanel() -> (NSPanel, NSTextField) {

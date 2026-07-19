@@ -81,7 +81,7 @@ final class CommandPalette {
             _ = previousApp?.activate()
             previousApp = nil
             if let mouse = previousMouse {
-                warpPointer(to: mouse)
+                glidePointer(from: NSEvent.mouseLocation, to: mouse)
                 previousMouse = nil
             }
         }
@@ -170,28 +170,38 @@ final class CommandPalette {
                 }
                 self.panel?.makeKeyAndOrderFront(nil)
             }
-            // Bring the ZOOM VIEWPORT here: zoom follows the pointer, and
-            // warping it to the palette is the only public way to pan a
-            // fullscreen-zoomed view to an arbitrary window. Restored on
-            // hide. (Handy unzoomed too — the pointer lands on the rows.)
-            previousMouse = NSEvent.mouseLocation
-            warpPointer(to: NSPoint(x: panel.frame.midX, y: panel.frame.midY))
+            // Bring the ZOOM VIEWPORT here: zoom's panning is edge-triggered
+            // by continuous pointer MOTION — a teleport doesn't pan it (user-
+            // verified). Gliding the pointer through interpolated mouse-moved
+            // events reads as real travel and drags the viewport along.
+            // Restored on hide. (Handy unzoomed too — lands on the rows.)
+            let start = NSEvent.mouseLocation
+            previousMouse = start
+            glidePointer(from: start,
+                         to: NSPoint(x: panel.frame.midX, y: panel.frame.midY))
         }
         panel.makeKeyAndOrderFront(nil)
     }
 
-    /// Cocoa (bottom-left origin) → CG (top-left origin) pointer warp.
-    /// Warp alone teleports silently — zoom pans on mouse MOTION — so a
-    /// synthetic mouse-moved event at the target makes zoom follow.
-    private func warpPointer(to cocoaPoint: NSPoint) {
+    /// Glides the pointer along interpolated mouse-moved events (~200ms).
+    /// Zoom ignores teleports; it pans on continuous motion, so the glide
+    /// must look like real travel. Cocoa (bottom-left) → CG (top-left).
+    private func glidePointer(from start: NSPoint, to end: NSPoint) {
         let mainHeight = CGDisplayBounds(CGMainDisplayID()).height
-        let cgPoint = CGPoint(x: cocoaPoint.x, y: mainHeight - cocoaPoint.y)
-        CGWarpMouseCursorPosition(cgPoint)
-        CGAssociateMouseAndMouseCursorPosition(1)
-        if let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
-                              mouseCursorPosition: cgPoint, mouseButton: .left) {
-            move.post(tap: .cghidEventTap)
+        let steps = 24
+        for i in 1...steps {
+            let t = CGFloat(i) / CGFloat(steps)
+            let point = CGPoint(x: start.x + (end.x - start.x) * t,
+                                y: mainHeight - (start.y + (end.y - start.y) * t))
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.008) {
+                CGWarpMouseCursorPosition(point)
+                if let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                                      mouseCursorPosition: point, mouseButton: .left) {
+                    move.post(tap: .cghidEventTap)
+                }
+            }
         }
+        CGAssociateMouseAndMouseCursorPosition(1)
     }
 
     private func ensurePanel() -> (NSPanel, NSTextField) {

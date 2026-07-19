@@ -48,13 +48,14 @@ final class CommandPalette {
     // see always matches what the options speech says.
     private let maxRows = 16
 
-    /// The white M, matching the repo logo — rendered above the prompt.
+    /// "marduk", lowercase, with just the m as the block-art logo —
+    /// "arduk" rides the baseline row.
     private static let logoLines = [
         "███╗   ███╗",
         "████╗ ████║",
         "██╔████╔██║",
         "██║╚██╔╝██║",
-        "██║ ╚═╝ ██║",
+        "██║ ╚═╝ ██║ arduk",
         "╚═╝     ╚═╝",
     ]
 
@@ -181,11 +182,17 @@ final class CommandPalette {
     }
 
     /// Cocoa (bottom-left origin) → CG (top-left origin) pointer warp.
+    /// Warp alone teleports silently — zoom pans on mouse MOTION — so a
+    /// synthetic mouse-moved event at the target makes zoom follow.
     private func warpPointer(to cocoaPoint: NSPoint) {
         let mainHeight = CGDisplayBounds(CGMainDisplayID()).height
         let cgPoint = CGPoint(x: cocoaPoint.x, y: mainHeight - cocoaPoint.y)
         CGWarpMouseCursorPosition(cgPoint)
         CGAssociateMouseAndMouseCursorPosition(1)
+        if let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                              mouseCursorPosition: cgPoint, mouseButton: .left) {
+            move.post(tap: .cghidEventTap)
+        }
     }
 
     private func ensurePanel() -> (NSPanel, NSTextField) {

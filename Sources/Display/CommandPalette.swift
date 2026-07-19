@@ -103,9 +103,12 @@ final class CommandPalette {
                 prompt.setSelectedRange(NSRange(location: (line as NSString).length,
                                                 length: 0))
                 // Belt-and-suspenders for zoom's focus-following: post the
-                // caret-moved notification explicitly — a borderless panel
-                // in an accessory app may not emit it on its own.
+                // caret-moved AND value-changed notifications explicitly —
+                // programmatic .string updates may emit neither, and the
+                // user's Spotlight observation (zoom pans only AFTER a
+                // letter is typed) fingers value-changed as zoom's trigger.
                 NSAccessibility.post(element: prompt, notification: .selectedTextChanged)
+                NSAccessibility.post(element: prompt, notification: .valueChanged)
             }
         }
     }

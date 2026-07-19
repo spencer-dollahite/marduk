@@ -19,26 +19,9 @@
 - **Audio-first readers** who want "select something, hear it, keep your music sensibly out of the way" as a first-class workflow.
 - **Keyboard and vim people** who want modal, home-row-driven control of speech without lifting their hands (or with a programmable mouse doing the reading).
 
-## What it does
-
-- **Vim-style modal keyboard layer** — NORMAL (commands), INSERT (typing), VISUAL / VISUAL LINE (select with `hjkl`, count prefixes like `3j`, read with `r`). A colored-earcon mode system, an escape tap/hold that never steals Escape from vim, and a *typing rescue* that notices when you type into NORMAL mode by mistake, flips to INSERT, and replays your keystrokes so nothing is lost.
-- **Reading that respects your audio** — speech pauses your browser/system media (play/pause, only if it was actually playing) and volume-ducks Apple Music/Spotify, then puts everything back when the read ends. Speech and media never fight.
-- **Pause and resume** — Space pauses an active read at a word boundary and resumes it; the moment nothing is being read, Space is just Space.
-- **A speech preprocessor built for real content** — strips the invisible Unicode that makes TTS silently bail; speaks code symbols by name with configurable verbosity (`->` "arrow", `!=` "not equals"); collapses symbol runs ("5 dash" instead of dash-dash-dash-dash-dash); abbreviates hex digests ("md5 ending in 2 7 e" instead of 32 characters of hex).
-- **Two voices** — one for reading content, one for status announcements, so you always know which is which.
-- **A vim-style command line with a visual palette** — press `:` in NORMAL mode and a dmenu-style panel opens at your cursor (so it's always inside a zoomed-in view — `:config position center` if you prefer it screen-centered), listing everything you can type with descriptions and current values, filtering as you go: `:help`, `:commands`, `:tutorial`, `:config rate 230`. The moment your typing is unambiguous it just goes — `:h` runs help, `:con` becomes `config` and moves on — no Enter needed except for numbers. Tab completes, arrows browse (spoken), rows are clickable, `?` — or just pausing — speaks your options, and `/` fuzzy-searches everything at once. Settings changed via `:config` apply instantly and persist.
-- **A talking interactive tutorial** — `:tutorial` walks you through the modes vimtutor-style: it asks you to actually press the keys and confirms out loud when you get it. First run also greets you with a short spoken orientation.
-- **Runs as a proper service** — a launchd agent starts Marduk at login, restarts it if it crashes, and logs to `~/Library/Logs/marduk.log`. Updates are spoken before they're installed: `u` fetches and reads the release notes aloud, `uu` installs (pull, build, codesign, restart), and a daily background check announces when something new is available (`:config autoupdate on` to install automatically, `:config checkhours 0` to disable checks).
-- **Signed builds** — binaries are codesigned with your (free) Apple Development certificate so macOS Accessibility permission survives rebuilds.
-- **No dependencies** — pure Swift and native Apple frameworks. No Electron, no Python, no network calls.
-
-## Requirements
-
-- A Mac with **Apple Silicon**. Marduk is developed and tested on **macOS 26 (Tahoe)**; it builds against macOS 14, but nothing older than 26 has been tested.
-- That's it for the easy install. Building **from source** additionally needs the Swift toolchain (Xcode, or just the Command Line Tools). A free Apple ID signed into Xcode is strongly recommended, not required: Marduk signs its builds with the free certificate so macOS permissions survive updates — unsigned builds work, but the Accessibility grant breaks on every rebuild.
-- Optional: [Karabiner-Elements](https://karabiner-elements.pqrs.org/) for mouse-button reading triggers (sample profile in `ke/`).
-
 ## Install
+
+All you need is an **Apple Silicon Mac running macOS 26 (Tahoe)**. Optional: [Karabiner-Elements](https://karabiner-elements.pqrs.org/) if you want mouse-button reading triggers (a sample profile ships in `ke/`).
 
 1. Download the latest `.dmg` from the [Releases page](https://github.com/spencer-dollahite/marduk/releases) and open it.
 2. Drag **Marduk** into **Applications**.
@@ -49,7 +32,7 @@ Releases are signed and notarized — no Xcode, no Terminal, no warnings from ma
 <details>
 <summary><strong>Install from source</strong> (developers — enables <code>u</code>-key self-updates)</summary>
 
-Sign in to Xcode once (Settings → Accounts) so a free signing certificate exists, then:
+Requirements: the Swift toolchain (Xcode or the Command Line Tools; the package targets macOS 14+ but only macOS 26 is tested). A free Apple ID signed into Xcode is strongly recommended: Marduk codesigns its builds with the free "Apple Development" certificate so the TCC Accessibility grant is anchored to a stable identity and survives rebuilds — unsigned builds work, but the grant breaks on every update. Then:
 
 ```bash
 git clone https://github.com/spencer-dollahite/marduk.git
@@ -69,6 +52,19 @@ Marduk is assistive technology — macOS makes you grant its two deep hooks, and
 
 - **Accessibility** — pick `Marduk.app` in the Settings pane Marduk opens for you. If the grant is ever missing, Marduk says so and heals within ~10 seconds of a fix (if it seems stuck: remove the entry and re-add it — toggling is not enough).
 - **Automation** — the first time speech ducks your media, allow the prompts to control System Events / Music / Spotify.
+
+## What it does
+
+- **Vim-style modal keyboard layer** — NORMAL (commands), INSERT (typing), VISUAL / VISUAL LINE (select with `hjkl`, count prefixes like `3j`, read with `r`). A colored-earcon mode system, an escape tap/hold that never steals Escape from vim, and a *typing rescue* that notices when you type into NORMAL mode by mistake, flips to INSERT, and replays your keystrokes so nothing is lost.
+- **Reading that respects your audio** — speech pauses your browser/system media (play/pause, only if it was actually playing) and volume-ducks Apple Music/Spotify, then puts everything back when the read ends. Speech and media never fight.
+- **Pause and resume** — Space pauses an active read at a word boundary and resumes it; the moment nothing is being read, Space is just Space.
+- **A speech preprocessor built for real content** — strips the invisible Unicode that makes TTS silently bail; speaks code symbols by name with configurable verbosity (`->` "arrow", `!=` "not equals"); collapses symbol runs ("5 dash" instead of dash-dash-dash-dash-dash); abbreviates hex digests ("md5 ending in 2 7 e" instead of 32 characters of hex).
+- **Two voices** — one for reading content, one for status announcements, so you always know which is which.
+- **A vim-style command line with a visual palette** — press `:` in NORMAL mode and a dmenu-style panel opens at your cursor (so it's always inside a zoomed-in view — `:config position center` if you prefer it screen-centered), listing everything you can type with descriptions and current values, filtering as you go: `:help`, `:commands`, `:tutorial`, `:config rate 230`. The moment your typing is unambiguous it just goes — `:h` runs help, `:con` becomes `config` and moves on — no Enter needed except for numbers. Tab completes, arrows browse (spoken), rows are clickable, `?` — or just pausing — speaks your options, and `/` fuzzy-searches everything at once. Settings changed via `:config` apply instantly and persist.
+- **A talking interactive tutorial** — `:tutorial` walks you through the modes vimtutor-style: it asks you to actually press the keys and confirms out loud when you get it. First run also greets you with a short spoken orientation.
+- **Runs as a proper service** — a launchd agent starts Marduk at login, restarts it if it crashes, and logs to `~/Library/Logs/marduk.log`. Updates are spoken before they're installed: `u` fetches and reads the release notes aloud, `uu` installs (pull, build, codesign, restart), and a daily background check announces when something new is available (`:config autoupdate on` to install automatically, `:config checkhours 0` to disable checks).
+- **Signed builds** — binaries are codesigned with your (free) Apple Development certificate so macOS Accessibility permission survives rebuilds.
+- **No dependencies** — pure Swift and native Apple frameworks. No Electron, no Python, no network calls.
 
 ## Usage
 

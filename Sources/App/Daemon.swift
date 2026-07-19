@@ -532,9 +532,11 @@ final class DaemonServer {
     /// Fetches origin/main off the main thread and reports what's new.
     private func checkForUpdates(origin: UpdateCheckOrigin) {
         guard let dir = projectDir else {
+            // No repo above the binary = installed from a release, not a
+            // clone — git-based updates don't apply.
             if origin == .manual {
-                Earcon.error()
-                speech.announce("Cannot find the project directory.")
+                speech.announce("This copy of Marduk was installed from a "
+                    + "release. Download updates from the GitHub releases page.")
             }
             return
         }
@@ -945,8 +947,12 @@ final class DaemonServer {
             }
 
             guard let dir = projectDir else {
-                fputs("[update] Cannot find project directory\n", stderr)
-                failed()
+                fputs("[update] No project directory — release install\n", stderr)
+                guard !silent else { return }
+                DispatchQueue.main.async { [self] in
+                    speech.announce("This copy of Marduk was installed from a "
+                        + "release. Download updates from the GitHub releases page.")
+                }
                 return
             }
 

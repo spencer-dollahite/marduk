@@ -301,7 +301,14 @@ case "install":
     // bare binary only when no project directory can be found (binary
     // copied out of the repo). Bundle-ness is detected, never assumed.
     let installTarget: String
-    if let dir = Bundler.projectDir(fromExecutable: binary)
+    if binary.contains("/Marduk.app/Contents/MacOS/"),
+       Bundler.projectDir(fromExecutable: binary) == nil {
+        // Running from a RELEASE bundle (e.g. /Applications/Marduk.app):
+        // install as-is — reassembling or re-signing would destroy the
+        // notarized Developer ID signature, and release users have no
+        // certificate anyway.
+        installTarget = binary
+    } else if let dir = Bundler.projectDir(fromExecutable: binary)
         ?? (FileManager.default.fileExists(atPath: "Package.swift")
                 ? FileManager.default.currentDirectoryPath : nil),
        let bundleExec = Bundler.assemble(binaryPath: binary, projectDir: dir) {
@@ -340,6 +347,22 @@ case "install":
         fputs("WARNING: daemon did not come up — check the log.\n", stderr)
         exit(1)
     }
+
+case "bundle":
+    // Internal: assemble Marduk.app from this binary and print its
+    // executable path (used by scripts/release.sh with the release build)
+    guard let bundleBinary = LaunchAgent.resolvedBinaryPath(),
+          let bundleProjectDir = Bundler.projectDir(fromExecutable: bundleBinary)
+            ?? (FileManager.default.fileExists(atPath: "Package.swift")
+                    ? FileManager.default.currentDirectoryPath : nil) else {
+        fputs("Error: cannot resolve the binary or project directory.\n", stderr)
+        exit(1)
+    }
+    guard let assembled = Bundler.assemble(binaryPath: bundleBinary,
+                                           projectDir: bundleProjectDir) else {
+        exit(1)
+    }
+    print(assembled)
 
 case "uninstall":
     if LaunchAgent.isInstalled {

@@ -23,7 +23,8 @@ struct MardukConfig: Codable {
         var typingEcho: Bool? = false    // speak characters typed in INSERT
         var commandEcho: Bool? = true    // speak characters typed after ":"
         var commandPalette: Bool? = true // dmenu-style panel while typing a ":" command
-        var palettePosition: String? = "center" // "center" | "pointer" (pointer = zoom-friendly)
+        var palettePosition: String? = "pointer" // "pointer" | "center" — pointer is the
+                                                 // only placement zoom always keeps in view
     }
 
     struct UpdateConfig: Codable {

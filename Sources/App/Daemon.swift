@@ -206,7 +206,7 @@ final class DaemonServer {
         keyboardMonitor?.typingEchoEnabled = config.keyboard?.typingEcho ?? false
         keyboardMonitor?.commandEchoEnabled = config.keyboard?.commandEcho ?? true
         palette.positionMode = CommandPalette.PositionMode(
-            rawValue: config.keyboard?.palettePosition ?? "center") ?? .center
+            rawValue: config.keyboard?.palettePosition ?? "pointer") ?? .pointer
         // Tutorial events ride the existing callbacks: reads complete via the
         // per-utterance completion, announcements and pause toggles are
         // interposed here. The tutorial's own narration goes straight to

@@ -51,6 +51,7 @@ final class KeyboardMonitor {
     var onCommandSelect: ((Int) -> Void)?
     var onCommandHelp: (() -> Void)?    // "?" — speak options, even when none
     var onCommandIdle: (() -> Void)?    // typing pause — speak options if any
+    var onUpdateCheck: (() -> Void)?    // single u — check + speak release notes
     private var commandIdleTimer: DispatchWorkItem?
     var typingEchoEnabled = false    // speak chars typed in INSERT
     var commandEchoEnabled = true    // speak chars typed after ":"
@@ -613,11 +614,12 @@ final class KeyboardMonitor {
             DispatchQueue.main.async { Earcon.fallToInsert() }
             return nil
 
-        case 32: // u — update (pull + build + restart)
+        case 32: // u — check for updates + speak what's new. uu (burst) or a
+                 // second u while the check is armed actually installs — the
+                 // daemon owns that decision.
             DispatchQueue.main.async { [self] in
-                onAnnounce?("Update initiated")
-                fputs("[keyboard] u → pull + build\n", stderr)
-                onUpdate?()
+                fputs("[keyboard] u → update check\n", stderr)
+                onUpdateCheck?()
             }
             return nil
 
@@ -857,6 +859,23 @@ final class KeyboardMonitor {
                 }
                 DispatchQueue.main.async { [self] in
                     onAnnounce?(Self.currentTimeAndDate())
+                }
+                return .swallow
+            }
+
+            // uu: same double-tap resolution as tt — one u asks (speaks the
+            // release notes), two installs.
+            if keycode == 32,
+               burstBuffer.last?.getIntegerValueField(.keyboardEventKeycode) == 32 {
+                var events = takeBurst()
+                events.removeLast() // the first u of the pair — consumed by uu
+                for ev in events {
+                    if redispatch(ev) != nil { enqueueReplay(ev) }
+                }
+                DispatchQueue.main.async { [self] in
+                    onAnnounce?("Update initiated")
+                    fputs("[keyboard] uu → install update\n", stderr)
+                    onUpdate?()
                 }
                 return .swallow
             }

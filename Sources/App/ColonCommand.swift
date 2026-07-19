@@ -82,6 +82,8 @@ enum ColonCommand: Equatable {
         ("echo", .toggle),
         ("commandecho", .toggle),
         ("palette", .toggle),
+        ("autoupdate", .toggle),
+        ("checkhours", .number(min: 0, max: 168, unit: "hours")),
     ]
 
     static func kind(for key: String) -> SettingKind? {

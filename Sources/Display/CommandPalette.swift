@@ -1,13 +1,22 @@
 import AppKit
 
-/// Dmenu-style command panel: a display-only, non-activating floating window
-/// that renders the ":" buffer and its completion candidates. All input stays
-/// in the event tap — this window never takes focus and ignores the mouse, so
-/// the frontmost app keeps its keyboard focus the whole time.
+/// Dmenu-style command panel rendering the ":" buffer and its completion
+/// candidates. INPUT still flows through the event tap — the panel's job is
+/// visual — but while open it takes keyboard focus (Spotlight-style) so the
+/// app underneath stops blinking its caret and receives nothing; focus is
+/// handed straight back to that app on dismiss.
 /// Methods only dispatch to the main queue and never block the tap callback.
 final class CommandPalette {
+
+    /// Borderless panels refuse key status by default.
+    private final class KeyablePanel: NSPanel {
+        override var canBecomeKey: Bool { true }
+    }
+
     private var panel: NSPanel?
     private var textField: NSTextField?
+    private var previousApp: NSRunningApplication?
+    private var isShown = false
 
     private let width: CGFloat = 640
     private let lineHeight: CGFloat = 26
@@ -24,7 +33,12 @@ final class CommandPalette {
 
     func hide() {
         DispatchQueue.main.async { [self] in
+            guard isShown else { return }
+            isShown = false
             panel?.orderOut(nil)
+            // Hand keyboard focus straight back to where the user was
+            previousApp?.activate()
+            previousApp = nil
         }
     }
 
@@ -70,15 +84,24 @@ final class CommandPalette {
         panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
         field.frame = NSRect(x: padding, y: padding,
                              width: width - padding * 2, height: height - padding * 2)
-        panel.orderFrontRegardless()
+
+        if !isShown {
+            isShown = true
+            // Remember who had focus, then take it — the tap feeds us input
+            // regardless; key status just parks the app's caret and catches
+            // any events the tap passes through.
+            previousApp = NSWorkspace.shared.frontmostApplication
+            NSApp.activate()
+        }
+        panel.makeKeyAndOrderFront(nil)
     }
 
     private func ensurePanel() -> (NSPanel, NSTextField) {
         if let panel, let textField { return (panel, textField) }
 
-        let panel = NSPanel(contentRect: .zero,
-                            styleMask: [.borderless, .nonactivatingPanel],
-                            backing: .buffered, defer: false)
+        let panel = KeyablePanel(contentRect: .zero,
+                                 styleMask: [.borderless, .nonactivatingPanel],
+                                 backing: .buffered, defer: false)
         panel.level = .screenSaver
         panel.isOpaque = false
         panel.backgroundColor = .clear

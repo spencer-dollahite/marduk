@@ -7,7 +7,8 @@ enum HelpText {
     static let help = """
         Marduk help. You are usually in NORMAL mode, where letters are commands, \
         not typing. Press i to type. That is INSERT mode. To get back to NORMAL, \
-        hold Escape for half a second. In NORMAL mode: r reads the current line. \
+        hold Escape for half a second. In NORMAL mode: r selects the paragraph \
+        under the cursor, like a triple click, and reads it. \
         v starts a visual selection. t speaks the time. Escape stops speech. \
         Space pauses and resumes a read. When you press colon, a panel lists \
         everything you can type. Type colon commands for the full list. \
@@ -15,10 +16,12 @@ enum HelpText {
         """
 
     static let commands = """
-        Marduk commands. NORMAL mode: i, enter INSERT mode. r, read the current \
-        line. v, visual selection. Capital V, select whole lines. t, speak the \
-        time. t t, time and date. s, toggle speak under pointer. u, update \
-        Marduk. Escape, stop speech. Space, pause or resume a read. \
+        Marduk commands. NORMAL mode: i, enter INSERT mode. r, select the \
+        paragraph under the cursor, like a triple click, and read it. \
+        v, visual selection. Capital V, select whole lines. t, speak the \
+        time. t t, time and date. s, toggle speak under pointer. u, check \
+        for updates and hear what's new. u u, install the update. \
+        Escape, stop speech. Space, pause or resume a read. \
         VISUAL mode: h j k l extend the selection. Numbers repeat a motion, \
         like 3 j. r reads the selection. Escape cancels. \
         INSERT mode: hold Escape half a second to return to NORMAL. \
@@ -30,7 +33,9 @@ enum HelpText {
         Settings: rate, 50 to 360 words per minute. level, none, some, most, \
         or all. hashes, on or off. rescue, on or off. burst, in milliseconds. \
         escape hold, one word, in milliseconds. echo, on or off, speaks keys \
-        as you type. command echo, one word, on or off. palette, on or off.
+        as you type. command echo, one word, on or off. palette, on or off. \
+        auto update, one word, on or off. check hours, one word, hours \
+        between update checks, zero for never.
         """
 
     /// ":tip" — one is picked at random (never the same twice in a row).
@@ -50,14 +55,16 @@ enum HelpText {
         "You can shorten colon commands like vim: colon conf ra 230 is colon config rate 230.",
         "Long hex strings are shortened when read: an m d 5 hash becomes m d 5 ending in its last three characters. Turn that off with colon config hashes off.",
         "The s command speaks whatever is under your mouse pointer. It needs a one-time shortcut assignment in System Settings, Keyboard, Accessibility.",
-        "Press u in NORMAL mode and Marduk updates itself: pulls the latest code, rebuilds, and restarts.",
+        "Press u in NORMAL mode to hear what updates are available. Press u twice, or u again within a minute, to install them.",
+        "The r command selects the whole paragraph under the mouse cursor, like a triple click, then reads the selection.",
         "Media pauses during reads and resumes after, only if it was actually playing. Music apps get volume-ducked instead of paused.",
     ]
 
     static let welcome = """
         Welcome to Marduk. You are in NORMAL mode. Letters are commands, not \
         typing. Press i to type. Hold Escape for half a second to come back to \
-        NORMAL. Press r to read the current line. Press Escape to stop speech. \
+        NORMAL. Press r to hear the paragraph under the cursor. Press Escape \
+        to stop speech. \
         For spoken help, press shift semicolon for colon, then type help, then \
         Return. For a guided tour, type colon tutorial. This message plays \
         only once.

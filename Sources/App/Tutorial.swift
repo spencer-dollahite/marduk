@@ -90,8 +90,9 @@ final class Tutorial {
                  isComplete: { $0 == .mode(.normal) },
                  success: "Good. The rising tones always mean NORMAL mode."),
 
-            Step(instruction: "Lesson three. Click on a line of text, then "
-                    + "press r to hear it read.",
+            Step(instruction: "Lesson three. Click on some text, then press "
+                    + "r. It selects the paragraph under the cursor, like a "
+                    + "triple click, and reads it.",
                  isComplete: { $0 == .readFinished },
                  success: "That is the read command."),
 

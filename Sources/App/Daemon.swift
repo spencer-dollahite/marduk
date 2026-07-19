@@ -91,9 +91,20 @@ final class DaemonServer {
     private var commandSelected = 0
     private var lastTipIndex = -1
 
+    // Update checking: `u` checks + arms; a second u while armed installs.
+    // The periodic timer announces once per new remote head (or installs,
+    // with autoupdate on).
+    private var updateArmedUntil: Date?
+    private var lastAnnouncedRemote = ""
+    private var updateCheckTimer: DispatchSourceTimer?
+    private var autoUpdate: Bool
+    private var updateCheckHours: Int
+
     init(config: MardukConfig) {
         self.config = config
         paletteEnabled = config.keyboard?.commandPalette ?? true
+        autoUpdate = config.update?.auto ?? false
+        updateCheckHours = config.update?.checkHours ?? 24
         escapeHoldThreshold = TimeInterval(config.keyboard?.escapeHoldMs ?? 400) / 1000.0
         typingBurstThreshold = TimeInterval(config.keyboard?.typingBurstMs ?? 300) / 1000.0
         typingRescueEnabled = config.keyboard?.typingRescue ?? true
@@ -235,6 +246,8 @@ final class DaemonServer {
         keyboardMonitor?.onCommandSelect = { [self] delta in handleCommandSelect(delta) }
         keyboardMonitor?.onCommandHelp = { [self] in speakCommandOptions(explicit: true) }
         keyboardMonitor?.onCommandIdle = { [self] in speakCommandOptions(explicit: false) }
+        keyboardMonitor?.onUpdateCheck = { [self] in handleUpdateKey() }
+        scheduleUpdateChecks()
 
         displayInverter?.start()
 
@@ -384,6 +397,103 @@ final class DaemonServer {
         }
     }
 
+    // MARK: - Update Checks
+
+    private enum UpdateCheckOrigin { case manual, periodic }
+
+    /// Single `u`: install if a check is armed, else check + speak notes.
+    /// (Fast `uu` bypasses this — the burst layer calls performUpdate directly.)
+    private func handleUpdateKey() {
+        if let until = updateArmedUntil, Date() < until {
+            updateArmedUntil = nil
+            speech.announce("Update initiated")
+            performUpdate()
+            return
+        }
+        checkForUpdates(origin: .manual)
+    }
+
+    /// Fetches origin/main off the main thread and reports what's new.
+    private func checkForUpdates(origin: UpdateCheckOrigin) {
+        guard let dir = projectDir else {
+            if origin == .manual {
+                Earcon.error()
+                speech.announce("Cannot find the project directory.")
+            }
+            return
+        }
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let fetch = Self.shell("git", "fetch", "--quiet", "origin", "main", cwd: dir)
+            guard fetch.status == 0 else {
+                fputs("[update] fetch failed: \(fetch.output)\n", stderr)
+                if origin == .manual {
+                    DispatchQueue.main.async { [self] in
+                        Earcon.error()
+                        speech.announce("Update check failed. Is the network up?")
+                    }
+                }
+                return
+            }
+            let subjects = Self.shell("git", "log", "--format=%s", "HEAD..origin/main", cwd: dir)
+                .output.split(separator: "\n").map(String.init)
+            let remote = Self.shell("git", "rev-parse", "origin/main", cwd: dir)
+                .output.trimmingCharacters(in: .whitespacesAndNewlines)
+            DispatchQueue.main.async { [self] in
+                handleCheckResult(subjects: subjects, remote: remote, origin: origin)
+            }
+        }
+    }
+
+    private func handleCheckResult(subjects: [String], remote: String,
+                                   origin: UpdateCheckOrigin) {
+        guard !subjects.isEmpty else {
+            if origin == .manual { speech.announce("Marduk is up to date.") }
+            return
+        }
+        fputs("[update] \(subjects.count) update(s) available\n", stderr)
+        switch origin {
+        case .manual:
+            // Release notes = commit subjects since the running build.
+            // Arm BEFORE speaking so a quick second u installs immediately.
+            updateArmedUntil = Date(timeIntervalSinceNow: 60)
+            let listed = subjects.prefix(8)
+            var text = subjects.count == 1
+                ? "One update available. "
+                : "\(subjects.count) updates available. "
+            text += listed.joined(separator: ". ")
+            if subjects.count > listed.count {
+                text += ". And \(subjects.count - listed.count) more"
+            }
+            text += ". Press u again to install."
+            speech.speak(text)
+        case .periodic:
+            if autoUpdate {
+                speech.announce("Update initiated")
+                performUpdate()
+            } else if lastAnnouncedRemote != remote {
+                // Announce each new remote head exactly once — no nagging
+                lastAnnouncedRemote = remote
+                speech.announce("Marduk update available. Press u to hear what's new.")
+            }
+        }
+    }
+
+    /// (Re)schedules the periodic check; first check ~2 minutes after start
+    /// so a fresh boot stays quiet. checkHours 0 disables entirely.
+    private func scheduleUpdateChecks() {
+        updateCheckTimer?.cancel()
+        updateCheckTimer = nil
+        guard updateCheckHours > 0 else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + .seconds(120),
+                       repeating: .seconds(updateCheckHours * 3600))
+        timer.setEventHandler { [weak self] in
+            self?.checkForUpdates(origin: .periodic)
+        }
+        timer.resume()
+        updateCheckTimer = timer
+    }
+
     /// "?" or a typing pause in COMMAND mode: speak what can come next.
     /// The idle path stays silent when there's nothing to offer.
     private func speakCommandOptions(explicit: Bool) {
@@ -502,13 +612,36 @@ final class DaemonServer {
             ConfigLoader.save(config)
             speech.announce("Palette \(value).")
 
+        case "autoupdate":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            autoUpdate = on
+            var up = config.update ?? .init()
+            up.auto = on
+            config.update = up
+            ConfigLoader.save(config)
+            speech.announce("Auto update \(value).")
+
+        case "checkhours":
+            guard let hours = number() else {
+                return fail("Check hours must be 0 to 168. Zero disables checks.")
+            }
+            updateCheckHours = hours
+            scheduleUpdateChecks()
+            var up = config.update ?? .init()
+            up.checkHours = hours
+            config.update = up
+            ConfigLoader.save(config)
+            speech.announce(hours == 0 ? "Update checks off."
+                                       : "Update check every \(hours) hours.")
+
         default:
             let matches = ColonCommand.settings.map(\.key).filter { $0.hasPrefix(key) }
             if matches.count > 1 {
                 fail("\(key) is ambiguous: \(matches.joined(separator: ", ")).")
             } else {
                 fail("Unknown setting \(key). Settings are rate, level, hashes, "
-                    + "rescue, burst, escape hold, echo, command echo, palette.")
+                    + "rescue, burst, escape hold, echo, command echo, palette, "
+                    + "auto update, check hours.")
             }
         }
     }
@@ -525,6 +658,8 @@ final class DaemonServer {
             "echo": (keyboardMonitor?.typingEchoEnabled ?? false) ? "on" : "off",
             "commandecho": (keyboardMonitor?.commandEchoEnabled ?? true) ? "on" : "off",
             "palette": paletteEnabled ? "on" : "off",
+            "autoupdate": autoUpdate ? "on" : "off",
+            "checkhours": updateCheckHours == 0 ? "off" : "\(updateCheckHours) h",
         ]
     }
 

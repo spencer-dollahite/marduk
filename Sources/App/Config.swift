@@ -9,6 +9,7 @@ struct MardukConfig: Codable {
     // failure would silently reset the whole file to defaults
     var keyboard: KeyboardConfig? = KeyboardConfig()
     var verbalizer: VerbalizerConfig? = VerbalizerConfig()
+    var update: UpdateConfig? = UpdateConfig()
 
     // Every field below is Optional: synthesized Codable treats non-Optional
     // keys as REQUIRED (property defaults are ignored on decode), so a
@@ -22,6 +23,11 @@ struct MardukConfig: Codable {
         var typingEcho: Bool? = false    // speak characters typed in INSERT
         var commandEcho: Bool? = true    // speak characters typed after ":"
         var commandPalette: Bool? = true // dmenu-style panel while typing a ":" command
+    }
+
+    struct UpdateConfig: Codable {
+        var checkHours: Int? = 24   // periodic update-check interval; 0 disables
+        var auto: Bool? = false     // install automatically when an update is found
     }
 
     struct VerbalizerConfig: Codable {

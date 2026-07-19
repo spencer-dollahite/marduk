@@ -24,9 +24,9 @@
 - **Pause and resume** — Space pauses an active read at a word boundary and resumes it; the moment nothing is being read, Space is just Space.
 - **A speech preprocessor built for real content** — strips the invisible Unicode that makes TTS silently bail; speaks code symbols by name with configurable verbosity (`->` "arrow", `!=` "not equals"); collapses symbol runs ("5 dash" instead of dash-dash-dash-dash-dash); abbreviates hex digests ("md5 ending in 2 7 e" instead of 32 characters of hex).
 - **Two voices** — one for reading content, one for status announcements, so you always know which is which.
-- **A vim-style command line with a visual palette** — press `:` in NORMAL mode and a dmenu-style panel appears (it never steals focus) listing everything you can type, filtering as you go: `:help`, `:commands`, `:tutorial`, `:config rate 230`. Tab completes, arrows browse (spoken), `?` — or just pausing — speaks your options, and vim-style unique prefixes work (`:conf ra 230`). Settings changed via `:config` apply instantly and persist.
+- **A vim-style command line with a visual palette** — press `:` in NORMAL mode and a dmenu-style panel appears (taking keyboard focus Spotlight-style, and handing it straight back on dismiss) listing everything you can type, filtering as you go: `:help`, `:commands`, `:tutorial`, `:config rate 230`. Tab completes, arrows browse (spoken), `?` — or just pausing — speaks your options, and vim-style unique prefixes work (`:conf ra 230`). Settings changed via `:config` apply instantly and persist.
 - **A talking interactive tutorial** — `:tutorial` walks you through the modes vimtutor-style: it asks you to actually press the keys and confirms out loud when you get it. First run also greets you with a short spoken orientation.
-- **Runs as a proper service** — a launchd agent starts Marduk at login, restarts it if it crashes, and logs to `~/Library/Logs/marduk.log`. Self-updating via a hotkey or `marduk update` (pull, build, codesign, restart).
+- **Runs as a proper service** — a launchd agent starts Marduk at login, restarts it if it crashes, and logs to `~/Library/Logs/marduk.log`. Updates are spoken before they're installed: `u` fetches and reads the release notes aloud, `uu` installs (pull, build, codesign, restart), and a daily background check announces when something new is available (`:config autoupdate on` to install automatically, `:config checkhours 0` to disable checks).
 - **Signed builds** — binaries are codesigned with your (free) Apple Development certificate so macOS Accessibility permission survives rebuilds.
 - **No dependencies** — pure Swift and native Apple frameworks. No Electron, no Python, no network calls.
 
@@ -78,7 +78,7 @@ Marduk is assistive technology: it needs deep hooks, and macOS makes you grant e
 
 **Space (NORMAL/VISUAL):** pauses/resumes an active read — but only while something is actually being read; otherwise it's a normal Space, and in INSERT mode it is *always* a normal space. `Escape` cancels a paused read, freeing Space immediately.
 
-**NORMAL mode** (default): `i` → INSERT · `v` / `V` → VISUAL / VISUAL LINE · `r` reads the current line · `t` speaks the time (`tt` = time + date) · `s` toggles macOS speak-under-pointer · `u` self-update · `Escape` stops speech. Letters you type by mistake trigger the typing rescue (see above); numbers, arrows, and Cmd/Ctrl shortcuts always pass through.
+**NORMAL mode** (default): `i` → INSERT · `v` / `V` → VISUAL / VISUAL LINE · `r` selects the paragraph under the cursor (like a triple-click) and reads it · `t` speaks the time (`tt` = time + date) · `s` toggles macOS speak-under-pointer · `u` speaks available updates, `uu` (or `u` again within a minute) installs them · `Escape` stops speech. Letters you type by mistake trigger the typing rescue (see above); numbers, arrows, and Cmd/Ctrl shortcuts always pass through.
 
 **INSERT mode:** everything passes to the app. *Tap* Escape and the app gets it (vim keeps its Escape); *hold* Escape (~400 ms, configurable) to return to NORMAL.
 
@@ -94,6 +94,7 @@ Marduk is assistive technology: it needs deep hooks, and macOS makes you grant e
 - `ducking` — duck level, ramp, per-app targets, media-key pause on/off
 - `keyboard` — escape hold threshold, typing-rescue window, rescue on/off
 - `verbalizer` — symbol verbosity (`none`/`some`/`most`/`all`), per-symbol overrides (`{"*": "asterisk", "%": ""}`), hash abbreviation on/off
+- `update` — periodic check interval in hours (0 = off), auto-install on/off
 - `display` — per-app color inversion list
 
 Config is read at daemon start. Most settings can be changed live from inside Marduk with `:config` (which also saves them); if you hand-edit the file instead, restart (or `marduk update`) to apply.

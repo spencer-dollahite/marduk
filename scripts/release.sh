@@ -71,7 +71,10 @@ xcrun stapler staple "$APP"
 spctl -a -vv --type execute "$APP"
 
 echo "==> Building the disk image (drag-to-Applications)"
-DMG="Marduk-$VERSION.dmg"
+# Constant asset name: the README's one-click link
+# releases/latest/download/Marduk.dmg depends on it. Version lives in
+# the tag, the release title, and the volume name.
+DMG="Marduk.dmg"
 STAGE=$(mktemp -d -t marduk-dmg)
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
@@ -90,7 +93,7 @@ NOTES=$(git log --format='- %s' "$RANGE" | head -40)
 gh release create "v$VERSION" "$DMG" --title "Marduk $VERSION" --notes "$NOTES
 
 ---
-**Install:** download \`Marduk-$VERSION.dmg\`, open it, drag **Marduk** into **Applications**, then open Marduk from Applications. It installs itself and talks you through the rest — no Terminal, no Xcode."
+**Install:** download \`Marduk.dmg\`, open it, drag **Marduk** into **Applications**, then open Marduk from Applications. It installs itself and talks you through the rest — no Terminal, no Xcode."
 
 rm -f "$DMG" "$ENT"
 echo "==> Done: https://github.com/spencer-dollahite/marduk/releases/tag/v$VERSION"

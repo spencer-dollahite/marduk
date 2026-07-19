@@ -8,6 +8,9 @@
 
 <p align="center"><a href="https://github.com/spencer-dollahite/marduk/actions/workflows/ci.yml"><img src="https://github.com/spencer-dollahite/marduk/actions/workflows/ci.yml/badge.svg" alt="CI status"></a></p>
 
+<h3 align="center"><a href="https://github.com/spencer-dollahite/marduk/releases/latest/download/Marduk.dmg">⬇&nbsp;&nbsp;Download Marduk</a></h3>
+<p align="center">Latest release, signed &amp; notarized — open the .dmg, drag Marduk into Applications, follow the voice.</p>
+
 ---
 
 > [!WARNING]
@@ -23,7 +26,7 @@
 
 All you need is an **Apple Silicon Mac running macOS 26 (Tahoe)**. Optional: [Karabiner-Elements](https://karabiner-elements.pqrs.org/) if you want mouse-button reading triggers (a sample profile ships in `ke/`).
 
-1. Download the latest `.dmg` from the [Releases page](https://github.com/spencer-dollahite/marduk/releases) and open it.
+1. **[Download Marduk.dmg](https://github.com/spencer-dollahite/marduk/releases/latest/download/Marduk.dmg)** (that link is always the latest release) and open it.
 2. Drag **Marduk** into **Applications**.
 3. Open Marduk. It installs itself, starts talking, and opens the right Settings pane for the one permission it needs — follow the voice.
 

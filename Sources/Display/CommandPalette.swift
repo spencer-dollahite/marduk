@@ -76,7 +76,7 @@ final class CommandPalette {
             isShown = false
             panel?.orderOut(nil)
             // Hand keyboard focus straight back to where the user was
-            previousApp?.activate()
+            _ = previousApp?.activate()
             previousApp = nil
         }
     }

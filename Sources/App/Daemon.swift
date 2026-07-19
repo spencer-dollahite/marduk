@@ -482,10 +482,11 @@ final class DaemonServer {
             }
             let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
             let tail = lines.suffix(100).joined(separator: "\n")
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(tail, forType: .string)
+            _ = NSPasteboard.general.clearContents()
+            _ = NSPasteboard.general.setString(tail, forType: .string)
             speech.announce("Copied the last \(min(lines.count, 100)) log lines. "
                 + "They contain text Marduk has spoken — review before pasting.")
+        case .feedback:
             speech.announce("Opening GitHub issues. If you paste log lines, "
                 + "remember they contain text Marduk has spoken.")
             openURL("https://github.com/spencer-dollahite/marduk/issues/new/choose")

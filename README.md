@@ -34,25 +34,22 @@
 
 ## Requirements
 
-- macOS 26 (Tahoe), Apple Silicon
-- Xcode (for the Swift toolchain **and** a free Apple Development signing certificate — without one, every rebuild invalidates the Accessibility grant)
-- Optional: [Karabiner-Elements](https://karabiner-elements.pqrs.org/) if you want mouse-button reading triggers (a sample profile ships in `ke/`)
+- A Mac with **Apple Silicon**. Marduk is developed and tested on **macOS 26 (Tahoe)**; it builds against macOS 14, but nothing older than 26 has been tested.
+- That's it for the easy install. Building **from source** additionally needs Xcode with a free Apple ID signed in (Marduk signs its builds with the free certificate so macOS permissions survive updates).
+- Optional: [Karabiner-Elements](https://karabiner-elements.pqrs.org/) for mouse-button reading triggers (sample profile in `ke/`).
 
 ## Install
 
-### Easy install (no Xcode, no Terminal)
+1. Download the latest `.dmg` from the [Releases page](https://github.com/spencer-dollahite/marduk/releases) and open it.
+2. Drag **Marduk** into **Applications**.
+3. Open Marduk. It installs itself, starts talking, and opens the right Settings pane for the one permission it needs — follow the voice.
 
-1. Download the latest `Marduk-x.y.z.dmg` from the [Releases page](https://github.com/spencer-dollahite/marduk/releases) and open it.
-2. Drag **Marduk** into **Applications** (the window shows you where).
-3. Open Marduk from Applications. It installs itself, starts talking, and opens the right Settings pane for the one permission it needs — just follow the voice.
+Releases are signed and notarized — no Xcode, no Terminal, no warnings from macOS. Updates for release installs come from the same Releases page (press `u` and Marduk will remind you); in-app updating for release installs is planned.
 
-Releases are signed and notarized, so macOS opens them without complaint.
+<details>
+<summary><strong>Install from source</strong> (developers — enables <code>u</code>-key self-updates)</summary>
 
-Release installs get updates from the Releases page (Marduk will tell you so if you press `u`); in-app updating for release installs is planned.
-
-### Install from source (for developers, and for `u`-key self-updates)
-
-First, sign in to Xcode once (Settings → Accounts) so a free "Apple Development" certificate exists in your keychain — Marduk signs its builds with it automatically, which is what keeps macOS permissions stable across updates. Then:
+Sign in to Xcode once (Settings → Accounts) so a free signing certificate exists, then:
 
 ```bash
 git clone https://github.com/spencer-dollahite/marduk.git
@@ -62,14 +59,16 @@ swift build
                                 # agent (autostart at login, crash restart)
 ```
 
-Add `.build/debug` to your PATH or symlink the binary somewhere convenient; the commands below assume `marduk` resolves.
+Grant Accessibility to the assembled `Marduk.app` at the repo root when the voice asks. Add `.build/debug` to your PATH or symlink the binary so `marduk` resolves.
 
-### Permissions (the important part)
+</details>
 
-Marduk is assistive technology: it needs deep hooks, and macOS makes you grant each one.
+### Permissions
 
-1. **Accessibility** — System Settings → Privacy & Security → Accessibility → **+** → pick **`Marduk.app`** at the top of your cloned repo (a normal Finder pick — install assembled it for you). The grant is anchored to the bundle identity, so rebuilds don't break it. If the grant is ever missing or broken, Marduk **tells you out loud** and re-checks every 10 seconds — no restart needed after you fix it; if it ever seems stuck, remove the entry and re-add it (toggling is not enough).
-2. **Automation** — the first time speech ducks your media, macOS will ask permission for Marduk to control System Events / Music / Spotify. Allow them.
+Marduk is assistive technology — macOS makes you grant its two deep hooks, and Marduk walks you through both **out loud**:
+
+- **Accessibility** — pick `Marduk.app` in the Settings pane Marduk opens for you. If the grant is ever missing, Marduk says so and heals within ~10 seconds of a fix (if it seems stuck: remove the entry and re-add it — toggling is not enough).
+- **Automation** — the first time speech ducks your media, allow the prompts to control System Events / Music / Spotify.
 
 ## Usage
 

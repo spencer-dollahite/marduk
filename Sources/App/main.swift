@@ -5,7 +5,13 @@ import AVFoundation
 
 func printUsage() {
     fputs("""
-    Marduk - Assistive Technology Platform for macOS
+
+        ███╗   ███╗
+        ████╗ ████║
+        ██╔████╔██║
+        ██║╚██╔╝██║   Marduk — Assistive Technology Platform for macOS
+        ██║ ╚═╝ ██║
+        ╚═╝     ╚═╝
 
     Usage:
       marduk start [--foreground] [--debug]

@@ -27,8 +27,11 @@ enum HelpText {
         INSERT mode: hold Escape half a second to return to NORMAL. \
         Anywhere: Option Escape speaks the selection, or stops speech. \
         Control Option M turns Marduk on or off. \
-        Colon commands: help. commands. tutorial. tip. config. \
-        Tip speaks one random feature tip. \
+        Colon commands: help. commands. tutorial. tip, one random feature \
+        tip. config, change a setting. quit. restart. update, install \
+        updates now. uninstall, remove the launch agent. log, open the log \
+        file. feedback, open GitHub issues. Commands complete themselves: \
+        type until yours is the only match, then just stop. \
         Config takes a setting and a value, like colon config rate 200. \
         Settings: rate, 50 to 360 words per minute. level, none, some, most, \
         or all. hashes, on or off. rescue, on or off. burst, in milliseconds. \

@@ -46,7 +46,9 @@ final class KeyboardMonitor {
     // COMMAND mode (":"). Buffer is main-thread-only like all tap state.
     // Callbacks are dispatched to main; the palette/daemon react there.
     var onCommandSubmit: ((String) -> Void)?
-    var onCommandChange: ((String) -> Void)?
+    // (buffer, canAutoAccept) — auto-accept must only fire on typed chars,
+    // never on deletions, or removing an auto-added space would re-add it.
+    var onCommandChange: ((String, Bool) -> Void)?
     var onCommandTab: (() -> Void)?
     var onCommandSelect: ((Int) -> Void)?
     var onCommandHelp: (() -> Void)?    // "?" — speak options, even when none
@@ -407,7 +409,7 @@ final class KeyboardMonitor {
                     let spoken = removed == " " ? "space" : String(removed)
                     DispatchQueue.main.async { [self] in
                         if commandEchoEnabled { onAnnounce?("\(spoken) deleted") }
-                        onCommandChange?(buffer)
+                        onCommandChange?(buffer, false)
                     }
                 } else {
                     commandIdleTimer?.cancel()
@@ -442,7 +444,7 @@ final class KeyboardMonitor {
                     let spoken = ch == " " ? "space" : String(ch)
                     DispatchQueue.main.async { [self] in
                         if commandEchoEnabled { onAnnounce?(spoken) }
-                        onCommandChange?(buffer)
+                        onCommandChange?(buffer, true)
                     }
                     return nil
                 }
@@ -718,7 +720,7 @@ final class KeyboardMonitor {
             fputs("[keyboard] → COMMAND\n", stderr)
             DispatchQueue.main.async { [self] in
                 if commandEchoEnabled { onAnnounce?("command") }
-                onCommandChange?("")
+                onCommandChange?("", false)
             }
             return nil
 
@@ -758,7 +760,17 @@ final class KeyboardMonitor {
         guard mode == .command else { return }
         commandBuffer = text
         scheduleCommandIdle()
-        onCommandChange?(text)
+        onCommandChange?(text, true)
+    }
+
+    /// Ends COMMAND mode from the daemon side — the auto-accept path, where
+    /// an unambiguous buffer executes without Enter. Main-thread only; the
+    /// mode didSet notifies the palette via onModeChange.
+    func endCommandMode() {
+        guard mode == .command else { return }
+        commandBuffer = ""
+        commandIdleTimer?.cancel()
+        mode = .normal
     }
 
     /// Speak-the-options-on-pause: fires once, ~1.5s after the last

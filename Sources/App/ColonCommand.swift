@@ -7,9 +7,18 @@ enum ColonCommand: Equatable {
     case tutorial
     case tip
     case config(key: String, value: String)
+    case quit
+    case restart
+    case update
+    case uninstall
+    case log
+    case feedback
     case unknown(String)
 
-    static let commandNames = ["help", "commands", "tutorial", "tip", "config"]
+    // No name may be a prefix of another — auto-accept relies on it
+    static let commandNames = ["help", "commands", "tutorial", "tip", "config",
+                               "quit", "restart", "update", "uninstall", "log",
+                               "feedback"]
 
     static func parse(_ raw: String) -> ColonCommand {
         let tokens = raw.lowercased().split(separator: " ").map(String.init)
@@ -33,6 +42,18 @@ enum ColonCommand: Equatable {
             return .tutorial
         case "tip":
             return .tip
+        case "quit":
+            return .quit
+        case "restart":
+            return .restart
+        case "update":
+            return .update
+        case "uninstall":
+            return .uninstall
+        case "log":
+            return .log
+        case "feedback":
+            return .feedback
         case "config":
             guard tokens.count == 3 else { return .unknown(raw) }
             // Expand key and (for enum kinds) value the same way, so
@@ -62,6 +83,55 @@ enum ColonCommand: Equatable {
         if names.contains(prefix) { return prefix }
         let matches = names.filter { $0.hasPrefix(prefix) }
         return matches.count == 1 ? matches.first : nil
+    }
+
+    // MARK: - Auto-accept (dmenu semantics)
+
+    /// What to do the moment a keystroke makes the buffer unambiguous:
+    /// argless commands and final enum values execute immediately; "config"
+    /// and its keys expand and advance to the next stage. Number values
+    /// return .none — only Enter can end those. Safe because no grammar
+    /// word is a prefix of another.
+    enum AutoResolution: Equatable {
+        case none
+        case expand(String)    // replace the buffer, keep typing
+        case execute(String)   // run it now, leave COMMAND mode
+    }
+
+    static func autoResolve(_ buffer: String) -> AutoResolution {
+        let lowered = buffer.lowercased()
+        // A trailing space means "next token not started" — nothing to resolve
+        guard !lowered.isEmpty, !lowered.hasSuffix(" ") else { return .none }
+        let tokens = lowered.split(separator: " ").map(String.init)
+
+        switch tokens.count {
+        case 1:
+            guard let name = expand(tokens[0], in: commandNames) else { return .none }
+            return name == "config" ? .expand("config ") : .execute(name)
+
+        case 2 where tokens[0] == "config" || tokens[0] == "set":
+            guard let key = expand(tokens[1], in: settings.map(\.key)) else { return .none }
+            return .expand("\(tokens[0]) \(key) ")
+
+        case 3 where tokens[0] == "config" || tokens[0] == "set":
+            guard let key = expand(tokens[1], in: settings.map(\.key)) else { return .none }
+            switch kind(for: key) {
+            case .toggle:
+                if let value = expand(tokens[2], in: ["on", "off"]) {
+                    return .execute("\(tokens[0]) \(key) \(value)")
+                }
+            case .choice(let options):
+                if let value = expand(tokens[2], in: options) {
+                    return .execute("\(tokens[0]) \(key) \(value)")
+                }
+            default:
+                break
+            }
+            return .none
+
+        default:
+            return .none
+        }
     }
 
     // MARK: - Settings table (shared by the completer and the daemon's validator)
@@ -101,6 +171,25 @@ enum CommandCompleter {
         let completion: String?
     }
 
+    private static let commandDescriptions: [String: String] = [
+        "help": "speak the basics",
+        "commands": "the full key reference",
+        "tutorial": "interactive guided tour",
+        "tip": "a random feature tip",
+        "config": "change a setting",
+        "quit": "stop Marduk",
+        "restart": "restart the daemon",
+        "update": "install updates now",
+        "uninstall": "remove the launch agent",
+        "log": "open the log file",
+        "feedback": "open GitHub issues",
+    ]
+
+    private static func commandDisplay(_ name: String) -> String {
+        guard let description = commandDescriptions[name] else { return name }
+        return "\(name) — \(description)"
+    }
+
     /// Candidates for the current buffer. `values` maps setting key → spoken
     /// current value, so the palette shows "rate — 200" style rows.
     static func candidates(for buffer: String, values: [String: String]) -> [Candidate] {
@@ -110,12 +199,16 @@ enum CommandCompleter {
 
         // Stage 1: choosing a command
         if tokens.isEmpty {
-            return ColonCommand.commandNames.map { Candidate(display: $0, completion: $0) }
+            return ColonCommand.commandNames.map {
+                Candidate(display: commandDisplay($0),
+                          completion: $0 == "config" ? "config " : $0)
+            }
         }
         if tokens.count == 1 && !trailingSpace {
             let matches = ColonCommand.commandNames.filter { $0.hasPrefix(tokens[0]) }
             return matches.map {
-                Candidate(display: $0, completion: $0 == "config" ? "config " : $0)
+                Candidate(display: commandDisplay($0),
+                          completion: $0 == "config" ? "config " : $0)
             }
         }
 

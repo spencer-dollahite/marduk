@@ -89,6 +89,7 @@ final class DaemonServer {
     private var commandBufferSnapshot = ""
     private var commandCandidates: [CommandCompleter.Candidate] = []
     private var commandSelected = 0
+    private var autoAcceptTimer: DispatchWorkItem?
     private var lastTipIndex = -1
 
     // Update checking: `u` checks + arms; a second u while armed installs.
@@ -229,7 +230,10 @@ final class DaemonServer {
         keyboardMonitor?.onModeChange = { [self] mode in
             DispatchQueue.main.async { [self] in
                 tutorial.handle(.mode(mode))
-                if mode != .command { palette.hide() }
+                if mode != .command {
+                    palette.hide()
+                    autoAcceptTimer?.cancel()
+                }
             }
         }
         keyboardMonitor?.onEnabledChange = { [self] enabled in
@@ -241,12 +245,21 @@ final class DaemonServer {
             }
         }
         keyboardMonitor?.onCommandSubmit = { [self] raw in handleColonCommand(raw) }
-        keyboardMonitor?.onCommandChange = { [self] buffer in handleCommandChange(buffer) }
+        keyboardMonitor?.onCommandChange = { [self] buffer, canAutoAccept in
+            handleCommandChange(buffer, canAutoAccept: canAutoAccept)
+        }
         keyboardMonitor?.onCommandTab = { [self] in handleCommandTab() }
         keyboardMonitor?.onCommandSelect = { [self] delta in handleCommandSelect(delta) }
         keyboardMonitor?.onCommandHelp = { [self] in speakCommandOptions(explicit: true) }
         keyboardMonitor?.onCommandIdle = { [self] in speakCommandOptions(explicit: false) }
         keyboardMonitor?.onUpdateCheck = { [self] in handleUpdateKey() }
+        // Clicking a palette row acts like Tab on that row (mouseDown arrives
+        // on the main thread already)
+        palette.onRowClick = { [self] row in
+            guard commandCandidates.indices.contains(row) else { return }
+            commandSelected = row
+            handleCommandTab()
+        }
         scheduleUpdateChecks()
 
         displayInverter?.start()
@@ -380,6 +393,72 @@ final class DaemonServer {
             }
             lastTipIndex = index
             speech.speak("Tip: " + HelpText.tips[index])
+        case .quit:
+            // Clean exit 0 — under launchd (SuccessfulExit=false) this stays
+            // stopped until next login or `marduk start`.
+            speech.announce("Marduk stopping.") { [self] in
+                DispatchQueue.main.async { [self] in running = false }
+            }
+        case .restart:
+            speech.announce("Restarting.") { [self] in
+                DispatchQueue.main.async { [self] in
+                    if LaunchAgent.isInstalled {
+                        pendingExitCode = 75  // launchd relaunches us
+                    } else {
+                        let binary = URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
+                            .standardized
+                        let daemon = Process()
+                        daemon.executableURL = binary
+                        daemon.arguments = ["start"]
+                        try? daemon.run()
+                    }
+                    running = false
+                }
+            }
+        case .update:
+            speech.announce("Update initiated")
+            performUpdate()
+        case .uninstall:
+            guard LaunchAgent.isInstalled else {
+                Earcon.error()
+                speech.announce("The launch agent is not installed.")
+                return
+            }
+            speech.announce("Removing the launch agent. Marduk will stop "
+                + "and no longer start at login.") { [self] in
+                DispatchQueue.main.async { [self] in
+                    try? FileManager.default.removeItem(atPath: LaunchAgent.plistPath)
+                    // Fire-and-forget: bootout SIGTERMs us — waiting on it
+                    // here would deadlock (launchd waits for OUR exit).
+                    let bootout = Process()
+                    bootout.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                    bootout.arguments = ["bootout", LaunchAgent.serviceTarget]
+                    try? bootout.run()
+                    // Safety net if the bootout never lands
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in
+                        running = false
+                    }
+                }
+            }
+        case .log:
+            if FileManager.default.fileExists(atPath: LaunchAgent.logPath) {
+                speech.announce("Opening the log.")
+                let opener = Process()
+                opener.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                opener.arguments = [LaunchAgent.logPath]
+                try? opener.run()
+            } else {
+                Earcon.error()
+                speech.announce("No log file yet. The log exists when running "
+                    + "under the launch agent.")
+            }
+        case .feedback:
+            speech.announce("Opening GitHub issues. If you paste log lines, "
+                + "remember they contain text Marduk has spoken.")
+            let opener = Process()
+            opener.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            opener.arguments = ["https://github.com/spencer-dollahite/marduk/issues/new/choose"]
+            try? opener.run()
         case .config(let key, let value):
             applyConfig(key: key, value: value)
         case .unknown(let name):
@@ -663,7 +742,39 @@ final class DaemonServer {
         ]
     }
 
-    private func handleCommandChange(_ buffer: String) {
+    private func handleCommandChange(_ buffer: String, canAutoAccept: Bool) {
+        // Dmenu semantics: an unambiguous buffer acts without Enter — but
+        // DEBOUNCED (~350ms after the last keystroke), so a fast typist
+        // typing the whole word is never cut off mid-word (instant accept
+        // on "h" would dump the "elp" of a fully-typed "help" into the
+        // app). Deletions never auto-accept — removing an auto-added space
+        // must not re-add it. Expansions re-enter here via
+        // replaceCommandBuffer with a trailing space, which autoResolve
+        // ignores, so there are no loops.
+        autoAcceptTimer?.cancel()
+        if canAutoAccept, case let resolution = ColonCommand.autoResolve(buffer),
+           resolution != .none {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self,
+                      self.keyboardMonitor?.mode == .command,
+                      self.commandBufferSnapshot == buffer else { return }
+                switch resolution {
+                case .execute(let command):
+                    self.keyboardMonitor?.endCommandMode()  // palette hides via onModeChange
+                    self.handleColonCommand(command)
+                case .expand(let expanded):
+                    // Speak the completed word so audio users hear the jump
+                    if let word = expanded.split(separator: " ").last {
+                        self.speech.announce(String(word))
+                    }
+                    self.keyboardMonitor?.replaceCommandBuffer(expanded)
+                case .none:
+                    break
+                }
+            }
+            autoAcceptTimer = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+        }
         commandBufferSnapshot = buffer
         commandCandidates = CommandCompleter.candidates(for: buffer, values: settingValues())
         commandSelected = 0

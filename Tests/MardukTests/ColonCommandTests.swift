@@ -49,9 +49,21 @@ final class ColonCommandTests: XCTestCase {
     }
 
     func testAmbiguousPrefixIsUnknown() {
-        // "co" matches both commands and config; "t" both tutorial and tip
+        // "co" matches commands/config; "t" tutorial/tip; "u" update/uninstall
         XCTAssertEqual(ColonCommand.parse("co"), .unknown("co"))
         XCTAssertEqual(ColonCommand.parse("t"), .unknown("t"))
+        XCTAssertEqual(ColonCommand.parse("u"), .unknown("u"))
+    }
+
+    func testParsesDaemonCommands() {
+        XCTAssertEqual(ColonCommand.parse("quit"), .quit)
+        XCTAssertEqual(ColonCommand.parse("q"), .quit)
+        XCTAssertEqual(ColonCommand.parse("restart"), .restart)
+        XCTAssertEqual(ColonCommand.parse("up"), .update)
+        XCTAssertEqual(ColonCommand.parse("un"), .uninstall)
+        XCTAssertEqual(ColonCommand.parse("log"), .log)
+        XCTAssertEqual(ColonCommand.parse("f"), .feedback)
+        XCTAssertEqual(ColonCommand.autoResolve("q"), .execute("quit"))
     }
 
     func testPrefixExpandsKeysAndEnumValues() {
@@ -70,6 +82,37 @@ final class ColonCommandTests: XCTestCase {
                        .config(key: "rescue", value: "o"))
     }
 
+    // MARK: - Auto-accept
+
+    func testAutoResolveExecutesArglessCommandsWhenUnique() {
+        XCTAssertEqual(ColonCommand.autoResolve("h"), .execute("help"))
+        XCTAssertEqual(ColonCommand.autoResolve("tu"), .execute("tutorial"))
+        XCTAssertEqual(ColonCommand.autoResolve("help"), .execute("help"))
+    }
+
+    func testAutoResolveExpandsConfigStages() {
+        XCTAssertEqual(ColonCommand.autoResolve("con"), .expand("config "))
+        XCTAssertEqual(ColonCommand.autoResolve("config"), .expand("config "))
+        XCTAssertEqual(ColonCommand.autoResolve("config ra"), .expand("config rate "))
+        XCTAssertEqual(ColonCommand.autoResolve("set ra"), .expand("set rate "))
+    }
+
+    func testAutoResolveExecutesUniqueEnumValues() {
+        XCTAssertEqual(ColonCommand.autoResolve("config rescue on"),
+                       .execute("config rescue on"))
+        XCTAssertEqual(ColonCommand.autoResolve("config level m"),
+                       .execute("config level most"))
+    }
+
+    func testAutoResolveStaysQuietWhenAmbiguousOrOpenEnded() {
+        XCTAssertEqual(ColonCommand.autoResolve("t"), .none)          // tutorial|tip
+        XCTAssertEqual(ColonCommand.autoResolve("config r"), .none)   // rate|rescue
+        XCTAssertEqual(ColonCommand.autoResolve("config rescue o"), .none) // on|off
+        XCTAssertEqual(ColonCommand.autoResolve("config rate 230"), .none) // number: Enter
+        XCTAssertEqual(ColonCommand.autoResolve("config "), .none)    // trailing space
+        XCTAssertEqual(ColonCommand.autoResolve(""), .none)
+    }
+
     func testExpandHelper() {
         XCTAssertEqual(ColonCommand.expand("tu", in: ColonCommand.commandNames), "tutorial")
         XCTAssertEqual(ColonCommand.expand("help", in: ColonCommand.commandNames), "help")
@@ -85,14 +128,28 @@ final class ColonCommandTests: XCTestCase {
         CommandCompleter.candidates(for: buffer, values: values).map(\.display)
     }
 
+    private let commandDisplays = [
+        "help — speak the basics",
+        "commands — the full key reference",
+        "tutorial — interactive guided tour",
+        "tip — a random feature tip",
+        "config — change a setting",
+        "quit — stop Marduk",
+        "restart — restart the daemon",
+        "update — install updates now",
+        "uninstall — remove the launch agent",
+        "log — open the log file",
+        "feedback — open GitHub issues",
+    ]
+
     func testEmptyBufferListsAllCommands() {
-        XCTAssertEqual(completions(""), ["help", "commands", "tutorial", "tip", "config"])
+        XCTAssertEqual(completions(""), commandDisplays)
     }
 
     func testPartialCommandFilters() {
-        XCTAssertEqual(completions("c"), ["commands", "config"])
-        XCTAssertEqual(completions("tu"), ["tutorial"])
-        XCTAssertEqual(completions("t"), ["tutorial", "tip"])
+        XCTAssertEqual(completions("c"), [commandDisplays[1], commandDisplays[4]])
+        XCTAssertEqual(completions("tu"), [commandDisplays[2]])
+        XCTAssertEqual(completions("t"), [commandDisplays[2], commandDisplays[3]])
         XCTAssertEqual(completions("z"), [])
     }
 

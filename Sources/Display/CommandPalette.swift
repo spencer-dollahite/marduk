@@ -119,9 +119,11 @@ final class CommandPalette {
             isShown = false
             sessionAnchor = nil
             panel?.orderOut(nil)
-            // Hand keyboard focus straight back to where the user was
+            // Hand keyboard focus straight back to where the user was,
+            // and drop back out of the Dock
             _ = previousApp?.activate()
             previousApp = nil
+            NSApp.setActivationPolicy(.accessory)
         }
     }
 
@@ -226,6 +228,11 @@ final class CommandPalette {
             // regardless; key status just parks the app's caret and catches
             // any events the tap passes through.
             previousApp = NSWorkspace.shared.frontmostApplication
+            // EXPERIMENT: zoom's focus-following may exclude accessory/
+            // LSUIElement apps — become a REGULAR app only while the
+            // palette is open (the M icon appears in the Dock for that
+            // moment), back to accessory on hide.
+            NSApp.setActivationPolicy(.regular)
             NSApp.activate()
             // Cooperative activation (the only non-deprecated call) can be
             // REFUSED — fullscreen zoom does this. Verify it landed; if not,

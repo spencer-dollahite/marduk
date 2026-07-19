@@ -33,11 +33,18 @@ final class CommandPalette {
     /// Click on a candidate row — daemon treats it like Tab on that row.
     var onRowClick: ((Int) -> Void)?
 
+    enum PositionMode: String { case center, pointer }
+    /// "pointer" opens at the cursor — zoom always keeps the real cursor in
+    /// view, so the palette lands inside a zoomed viewport by definition
+    /// (zoom pans only on hardware pointer deltas; nothing synthetic
+    /// reaches it — user-verified). Set from the main queue.
+    var positionMode: PositionMode = .center
+
     private var panel: NSPanel?
     private var paletteView: PaletteView?
     private var textField: NSTextField?
     private var previousApp: NSRunningApplication?
-    private var previousMouse: NSPoint?
+    private var sessionAnchor: NSPoint?   // pointer mode: fixed per session
     private var isShown = false
 
     private let width: CGFloat = 640
@@ -82,15 +89,11 @@ final class CommandPalette {
         DispatchQueue.main.async { [self] in
             guard isShown else { return }
             isShown = false
+            sessionAnchor = nil
             panel?.orderOut(nil)
-            // Hand keyboard focus straight back to where the user was,
-            // and the pointer (with the zoom viewport in tow) too
+            // Hand keyboard focus straight back to where the user was
             _ = previousApp?.activate()
             previousApp = nil
-            if let mouse = previousMouse {
-                glidePointer(from: NSEvent.mouseLocation, to: mouse)
-                previousMouse = nil
-            }
         }
     }
 
@@ -154,16 +157,30 @@ final class CommandPalette {
         field.attributedStringValue = text
         let height = padding * 2 + contentHeight
 
-        // Fully centered on the screen the pointer is on. (Centering was the
-        // user's call over pointer-following; under fullscreen zoom the
-        // center may sit outside the magnified viewport — zoom out to see it.)
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
             ?? NSScreen.main
         guard let frame = screen?.visibleFrame else { return }
-        panel.setFrame(NSRect(x: frame.midX - width / 2,
-                              y: frame.midY - height / 2,
-                              width: width, height: height), display: true)
+
+        let origin: NSPoint
+        switch positionMode {
+        case .center:
+            // Fully centered on the pointer's screen (the default look)
+            origin = NSPoint(x: frame.midX - width / 2, y: frame.midY - height / 2)
+        case .pointer:
+            // Anchored at the cursor for the session — inside any zoomed
+            // viewport, since zoom keeps the real cursor visible
+            if sessionAnchor == nil {
+                sessionAnchor = NSPoint(
+                    x: max(frame.minX + 8, min(mouse.x - width / 2, frame.maxX - width - 8)),
+                    y: mouse.y - 24)
+            }
+            let anchor = sessionAnchor ?? .zero
+            origin = NSPoint(x: anchor.x,
+                             y: max(frame.minY + 8, anchor.y - height))
+        }
+        panel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: height)),
+                       display: true)
         field.frame = NSRect(x: padding, y: padding,
                              width: width - padding * 2, height: height - padding * 2)
         paletteView?.lineHeight = lineHeight
@@ -191,38 +208,13 @@ final class CommandPalette {
                 }
                 self.panel?.makeKeyAndOrderFront(nil)
             }
-            // Bring the ZOOM VIEWPORT here: zoom's panning is edge-triggered
-            // by continuous pointer MOTION — a teleport doesn't pan it (user-
-            // verified). Gliding the pointer through interpolated mouse-moved
-            // events reads as real travel and drags the viewport along.
-            // Restored on hide. (Handy unzoomed too — lands on the rows.)
-            let start = NSEvent.mouseLocation
-            previousMouse = start
-            glidePointer(from: start,
-                         to: NSPoint(x: panel.frame.midX, y: panel.frame.midY))
+            // NOTE: no pointer warping/gliding — macOS zoom pans only on
+            // hardware pointer deltas (user-verified: warps, synthetic
+            // moves, and interpolated glides all failed to pan it). The
+            // zoom answer is positionMode == .pointer, which opens the
+            // palette where the cursor — and therefore the viewport — is.
         }
         panel.makeKeyAndOrderFront(nil)
-    }
-
-    /// Glides the pointer along interpolated mouse-moved events (~200ms).
-    /// Zoom ignores teleports; it pans on continuous motion, so the glide
-    /// must look like real travel. Cocoa (bottom-left) → CG (top-left).
-    private func glidePointer(from start: NSPoint, to end: NSPoint) {
-        let mainHeight = CGDisplayBounds(CGMainDisplayID()).height
-        let steps = 24
-        for i in 1...steps {
-            let t = CGFloat(i) / CGFloat(steps)
-            let point = CGPoint(x: start.x + (end.x - start.x) * t,
-                                y: mainHeight - (start.y + (end.y - start.y) * t))
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.008) {
-                CGWarpMouseCursorPosition(point)
-                if let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
-                                      mouseCursorPosition: point, mouseButton: .left) {
-                    move.post(tap: .cghidEventTap)
-                }
-            }
-        }
-        CGAssociateMouseAndMouseCursorPosition(1)
     }
 
     private func ensurePanel() -> (NSPanel, NSTextField) {

@@ -165,6 +165,7 @@ enum ColonCommand: Equatable {
         ("echo", .toggle),
         ("commandecho", .toggle),
         ("palette", .toggle),
+        ("position", .choice(["center", "pointer"])),
         ("autoupdate", .toggle),
         ("checkhours", .number(min: 0, max: 168, unit: "hours")),
     ]

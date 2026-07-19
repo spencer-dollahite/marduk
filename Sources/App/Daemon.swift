@@ -205,6 +205,8 @@ final class DaemonServer {
         keyboardMonitor?.typingRescueEnabled = typingRescueEnabled
         keyboardMonitor?.typingEchoEnabled = config.keyboard?.typingEcho ?? false
         keyboardMonitor?.commandEchoEnabled = config.keyboard?.commandEcho ?? true
+        palette.positionMode = CommandPalette.PositionMode(
+            rawValue: config.keyboard?.palettePosition ?? "center") ?? .center
         // Tutorial events ride the existing callbacks: reads complete via the
         // per-utterance completion, announcements and pause toggles are
         // interposed here. The tutorial's own narration goes straight to
@@ -745,6 +747,17 @@ final class DaemonServer {
             ConfigLoader.save(config)
             speech.announce("Palette \(value).")
 
+        case "position":
+            guard let mode = CommandPalette.PositionMode(rawValue: value) else {
+                return fail("Position must be center or pointer.")
+            }
+            palette.positionMode = mode
+            var kb = config.keyboard ?? .init()
+            kb.palettePosition = value
+            config.keyboard = kb
+            ConfigLoader.save(config)
+            speech.announce("Palette position \(value).")
+
         case "autoupdate":
             guard let on = toggle() else { return fail("Say on or off.") }
             autoUpdate = on
@@ -791,6 +804,7 @@ final class DaemonServer {
             "echo": (keyboardMonitor?.typingEchoEnabled ?? false) ? "on" : "off",
             "commandecho": (keyboardMonitor?.commandEchoEnabled ?? true) ? "on" : "off",
             "palette": paletteEnabled ? "on" : "off",
+            "position": palette.positionMode.rawValue,
             "autoupdate": autoUpdate ? "on" : "off",
             "checkhours": updateCheckHours == 0 ? "off" : "\(updateCheckHours) h",
         ]

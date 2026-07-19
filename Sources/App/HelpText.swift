@@ -42,7 +42,8 @@ enum HelpText {
         escape hold, one word, in milliseconds. echo, on or off, speaks keys \
         as you type. command echo, one word, on or off. palette, on or off. \
         auto update, one word, on or off. check hours, one word, hours \
-        between update checks, zero for never.
+        between update checks, zero for never. position, center or pointer, \
+        where the panel opens. Pointer keeps it inside a zoomed view.
         """
 
     /// ":tip" — one is picked at random (never the same twice in a row).

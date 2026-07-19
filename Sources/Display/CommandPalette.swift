@@ -14,18 +14,18 @@ final class CommandPalette {
     }
 
     /// Content view that maps clicks to candidate rows (bottom-up coords →
-    /// top-down row index; row 0 sits one line below the prompt).
+    /// top-down row index; rows start below the logo + prompt header).
     private final class PaletteView: NSView {
         var lineHeight: CGFloat = 26
         var padding: CGFloat = 14
-        var headerLines = 1   // logo + prompt lines above the candidate rows
+        var headerHeight: CGFloat = 26   // logo block + prompt line, in points
         var rowCount = 0
         var onRowClick: ((Int) -> Void)?
 
         override func mouseDown(with event: NSEvent) {
             let point = convert(event.locationInWindow, from: nil)
             let fromTop = bounds.height - padding - point.y
-            let row = Int(floor(fromTop / lineHeight)) - headerLines
+            let row = Int(floor((fromTop - headerHeight) / lineHeight))
             if row >= 0 && row < rowCount { onRowClick?(row) }
         }
     }
@@ -43,6 +43,11 @@ final class CommandPalette {
     private let width: CGFloat = 640
     private let lineHeight: CGFloat = 26
     private let padding: CGFloat = 14
+    // Wordmark at ~1/3 scale of the rows; fixed line heights keep the
+    // computed geometry (and click mapping) exact.
+    private let logoFontSize: CGFloat = 7
+    private let logoLineHeight: CGFloat = 8.5
+    private let logoGap: CGFloat = 10   // air between the wordmark and the prompt
     // Tall enough for every current list (11 commands / 11 settings) — and
     // overflow is never silent: a "… and N more" row appears, so what you
     // see always matches what the options speech says.
@@ -64,10 +69,12 @@ final class CommandPalette {
             let overflow = candidates.count - visible
             let text = composed(buffer: buffer, candidates: candidates,
                                 selected: selected, overflow: overflow)
-            let headerLines = Self.logoLines.count + 1
-            let lines = headerLines + visible + (overflow > 0 ? 1 : 0)
-            layoutAndShow(text: text, lines: lines,
-                          headerLines: headerLines, rowCount: visible)
+            let logoHeight = CGFloat(Self.logoLines.count) * logoLineHeight
+            let headerHeight = logoHeight + logoGap + lineHeight   // logo + gap + prompt
+            let rowLines = visible + (overflow > 0 ? 1 : 0)
+            let contentHeight = headerHeight + CGFloat(rowLines) * lineHeight
+            layoutAndShow(text: text, contentHeight: contentHeight,
+                          headerHeight: headerHeight, rowCount: visible)
         }
     }
 
@@ -92,19 +99,33 @@ final class CommandPalette {
     private func composed(buffer: String, candidates: [CommandCompleter.Candidate],
                           selected: Int, overflow: Int) -> NSAttributedString {
         let font = NSFont.monospacedSystemFont(ofSize: 16, weight: .regular)
-        let result = NSMutableAttributedString()
+        let logoFont = NSFont.monospacedSystemFont(ofSize: logoFontSize, weight: .regular)
+        // Fixed line heights so the drawn text matches the computed
+        // geometry (and the click-row mapping) exactly
+        let logoStyle = NSMutableParagraphStyle()
+        logoStyle.minimumLineHeight = logoLineHeight
+        logoStyle.maximumLineHeight = logoLineHeight
+        let rowStyle = NSMutableParagraphStyle()
+        rowStyle.minimumLineHeight = lineHeight
+        rowStyle.maximumLineHeight = lineHeight
+        let promptStyle = rowStyle.mutableCopy() as! NSMutableParagraphStyle
+        promptStyle.paragraphSpacingBefore = logoGap
 
+        let result = NSMutableAttributedString()
         for line in Self.logoLines {
             result.append(NSAttributedString(
                 string: line + "\n",
-                attributes: [.font: font, .foregroundColor: NSColor.white]))
+                attributes: [.font: logoFont, .foregroundColor: NSColor.white,
+                             .paragraphStyle: logoStyle]))
         }
         result.append(NSAttributedString(
             string: ": \(buffer)\u{258F}\n",
-            attributes: [.font: font, .foregroundColor: NSColor.white]))
+            attributes: [.font: font, .foregroundColor: NSColor.white,
+                         .paragraphStyle: promptStyle]))
 
         for (index, candidate) in candidates.prefix(maxRows).enumerated() {
-            var attributes: [NSAttributedString.Key: Any] = [.font: font]
+            var attributes: [NSAttributedString.Key: Any] = [.font: font,
+                                                             .paragraphStyle: rowStyle]
             if candidate.completion == nil {
                 // Informational row (range hints) — dimmed, never highlighted
                 attributes[.foregroundColor] = NSColor(white: 0.55, alpha: 1.0)
@@ -121,17 +142,17 @@ final class CommandPalette {
         if overflow > 0 {
             result.append(NSAttributedString(
                 string: "  … and \(overflow) more\n",
-                attributes: [.font: font,
+                attributes: [.font: font, .paragraphStyle: rowStyle,
                              .foregroundColor: NSColor(white: 0.55, alpha: 1.0)]))
         }
         return result
     }
 
-    private func layoutAndShow(text: NSAttributedString, lines: Int,
-                               headerLines: Int, rowCount: Int) {
+    private func layoutAndShow(text: NSAttributedString, contentHeight: CGFloat,
+                               headerHeight: CGFloat, rowCount: Int) {
         let (panel, field) = ensurePanel()
         field.attributedStringValue = text
-        let height = padding * 2 + CGFloat(lines) * lineHeight
+        let height = padding * 2 + contentHeight
 
         // Fully centered on the screen the pointer is on. (Centering was the
         // user's call over pointer-following; under fullscreen zoom the
@@ -147,7 +168,7 @@ final class CommandPalette {
                              width: width - padding * 2, height: height - padding * 2)
         paletteView?.lineHeight = lineHeight
         paletteView?.padding = padding
-        paletteView?.headerLines = headerLines
+        paletteView?.headerHeight = headerHeight
         paletteView?.rowCount = rowCount   // excludes any "… and N more" row
 
         if !isShown {

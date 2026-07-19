@@ -35,7 +35,7 @@
 ## Requirements
 
 - A Mac with **Apple Silicon**. Marduk is developed and tested on **macOS 26 (Tahoe)**; it builds against macOS 14, but nothing older than 26 has been tested.
-- That's it for the easy install. Building **from source** additionally needs Xcode with a free Apple ID signed in (Marduk signs its builds with the free certificate so macOS permissions survive updates).
+- That's it for the easy install. Building **from source** additionally needs the Swift toolchain (Xcode, or just the Command Line Tools). A free Apple ID signed into Xcode is strongly recommended, not required: Marduk signs its builds with the free certificate so macOS permissions survive updates — unsigned builds work, but the Accessibility grant breaks on every rebuild.
 - Optional: [Karabiner-Elements](https://karabiner-elements.pqrs.org/) for mouse-button reading triggers (sample profile in `ke/`).
 
 ## Install

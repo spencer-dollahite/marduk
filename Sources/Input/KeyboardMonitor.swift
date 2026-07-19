@@ -58,6 +58,9 @@ final class KeyboardMonitor {
     var typingEchoEnabled = false    // speak chars typed in INSERT
     var commandEchoEnabled = true    // speak chars typed after ":"
     private var commandBuffer = ""
+    // After an auto-expand ("posi" → "config position "), the user may still
+    // be typing the rest of the word — those chars are absorbed, not appended.
+    private var commandAbsorbTail: [Character] = []
     private var didSpeakColonHint = false
 
     // Speak-under-pointer state. The pause/resume work runs on a SERIAL queue
@@ -392,6 +395,7 @@ final class KeyboardMonitor {
                     return nil
                 }
                 commandBuffer = ""
+                commandAbsorbTail = []
                 commandIdleTimer?.cancel()
                 mode = .normal
                 if cmd.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -404,6 +408,7 @@ final class KeyboardMonitor {
 
             case 53: // Escape — cancel
                 commandBuffer = ""
+                commandAbsorbTail = []
                 commandIdleTimer?.cancel()
                 mode = .normal
                 fputs("[keyboard] command cancelled → NORMAL\n", stderr)
@@ -411,6 +416,7 @@ final class KeyboardMonitor {
                 return nil
 
             case 51: // Delete — edit; on an empty buffer, back out entirely
+                commandAbsorbTail = []
                 if let removed = commandBuffer.popLast() {
                     let buffer = commandBuffer
                     scheduleCommandIdle()
@@ -458,6 +464,16 @@ final class KeyboardMonitor {
                 // keys ride on Option) — never command input. Pass them.
                 if hasOption { return pass }
                 if let ch = Self.commandKeyChars[keycode] {
+                    // Absorb the tail of a word the auto-expand already
+                    // completed; a mismatch ends the absorption.
+                    if let expected = commandAbsorbTail.first, ch == expected {
+                        commandAbsorbTail.removeFirst()
+                        scheduleCommandIdle()
+                        return nil
+                    }
+                    commandAbsorbTail = []
+                    // Collapse double spaces (slow typing after an expansion)
+                    if ch == " ", commandBuffer.hasSuffix(" ") { return nil }
                     commandBuffer.append(ch)
                     let buffer = commandBuffer
                     scheduleCommandIdle()
@@ -744,6 +760,7 @@ final class KeyboardMonitor {
             if isAutorepeat { return nil }
             mode = .command
             commandBuffer = ""
+            commandAbsorbTail = []
             scheduleCommandIdle()
             fputs("[keyboard] → COMMAND\n", stderr)
             DispatchQueue.main.async { [self] in
@@ -785,9 +802,10 @@ final class KeyboardMonitor {
     /// Replaces the COMMAND-mode buffer (Tab autocomplete). Main-thread only,
     /// same as every other piece of tap state; re-fires onCommandChange so
     /// the palette re-renders.
-    func replaceCommandBuffer(_ text: String) {
+    func replaceCommandBuffer(_ text: String, absorbing: String = "") {
         guard mode == .command else { return }
         commandBuffer = text
+        commandAbsorbTail = Array(absorbing)
         scheduleCommandIdle()
         onCommandChange?(text, true)
     }

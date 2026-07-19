@@ -835,13 +835,20 @@ final class DaemonServer {
                     if let word = expanded.split(separator: " ").last {
                         self.speech.announce(String(word))
                     }
-                    self.keyboardMonitor?.replaceCommandBuffer(expanded)
+                    // If the user is still typing the word we just completed
+                    // ("posi" → expand → they keep typing "tion"), those
+                    // chars must be absorbed, not appended as garbage.
+                    let typed = buffer.split(separator: " ").last.map(String.init) ?? ""
+                    let full = expanded.split(separator: " ").last.map(String.init) ?? ""
+                    let absorb = full.hasPrefix(typed) ? String(full.dropFirst(typed.count)) : ""
+                    self.keyboardMonitor?.replaceCommandBuffer(expanded, absorbing: absorb)
                 case .none:
                     break
                 }
             }
             autoAcceptTimer = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+            // 600ms: slow typists must not be cut off mid-word
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
         }
         commandBufferSnapshot = buffer
         commandCandidates = CommandCompleter.candidates(for: buffer, values: settingValues())

@@ -102,6 +102,10 @@ final class CommandPalette {
                 prompt.string = line
                 prompt.setSelectedRange(NSRange(location: (line as NSString).length,
                                                 length: 0))
+                // Belt-and-suspenders for zoom's focus-following: post the
+                // caret-moved notification explicitly — a borderless panel
+                // in an accessory app may not emit it on its own.
+                NSAccessibility.post(element: prompt, notification: .selectedTextChanged)
             }
         }
     }
@@ -242,7 +246,10 @@ final class CommandPalette {
             // track natively.
         }
         panel.makeKeyAndOrderFront(nil)
-        if let prompt = promptView { panel.makeFirstResponder(prompt) }
+        if let prompt = promptView {
+            panel.makeFirstResponder(prompt)
+            NSAccessibility.post(element: prompt, notification: .focusedUIElementChanged)
+        }
     }
 
     private func ensurePanel() -> (NSPanel, NSTextField) {

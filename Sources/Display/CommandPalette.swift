@@ -37,7 +37,6 @@ final class CommandPalette {
     private var textField: NSTextField?
     private var previousApp: NSRunningApplication?
     private var isShown = false
-    private var anchorTopLeft: NSPoint?
 
     private let width: CGFloat = 640
     private let lineHeight: CGFloat = 26
@@ -62,7 +61,6 @@ final class CommandPalette {
         DispatchQueue.main.async { [self] in
             guard isShown else { return }
             isShown = false
-            anchorTopLeft = nil
             panel?.orderOut(nil)
             // Hand keyboard focus straight back to where the user was
             previousApp?.activate()
@@ -110,26 +108,15 @@ final class CommandPalette {
         field.attributedStringValue = text
         let height = padding * 2 + CGFloat(lines) * lineHeight
 
-        if anchorTopLeft == nil {
-            // Open near the mouse pointer: macOS zoom's viewport follows the
-            // pointer (there is no public viewport API), so this keeps the
-            // palette visible while zoomed in. Position is fixed per session
-            // — it doesn't chase the pointer afterwards.
-            let mouse = NSEvent.mouseLocation
-            let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
-                ?? NSScreen.main
-            guard let frame = screen?.visibleFrame else { return }
-            var x = mouse.x - width / 2
-            var top = mouse.y - 24   // just below the pointer
-            x = max(frame.minX + 8, min(x, frame.maxX - width - 8))
-            if top - height < frame.minY + 8 {
-                top = min(mouse.y + 24 + height, frame.maxY - 8)
-            }
-            anchorTopLeft = NSPoint(x: x, y: top)
-        }
-        guard let anchor = anchorTopLeft else { return }
-        // Anchor the TOP edge so the prompt line never jumps as row counts change
-        panel.setFrame(NSRect(x: anchor.x, y: anchor.y - height,
+        // Fully centered on the screen the pointer is on. (Centering was the
+        // user's call over pointer-following; under fullscreen zoom the
+        // center may sit outside the magnified viewport — zoom out to see it.)
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
+            ?? NSScreen.main
+        guard let frame = screen?.visibleFrame else { return }
+        panel.setFrame(NSRect(x: frame.midX - width / 2,
+                              y: frame.midY - height / 2,
                               width: width, height: height), display: true)
         field.frame = NSRect(x: padding, y: padding,
                              width: width - padding * 2, height: height - padding * 2)

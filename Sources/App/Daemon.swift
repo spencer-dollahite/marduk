@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import AVFoundation
 
 enum MardukDaemon {
@@ -79,7 +80,20 @@ final class DaemonServer {
     private let typingBurstThreshold: TimeInterval
     private let typingRescueEnabled: Bool
 
+    // Retained for live mutation (":config") + persistence
+    private var config: MardukConfig
+    private let tutorial = Tutorial()
+    private let palette = CommandPalette()
+    private var paletteEnabled: Bool
+    // Palette state, main-queue-only: last buffer + its completion candidates
+    private var commandBufferSnapshot = ""
+    private var commandCandidates: [CommandCompleter.Candidate] = []
+    private var commandSelected = 0
+    private var lastTipIndex = -1
+
     init(config: MardukConfig) {
+        self.config = config
+        paletteEnabled = config.keyboard?.commandPalette ?? true
         escapeHoldThreshold = TimeInterval(config.keyboard?.escapeHoldMs ?? 400) / 1000.0
         typingBurstThreshold = TimeInterval(config.keyboard?.typingBurstMs ?? 300) / 1000.0
         typingRescueEnabled = config.keyboard?.typingRescue ?? true
@@ -163,22 +177,80 @@ final class DaemonServer {
             }
         }
 
+        // The command palette panel needs NSApplication initialized;
+        // .accessory keeps us out of the Dock and app switcher. The existing
+        // RunLoop below is enough — no NSApp.run() needed.
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+
+        tutorial.announce = { [self] text in speech.announce(text) }
+
         // Start keyboard monitor (Option+Escape → speak selection)
         keyboardMonitor = KeyboardMonitor()
         keyboardMonitor?.escapeHoldThreshold = escapeHoldThreshold
         keyboardMonitor?.typingBurstThreshold = typingBurstThreshold
         keyboardMonitor?.typingRescueEnabled = typingRescueEnabled
+        keyboardMonitor?.typingEchoEnabled = config.keyboard?.typingEcho ?? false
+        keyboardMonitor?.commandEchoEnabled = config.keyboard?.commandEcho ?? true
+        // Tutorial events ride the existing callbacks: reads complete via the
+        // per-utterance completion, announcements and pause toggles are
+        // interposed here. The tutorial's own narration goes straight to
+        // speech.announce (tutorial.announce above), so it never sees itself.
         keyboardMonitor?.start(
-            onSpeak: { [self] text in speech.speak(text) },
+            onSpeak: { [self] text in
+                speech.speak(text) { [self] in tutorial.handle(.readFinished) }
+            },
             onStop: { [self] in speech.stop() },
-            onAnnounce: { [self] text in speech.announce(text) },
+            onAnnounce: { [self] text in
+                tutorial.handle(.announced(text))
+                speech.announce(text)
+            },
             onUpdate: { [self] in performUpdate() },
             isSpeaking: { [self] in speech.isSpeaking },
             isReadActive: { [self] in speech.readActive },
-            onPauseToggle: { [self] in speech.togglePause() }
+            onPauseToggle: { [self] in
+                tutorial.handle(.pauseToggled)
+                speech.togglePause()
+            }
         )
+        // didSet observers fire synchronously inside the tap callback — hop
+        // to main before touching the tutorial or the palette.
+        keyboardMonitor?.onModeChange = { [self] mode in
+            DispatchQueue.main.async { [self] in
+                tutorial.handle(.mode(mode))
+                if mode != .command { palette.hide() }
+            }
+        }
+        keyboardMonitor?.onEnabledChange = { [self] enabled in
+            DispatchQueue.main.async { [self] in
+                if !enabled {
+                    tutorial.abort(silent: true)
+                    palette.hide()
+                }
+            }
+        }
+        keyboardMonitor?.onCommandSubmit = { [self] raw in handleColonCommand(raw) }
+        keyboardMonitor?.onCommandChange = { [self] buffer in handleCommandChange(buffer) }
+        keyboardMonitor?.onCommandTab = { [self] in handleCommandTab() }
+        keyboardMonitor?.onCommandSelect = { [self] delta in handleCommandSelect(delta) }
+        keyboardMonitor?.onCommandHelp = { [self] in speakCommandOptions(explicit: true) }
+        keyboardMonitor?.onCommandIdle = { [self] in speakCommandOptions(explicit: false) }
 
         displayInverter?.start()
+
+        // First-run welcome: marker written immediately so a crash mid-speech
+        // can never replay-loop it. Spoken via the READ path — Space-pausable,
+        // Escape-stoppable. (If tap creation failed, this replaces the queued
+        // permission announcement; the tap retry re-announces on success.)
+        let welcomeMarker = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/marduk/.welcomed")
+        if !FileManager.default.fileExists(atPath: welcomeMarker.path) {
+            DispatchQueue.main.async { [self] in
+                try? Data().write(to: welcomeMarker)
+                fputs("[marduk] first-run welcome\n", stderr)
+                speech.speak(HelpText.welcome)
+            }
+        }
 
         fputs("[marduk] Daemon running (PID \(pid))\n", stderr)
         fputs("[marduk] Socket: \(MardukDaemon.socketPath)\n", stderr)
@@ -271,6 +343,218 @@ final class DaemonServer {
         default:
             return "ERR unknown: \(cmd)\n"
         }
+    }
+
+    // MARK: - ":" Commands (all on main queue)
+
+    private func handleColonCommand(_ raw: String) {
+        fputs("[command] \(raw)\n", stderr)
+        switch ColonCommand.parse(raw) {
+        case .help:
+            speech.speak(HelpText.help)
+        case .commands:
+            speech.speak(HelpText.commands)
+        case .tutorial:
+            if tutorial.isActive {
+                tutorial.abort(silent: false)
+            } else {
+                tutorial.start()
+            }
+        case .tip:
+            var index = Int.random(in: 0..<HelpText.tips.count)
+            if HelpText.tips.count > 1 && index == lastTipIndex {
+                index = (index + 1) % HelpText.tips.count
+            }
+            lastTipIndex = index
+            speech.speak("Tip: " + HelpText.tips[index])
+        case .config(let key, let value):
+            applyConfig(key: key, value: value)
+        case .unknown(let name):
+            Earcon.error()
+            let matches = ColonCommand.commandNames.filter { $0.hasPrefix(name) }
+            if name.hasPrefix("config") || name.hasPrefix("set") {
+                speech.announce("Config needs a setting and a value, like config rate 200.")
+            } else if name.isEmpty {
+                speech.announce("No command.")
+            } else if matches.count > 1 {
+                speech.announce("\(name) is ambiguous: \(matches.joined(separator: ", ")).")
+            } else {
+                speech.announce("Unknown command \(name). Type colon help.")
+            }
+        }
+    }
+
+    /// "?" or a typing pause in COMMAND mode: speak what can come next.
+    /// The idle path stays silent when there's nothing to offer.
+    private func speakCommandOptions(explicit: Bool) {
+        let displays = commandCandidates.map(\.display)
+        if displays.isEmpty {
+            if explicit { speech.announce("No options here. Press Return to run it.") }
+            return
+        }
+        speech.speak("Options: " + displays.joined(separator: ", ") + ".")
+    }
+
+    /// Applies a setting live AND persists it. Failures speak and change
+    /// nothing. Number ranges come from the same table the palette shows.
+    private func applyConfig(key: String, value: String) {
+        func fail(_ message: String) {
+            Earcon.error()
+            speech.announce(message)
+        }
+        func toggle() -> Bool? {
+            value == "on" ? true : (value == "off" ? false : nil)
+        }
+        func number() -> Int? {
+            guard case .number(let min, let max, _)? = ColonCommand.kind(for: key),
+                  let n = Int(value), n >= min, n <= max else { return nil }
+            return n
+        }
+
+        switch key {
+        case "rate":
+            guard let wpm = number() else {
+                return fail("Rate must be 50 to 360 words per minute.")
+            }
+            let rate = Float(wpm) / 360.0
+            speech.rate = rate
+            config.speech.rate = rate
+            ConfigLoader.save(config)
+            // READ voice on purpose: the confirmation demos the new rate
+            speech.speak("Rate set to \(wpm) words per minute.")
+
+        case "level":
+            guard ["none", "some", "most", "all"].contains(value) else {
+                return fail("Level must be none, some, most, or all.")
+            }
+            var v = config.verbalizer ?? .init()
+            v.level = value
+            config.verbalizer = v
+            speech.preprocessor = SpeechPreprocessor.settings(from: config.verbalizer)
+            ConfigLoader.save(config)
+            speech.announce("Verbalizer level \(value).")
+
+        case "hashes":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            var v = config.verbalizer ?? .init()
+            v.hashes = on
+            config.verbalizer = v
+            speech.preprocessor = SpeechPreprocessor.settings(from: config.verbalizer)
+            ConfigLoader.save(config)
+            speech.announce("Hash abbreviation \(value).")
+
+        case "rescue":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            keyboardMonitor?.typingRescueEnabled = on
+            var kb = config.keyboard ?? .init()
+            kb.typingRescue = on
+            config.keyboard = kb
+            ConfigLoader.save(config)
+            speech.announce("Typing rescue \(value).")
+
+        case "burst":
+            guard let ms = number() else {
+                return fail("Burst must be 50 to 2000 milliseconds.")
+            }
+            keyboardMonitor?.typingBurstThreshold = TimeInterval(ms) / 1000.0
+            var kb = config.keyboard ?? .init()
+            kb.typingBurstMs = ms
+            config.keyboard = kb
+            ConfigLoader.save(config)
+            speech.announce("Typing burst \(ms) milliseconds.")
+
+        case "escapehold":
+            guard let ms = number() else {
+                return fail("Escape hold must be 100 to 2000 milliseconds.")
+            }
+            keyboardMonitor?.escapeHoldThreshold = TimeInterval(ms) / 1000.0
+            var kb = config.keyboard ?? .init()
+            kb.escapeHoldMs = ms
+            config.keyboard = kb
+            ConfigLoader.save(config)
+            speech.announce("Escape hold \(ms) milliseconds.")
+
+        case "echo":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            keyboardMonitor?.typingEchoEnabled = on
+            var kb = config.keyboard ?? .init()
+            kb.typingEcho = on
+            config.keyboard = kb
+            ConfigLoader.save(config)
+            speech.announce("Typing echo \(value).")
+
+        case "commandecho":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            keyboardMonitor?.commandEchoEnabled = on
+            var kb = config.keyboard ?? .init()
+            kb.commandEcho = on
+            config.keyboard = kb
+            ConfigLoader.save(config)
+            speech.announce("Command echo \(value).")
+
+        case "palette":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            paletteEnabled = on
+            if !on { palette.hide() }
+            var kb = config.keyboard ?? .init()
+            kb.commandPalette = on
+            config.keyboard = kb
+            ConfigLoader.save(config)
+            speech.announce("Palette \(value).")
+
+        default:
+            let matches = ColonCommand.settings.map(\.key).filter { $0.hasPrefix(key) }
+            if matches.count > 1 {
+                fail("\(key) is ambiguous: \(matches.joined(separator: ", ")).")
+            } else {
+                fail("Unknown setting \(key). Settings are rate, level, hashes, "
+                    + "rescue, burst, escape hold, echo, command echo, palette.")
+            }
+        }
+    }
+
+    /// Current values shown in the palette's key rows ("rate — 200").
+    private func settingValues() -> [String: String] {
+        [
+            "rate": "\(Int(speech.rate * 360)) wpm",
+            "level": config.verbalizer?.level ?? "most",
+            "hashes": (config.verbalizer?.hashes ?? true) ? "on" : "off",
+            "rescue": (keyboardMonitor?.typingRescueEnabled ?? true) ? "on" : "off",
+            "burst": "\(Int((keyboardMonitor?.typingBurstThreshold ?? 0.3) * 1000)) ms",
+            "escapehold": "\(Int((keyboardMonitor?.escapeHoldThreshold ?? 0.4) * 1000)) ms",
+            "echo": (keyboardMonitor?.typingEchoEnabled ?? false) ? "on" : "off",
+            "commandecho": (keyboardMonitor?.commandEchoEnabled ?? true) ? "on" : "off",
+            "palette": paletteEnabled ? "on" : "off",
+        ]
+    }
+
+    private func handleCommandChange(_ buffer: String) {
+        commandBufferSnapshot = buffer
+        commandCandidates = CommandCompleter.candidates(for: buffer, values: settingValues())
+        commandSelected = 0
+        if paletteEnabled {
+            palette.update(buffer: buffer, candidates: commandCandidates,
+                           selected: commandSelected)
+        }
+    }
+
+    private func handleCommandSelect(_ delta: Int) {
+        guard !commandCandidates.isEmpty else { return }
+        commandSelected = (commandSelected + delta + commandCandidates.count)
+            % commandCandidates.count
+        if paletteEnabled {
+            palette.update(buffer: commandBufferSnapshot, candidates: commandCandidates,
+                           selected: commandSelected)
+        }
+        // Arrow browsing is deliberate — speak the selection even with echo off
+        speech.announce(commandCandidates[commandSelected].display)
+    }
+
+    private func handleCommandTab() {
+        guard commandCandidates.indices.contains(commandSelected),
+              let completion = commandCandidates[commandSelected].completion else { return }
+        keyboardMonitor?.replaceCommandBuffer(completion)
+        speech.announce(completion.trimmingCharacters(in: .whitespaces))
     }
 
     // MARK: - Hot Update

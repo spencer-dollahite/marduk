@@ -1,0 +1,131 @@
+import Foundation
+
+/// Interactive vimtutor-style tour. Instructions are spoken; the user
+/// performs real actions and the engine watches for their events — wrong
+/// keys just do what they normally do and never advance a lesson.
+/// Main-thread-only (all events arrive via main-queue dispatch).
+final class Tutorial {
+
+    enum Event: Equatable {
+        case mode(KeyboardMonitor.Mode)
+        case readFinished          // a keyboard-originated read completed
+        case pauseToggled          // Space pause/resume fired
+        case announced(String)     // a monitor-originated announcement
+    }
+
+    private struct Step {
+        let instruction: String
+        let isComplete: (Event) -> Bool
+        let success: String
+    }
+
+    private(set) var isActive = false
+    private var index = 0
+    private var steps: [Step] = []
+
+    /// Injected by DaemonServer → speech.announce. The tutorial narrates in
+    /// the announcement voice so it stays audibly distinct from the content
+    /// reads its lessons trigger — and never observes its own speech.
+    var announce: ((String) -> Void)?
+
+    func start() {
+        guard !isActive else { return }
+        steps = Self.makeSteps()   // fresh step-local state every run
+        index = 0
+        isActive = true
+        fputs("[tutorial] started\n", stderr)
+        announce?(Self.intro + " " + steps[0].instruction)
+    }
+
+    func abort(silent: Bool) {
+        guard isActive else { return }
+        isActive = false
+        steps = []
+        fputs("[tutorial] aborted\n", stderr)
+        if !silent { announce?("Tutorial ended.") }
+    }
+
+    func handle(_ event: Event) {
+        guard isActive, steps.indices.contains(index) else { return }
+        guard steps[index].isComplete(event) else { return }
+        let finished = steps[index]
+        // Advance BEFORE speaking: events arriving during the success
+        // announcement evaluate against the next step, never re-fire this one.
+        index += 1
+        fputs("[tutorial] step \(index) complete\n", stderr)
+        if steps.indices.contains(index) {
+            announce?(finished.success + " " + steps[index].instruction)
+        } else {
+            isActive = false
+            fputs("[tutorial] finished\n", stderr)
+            announce?(finished.success + " " + Self.wrapUp)
+        }
+    }
+
+    // MARK: - Script
+
+    private static let intro = """
+        Welcome to the Marduk tutorial. Six short lessons. The keys you press \
+        act for real, so open a text editor with a few lines of text first. \
+        To leave at any time, type colon tutorial again.
+        """
+
+    private static let wrapUp = """
+        That's the tour. Type colon help for the basics, colon commands for \
+        the full list. Tutorial complete.
+        """
+
+    private static func makeSteps() -> [Step] {
+        var sawVisual = false
+        var pauseCount = 0
+        return [
+            Step(instruction: "Lesson one. Press the letter i. That enters "
+                    + "INSERT mode, where typing goes to the app.",
+                 isComplete: { $0 == .mode(.insert) },
+                 success: "That's it. The falling tones mean typing is live."),
+
+            Step(instruction: "Lesson two. Hold Escape down for about half a "
+                    + "second. A quick tap stays with the app. Only a hold "
+                    + "returns to NORMAL mode.",
+                 isComplete: { $0 == .mode(.normal) },
+                 success: "Good. The rising tones always mean NORMAL mode."),
+
+            Step(instruction: "Lesson three. Click on a line of text, then "
+                    + "press r to hear it read.",
+                 isComplete: { $0 == .readFinished },
+                 success: "That is the read command."),
+
+            Step(instruction: "Lesson four. Press v for visual mode, then j "
+                    + "to extend the selection down, then r to read the "
+                    + "selection.",
+                 isComplete: { event in
+                     if event == .mode(.visual) || event == .mode(.visualLine) {
+                         sawVisual = true
+                     }
+                     return event == .readFinished && sawVisual
+                 },
+                 success: "Nice. Select, then read."),
+
+            Step(instruction: "Lesson five. Press r to start a read. While it "
+                    + "is speaking, tap Space to pause. Tap Space again to "
+                    + "resume, and let it finish.",
+                 isComplete: { event in
+                     if event == .pauseToggled { pauseCount += 1 }
+                     return event == .readFinished && pauseCount >= 2
+                 },
+                 success: "Space pauses and resumes any read."),
+
+            Step(instruction: "Lesson six. Press t to hear the time.",
+                 isComplete: { event in
+                     // Heuristic: spoken time starts with a digit or "oh"
+                     // ("14 32", "oh 9 oh 5"). Length guard keeps single-digit
+                     // command-echo announcements from matching.
+                     guard case .announced(let text) = event, text.count >= 4
+                     else { return false }
+                     return text.first?.isNumber == true || text.hasPrefix("oh ")
+                 },
+                 success: "That is the time. Press t twice quickly for time "
+                    + "and date."),
+        ]
+    }
+}

@@ -16,7 +16,7 @@ final class KeyboardMonitor {
     typealias AnnounceHandler = (String) -> Void
     typealias UpdateHandler = () -> Void
 
-    enum Mode { case normal, insert, visual, visualLine }
+    enum Mode { case normal, insert, visual, visualLine, command }
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -31,8 +31,31 @@ final class KeyboardMonitor {
     private var onPauseToggle: (() -> Void)?
     private var stopped = false
 
-    private(set) var isEnabled = true
-    private(set) var mode: Mode = .normal
+    private(set) var isEnabled = true {
+        didSet { if isEnabled != oldValue { onEnabledChange?(isEnabled) } }
+    }
+    private(set) var mode: Mode = .normal {
+        didSet { if mode != oldValue { onModeChange?(mode) } }
+    }
+
+    // Mode/enabled observers (fired synchronously from the tap callback —
+    // handlers must dispatch their own work and never block)
+    var onModeChange: ((Mode) -> Void)?
+    var onEnabledChange: ((Bool) -> Void)?
+
+    // COMMAND mode (":"). Buffer is main-thread-only like all tap state.
+    // Callbacks are dispatched to main; the palette/daemon react there.
+    var onCommandSubmit: ((String) -> Void)?
+    var onCommandChange: ((String) -> Void)?
+    var onCommandTab: (() -> Void)?
+    var onCommandSelect: ((Int) -> Void)?
+    var onCommandHelp: (() -> Void)?    // "?" — speak options, even when none
+    var onCommandIdle: (() -> Void)?    // typing pause — speak options if any
+    private var commandIdleTimer: DispatchWorkItem?
+    var typingEchoEnabled = false    // speak chars typed in INSERT
+    var commandEchoEnabled = true    // speak chars typed after ":"
+    private var commandBuffer = ""
+    private var didSpeakColonHint = false
 
     // Speak-under-pointer state. The pause/resume work runs on a SERIAL queue
     // so rapid toggles can't interleave (the global concurrent queue let two
@@ -192,6 +215,8 @@ final class KeyboardMonitor {
         tapWatchdog = nil
         tapRetry?.cancel()
         tapRetry = nil
+        commandBuffer = ""
+        commandIdleTimer?.cancel()
         discardBurstAndReplay()
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
@@ -275,6 +300,9 @@ final class KeyboardMonitor {
             escapeHoldFired = false
             // Same for a half-decided typing burst: discard, don't flush
             discardBurstAndReplay()
+            // And a half-typed ":" command
+            commandBuffer = ""
+            commandIdleTimer?.cancel()
             let state = isEnabled ? "ON (NORMAL)" : "OFF"
             fputs("[keyboard] Marduk \(state)\n", stderr)
             let word = isEnabled ? "Systems engaged" : "Systems disengaged"
@@ -332,11 +360,94 @@ final class KeyboardMonitor {
         // a paused read — a paused synthesizer still counts as speaking —
         // which frees Space back to normal. isReadActive is plain stored
         // state on the speech engine, safe to read in the tap callback.
-        if keycode == 49, mode != .insert, !hasCommand, !hasControl, !hasOption,
+        if keycode == 49, mode != .insert, mode != .command,
+           !hasCommand, !hasControl, !hasOption,
            !flags.contains(.maskShift), burstBuffer.isEmpty, isReadActive() {
             if isAutorepeat { return nil }
             DispatchQueue.main.async { [self] in onPauseToggle?() }
             return nil
+        }
+
+        // === COMMAND mode: ":" line editor, driven entirely by the tap ===
+        // The palette panel (if enabled) is display-only — it renders this
+        // buffer; no window ever takes focus. Echo goes through onAnnounce.
+        if mode == .command {
+            if hasCommand || hasControl { return pass }   // app shortcuts untouched
+            if isAutorepeat, keycode != 51, keycode != 125, keycode != 126 {
+                return nil                                 // only Delete/arrows repeat
+            }
+
+            switch keycode {
+            case 36: // Return — submit (empty buffer = cancel)
+                let cmd = commandBuffer
+                commandBuffer = ""
+                commandIdleTimer?.cancel()
+                mode = .normal
+                if cmd.trimmingCharacters(in: .whitespaces).isEmpty {
+                    DispatchQueue.main.async { Earcon.riseToNormal() }
+                } else {
+                    fputs("[keyboard] : \(cmd)\n", stderr)
+                    DispatchQueue.main.async { [self] in onCommandSubmit?(cmd) }
+                }
+                return nil
+
+            case 53: // Escape — cancel
+                commandBuffer = ""
+                commandIdleTimer?.cancel()
+                mode = .normal
+                fputs("[keyboard] command cancelled → NORMAL\n", stderr)
+                DispatchQueue.main.async { Earcon.riseToNormal() }
+                return nil
+
+            case 51: // Delete — edit; on an empty buffer, back out entirely
+                if let removed = commandBuffer.popLast() {
+                    let buffer = commandBuffer
+                    scheduleCommandIdle()
+                    let spoken = removed == " " ? "space" : String(removed)
+                    DispatchQueue.main.async { [self] in
+                        if commandEchoEnabled { onAnnounce?("\(spoken) deleted") }
+                        onCommandChange?(buffer)
+                    }
+                } else {
+                    commandIdleTimer?.cancel()
+                    mode = .normal
+                    DispatchQueue.main.async { Earcon.riseToNormal() }
+                }
+                return nil
+
+            case 48: // Tab — autocomplete to the palette's selected candidate
+                scheduleCommandIdle()
+                DispatchQueue.main.async { [self] in onCommandTab?() }
+                return nil
+
+            case 126, 125: // Up/Down — move the palette selection
+                let delta = keycode == 126 ? -1 : 1
+                DispatchQueue.main.async { [self] in onCommandSelect?(delta) }
+                return nil
+
+            case 44 where flags.contains(.maskShift): // "?" — speak options now
+                DispatchQueue.main.async { [self] in onCommandHelp?() }
+                return nil
+
+            default:
+                if hasOption {
+                    DispatchQueue.main.async { Earcon.error() }
+                    return nil
+                }
+                if let ch = Self.commandKeyChars[keycode] {
+                    commandBuffer.append(ch)
+                    let buffer = commandBuffer
+                    scheduleCommandIdle()
+                    let spoken = ch == " " ? "space" : String(ch)
+                    DispatchQueue.main.async { [self] in
+                        if commandEchoEnabled { onAnnounce?(spoken) }
+                        onCommandChange?(buffer)
+                    }
+                    return nil
+                }
+                DispatchQueue.main.async { Earcon.error() }
+                return nil
+            }
         }
 
         // === INSERT mode: only intercept bare Escape (tap/hold) ===
@@ -371,6 +482,13 @@ final class KeyboardMonitor {
                 return nil
             }
             suppressInsertEntryRepeat = false
+            // Optional typing echo (classic screen-reader behavior, off by
+            // default): speak the key, never consume it.
+            if typingEchoEnabled, !isAutorepeat, !hasCommand, !hasControl, !hasOption,
+               let ch = Self.commandKeyChars[keycode] {
+                let spoken = ch == " " ? "space" : String(ch)
+                DispatchQueue.main.async { [self] in onAnnounce?(spoken) }
+            }
             return pass
         }
 
@@ -590,6 +708,18 @@ final class KeyboardMonitor {
             }
             return nil
 
+        case 41 where flags.contains(.maskShift): // ":" — enter COMMAND mode
+            if isAutorepeat { return nil }
+            mode = .command
+            commandBuffer = ""
+            scheduleCommandIdle()
+            fputs("[keyboard] → COMMAND\n", stderr)
+            DispatchQueue.main.async { [self] in
+                if commandEchoEnabled { onAnnounce?("command") }
+                onCommandChange?("")
+            }
+            return nil
+
         default:
             // Suppress only letter keys to prevent typing. Pass through space,
             // numbers, function keys, arrows, mouse button keycodes (Naga), and
@@ -598,12 +728,48 @@ final class KeyboardMonitor {
             if Self.alphaKeyCodes.contains(keycode) {
                 // Non-command letter key in NORMAL mode: it does nothing (and is
                 // suppressed so it isn't typed). Beep so the user notices they're
-                // in NORMAL mode and may want INSERT.
-                DispatchQueue.main.async { Earcon.error() }
+                // in NORMAL mode and may want INSERT. First buzz of the session
+                // also points at :help — new users hit this constantly without
+                // knowing what the buzzer means.
+                let firstBuzz = !didSpeakColonHint
+                didSpeakColonHint = true
+                DispatchQueue.main.async { [self] in
+                    Earcon.error()
+                    if firstBuzz {
+                        // Fixed-length earcon (~0.11s), not speech — the
+                        // stagger just keeps the buzz audible before speech.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [self] in
+                            onAnnounce?("Type colon, then help, for spoken help.")
+                        }
+                    }
+                }
                 return nil
             }
             return pass
         }
+    }
+
+    /// Replaces the COMMAND-mode buffer (Tab autocomplete). Main-thread only,
+    /// same as every other piece of tap state; re-fires onCommandChange so
+    /// the palette re-renders.
+    func replaceCommandBuffer(_ text: String) {
+        guard mode == .command else { return }
+        commandBuffer = text
+        scheduleCommandIdle()
+        onCommandChange?(text)
+    }
+
+    /// Speak-the-options-on-pause: fires once, ~1.5s after the last
+    /// COMMAND-mode keystroke. Every keystroke restarts it, so it only
+    /// triggers when the user genuinely stops to think.
+    private func scheduleCommandIdle() {
+        commandIdleTimer?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.mode == .command else { return }
+            self.onCommandIdle?()
+        }
+        commandIdleTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
     }
 
     // MARK: - Escape Tap/Hold (INSERT mode)
@@ -837,6 +1003,18 @@ final class KeyboardMonitor {
 
     // macOS key codes for a-z suppressed in Normal mode to prevent typing.
     // Note: k (40) is deliberately omitted so it passes through to the app.
+    /// Keycode → typed character for COMMAND-mode input and typing echo
+    /// (US ANSI; shift ignored — the parser is case-insensitive anyway).
+    private static let commandKeyChars: [Int64: Character] = [
+        0: "a", 1: "s", 2: "d", 3: "f", 4: "h", 5: "g", 6: "z", 7: "x",
+        8: "c", 9: "v", 11: "b", 12: "q", 13: "w", 14: "e", 15: "r", 16: "y",
+        17: "t", 31: "o", 32: "u", 34: "i", 35: "p", 37: "l", 38: "j", 40: "k",
+        45: "n", 46: "m",
+        29: "0", 18: "1", 19: "2", 20: "3", 21: "4",
+        23: "5", 22: "6", 26: "7", 28: "8", 25: "9",
+        49: " ",
+    ]
+
     private static let alphaKeyCodes: Set<Int64> = [
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, // a-r, roughly
         31, 32, 34, 35, 37, 38, 45, 46                              // o-z, roughly (minus k=40)

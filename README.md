@@ -24,6 +24,8 @@
 - **Pause and resume** — Space pauses an active read at a word boundary and resumes it; the moment nothing is being read, Space is just Space.
 - **A speech preprocessor built for real content** — strips the invisible Unicode that makes TTS silently bail; speaks code symbols by name with configurable verbosity (`->` "arrow", `!=` "not equals"); collapses symbol runs ("5 dash" instead of dash-dash-dash-dash-dash); abbreviates hex digests ("md5 ending in 2 7 e" instead of 32 characters of hex).
 - **Two voices** — one for reading content, one for status announcements, so you always know which is which.
+- **A vim-style command line with a visual palette** — press `:` in NORMAL mode and a dmenu-style panel appears (it never steals focus) listing everything you can type, filtering as you go: `:help`, `:commands`, `:tutorial`, `:config rate 230`. Tab completes, arrows browse (spoken), `?` — or just pausing — speaks your options, and vim-style unique prefixes work (`:conf ra 230`). Settings changed via `:config` apply instantly and persist.
+- **A talking interactive tutorial** — `:tutorial` walks you through the modes vimtutor-style: it asks you to actually press the keys and confirms out loud when you get it. First run also greets you with a short spoken orientation.
 - **Runs as a proper service** — a launchd agent starts Marduk at login, restarts it if it crashes, and logs to `~/Library/Logs/marduk.log`. Self-updating via a hotkey or `marduk update` (pull, build, codesign, restart).
 - **Signed builds** — binaries are codesigned with your (free) Apple Development certificate so macOS Accessibility permission survives rebuilds.
 - **No dependencies** — pure Swift and native Apple frameworks. No Electron, no Python, no network calls.
@@ -82,6 +84,8 @@ Marduk is assistive technology: it needs deep hooks, and macOS makes you grant e
 
 **VISUAL / VISUAL LINE:** `hjkl` extend the selection (with count prefixes: `v3j`), `G` to end, `r` reads the selection and returns to NORMAL, `Escape` cancels.
 
+**COMMAND mode (`:`):** type `:` in NORMAL for a vim-style command line with a floating palette showing your options. `:help` speaks the basics, `:commands` the full reference, `:tutorial` starts the guided tour, `:tip` speaks a random feature tip, and `:config <setting> <value>` changes settings live — `rate` (50–360 wpm), `level` (`none`/`some`/`most`/`all`), `hashes`, `rescue`, `burst`, `escapehold`, `echo` (speak keys as you type, off by default), `commandecho`, `palette` (all `on`/`off` or a number). Unique prefixes work everywhere (`:conf ra 230`); Tab completes; `?` or a moment's pause speaks what you can type next; Escape cancels.
+
 ### Configuration
 
 `~/.config/marduk/config.json` (auto-created with defaults):
@@ -92,7 +96,7 @@ Marduk is assistive technology: it needs deep hooks, and macOS makes you grant e
 - `verbalizer` — symbol verbosity (`none`/`some`/`most`/`all`), per-symbol overrides (`{"*": "asterisk", "%": ""}`), hash abbreviation on/off
 - `display` — per-app color inversion list
 
-Config is read at daemon start; restart (or `marduk update`) after editing.
+Config is read at daemon start. Most settings can be changed live from inside Marduk with `:config` (which also saves them); if you hand-edit the file instead, restart (or `marduk update`) to apply.
 
 ## Known quirks (read before filing bugs)
 
@@ -102,7 +106,7 @@ These are deliberate trade-offs of the typing-rescue system, not bugs:
 - **Single-letter commands fire ~300 ms late** (`r`, `t`, `s`, `u` alone) — that's the typing-rescue window deciding you weren't typing a word. `v`+motion and `i` are instant. Set `keyboard.typingRescue: false` to make all commands instant at the cost of the rescue (and of `tt`).
 - **A command followed quickly by `k` reads as typing** — protects words like "skip".
 - **Short reads pause your media briefly** even for a two-word utterance — pause/resume is deliberate (volume-ducking a browser can't stop a video, and lowering system volume would quiet Marduk itself).
-- Config changes need a daemon restart; only `marduk config rate` applies live.
+- Hand-edits to config.json need a daemon restart — use `:config` from inside Marduk (or `marduk config rate`) for live changes.
 
 ## How it works
 

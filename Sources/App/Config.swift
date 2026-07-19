@@ -19,6 +19,9 @@ struct MardukConfig: Codable {
         var escapeHoldMs: Int? = 400     // hold Escape this long in INSERT → NORMAL
         var typingBurstMs: Int? = 300    // typing-rescue burst window
         var typingRescue: Bool? = true   // false disables typing rescue
+        var typingEcho: Bool? = false    // speak characters typed in INSERT
+        var commandEcho: Bool? = true    // speak characters typed after ":"
+        var commandPalette: Bool? = true // dmenu-style panel while typing a ":" command
     }
 
     struct VerbalizerConfig: Codable {

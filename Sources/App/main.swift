@@ -1,4 +1,5 @@
 import Foundation
+import ApplicationServices
 import AVFoundation
 
 // MARK: - Marduk: Assistive Technology Platform for macOS
@@ -175,12 +176,22 @@ func showConfig(_ config: MardukConfig) {
 let args = CommandLine.arguments
 let config = ConfigLoader.load()
 
-guard args.count >= 2 else {
+// Double-clicking Marduk.app in Finder launches the executable with no
+// arguments — for a release install that must BE the installer: the
+// friendliest possible onboarding is download, drag, double-click, and
+// follow the voice. Bare-binary no-args invocations keep printing usage.
+let launchedFromFinder = args.count < 2
+    && (LaunchAgent.resolvedBinaryPath() ?? "").contains("/Marduk.app/Contents/MacOS/")
+
+let command: String
+if args.count >= 2 {
+    command = args[1]
+} else if launchedFromFinder {
+    command = "install"
+} else {
     printUsage()
     exit(1)
 }
-
-let command = args[1]
 
 switch command {
 case "version", "--version", "-v":
@@ -294,6 +305,11 @@ case "install":
         fputs("Error: cannot resolve the marduk binary path.\n", stderr)
         exit(1)
     }
+    // Double-click on an already-running install: reassure, don't reinstall
+    if launchedFromFinder && DaemonClient.isRunning {
+        DaemonClient.send("speak Marduk is already installed and running.")
+        exit(0)
+    }
     let reinstall = LaunchAgent.isInstalled
 
     // Assemble Marduk.app and install THAT — the bundle carries the stable
@@ -346,6 +362,15 @@ case "install":
     } else {
         fputs("WARNING: daemon did not come up — check the log.\n", stderr)
         exit(1)
+    }
+    // Finder-launched install with no Accessibility grant yet: the daemon
+    // is announcing what to do out loud — put the right Settings pane in
+    // front of the user while it talks.
+    if launchedFromFinder && !AXIsProcessTrusted() {
+        let opener = Process()
+        opener.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        opener.arguments = ["x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"]
+        try? opener.run()
     }
 
 case "bundle":

@@ -62,29 +62,35 @@ codesign --force --options runtime --timestamp \
     --sign "Developer ID Application" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
-echo "==> Notarizing (this usually takes a few minutes)"
-ZIP="Marduk-$VERSION.zip"
+echo "==> Notarizing the app (this usually takes a few minutes)"
+ZIP="$(mktemp -t marduk-notarize).zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
 xcrun notarytool submit "$ZIP" --keychain-profile "$PROFILE" --wait
-
-echo "==> Stapling"
+rm -f "$ZIP"
 xcrun stapler staple "$APP"
 spctl -a -vv --type execute "$APP"
-rm -f "$ZIP"
-ditto -c -k --keepParent "$APP" "$ZIP"   # final zip contains the stapled app
+
+echo "==> Building the disk image (drag-to-Applications)"
+DMG="Marduk-$VERSION.dmg"
+STAGE=$(mktemp -d -t marduk-dmg)
+cp -R "$APP" "$STAGE/"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -volname "Marduk $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+rm -rf "$STAGE"
+
+echo "==> Signing + notarizing the disk image"
+codesign --force --timestamp --sign "Developer ID Application" "$DMG"
+xcrun notarytool submit "$DMG" --keychain-profile "$PROFILE" --wait
+xcrun stapler staple "$DMG"
 
 echo "==> Publishing GitHub release"
 PREV_TAG=$(git describe --tags --abbrev=0 "v$VERSION^" 2>/dev/null || true)
 if [[ -n "$PREV_TAG" ]]; then RANGE="$PREV_TAG..v$VERSION"; else RANGE="v$VERSION"; fi
 NOTES=$(git log --format='- %s' "$RANGE" | head -40)
-gh release create "v$VERSION" "$ZIP" --title "Marduk $VERSION" --notes "$NOTES
+gh release create "v$VERSION" "$DMG" --title "Marduk $VERSION" --notes "$NOTES
 
 ---
-**Install:** download \`Marduk-$VERSION.zip\`, unzip, drag \`Marduk.app\` to Applications, then run in Terminal:
-\`\`\`
-/Applications/Marduk.app/Contents/MacOS/marduk install
-\`\`\`
-Grant Accessibility to Marduk.app when it asks (it asks out loud). No Xcode needed."
+**Install:** download \`Marduk-$VERSION.dmg\`, open it, drag **Marduk** into **Applications**, then open Marduk from Applications. It installs itself and talks you through the rest — no Terminal, no Xcode."
 
-rm -f "$ZIP" "$ENT"
+rm -f "$DMG" "$ENT"
 echo "==> Done: https://github.com/spencer-dollahite/marduk/releases/tag/v$VERSION"

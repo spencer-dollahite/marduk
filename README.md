@@ -40,14 +40,13 @@
 
 ## Install
 
-### Easy install (no Xcode needed)
+### Easy install (no Xcode, no Terminal)
 
-1. Download the latest `Marduk-x.y.z.zip` from the [Releases page](https://github.com/spencer-dollahite/marduk/releases), unzip it, and drag `Marduk.app` into Applications.
-2. In Terminal, run:
-   ```bash
-   /Applications/Marduk.app/Contents/MacOS/marduk install
-   ```
-3. Grant the permissions below. That's it — releases are signed and notarized, so macOS opens them without complaint.
+1. Download the latest `Marduk-x.y.z.dmg` from the [Releases page](https://github.com/spencer-dollahite/marduk/releases) and open it.
+2. Drag **Marduk** into **Applications** (the window shows you where).
+3. Open Marduk from Applications. It installs itself, starts talking, and opens the right Settings pane for the one permission it needs — just follow the voice.
+
+Releases are signed and notarized, so macOS opens them without complaint.
 
 Release installs get updates from the Releases page (Marduk will tell you so if you press `u`); in-app updating for release installs is planned.
 

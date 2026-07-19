@@ -42,13 +42,19 @@ final class CommandPalette {
     private let width: CGFloat = 640
     private let lineHeight: CGFloat = 26
     private let padding: CGFloat = 14
-    private let maxRows = 8
+    // Tall enough for every current list (11 commands / 11 settings) — and
+    // overflow is never silent: a "… and N more" row appears, so what you
+    // see always matches what the options speech says.
+    private let maxRows = 16
 
     func update(buffer: String, candidates: [CommandCompleter.Candidate], selected: Int) {
         DispatchQueue.main.async { [self] in
-            let text = composed(buffer: buffer, candidates: candidates, selected: selected)
-            let lines = 1 + min(candidates.count, maxRows)
-            layoutAndShow(text: text, lines: lines)
+            let visible = min(candidates.count, maxRows)
+            let overflow = candidates.count - visible
+            let text = composed(buffer: buffer, candidates: candidates,
+                                selected: selected, overflow: overflow)
+            let lines = 1 + visible + (overflow > 0 ? 1 : 0)
+            layoutAndShow(text: text, lines: lines, rowCount: visible)
         }
     }
 
@@ -67,7 +73,7 @@ final class CommandPalette {
     // MARK: - Rendering (main thread only)
 
     private func composed(buffer: String, candidates: [CommandCompleter.Candidate],
-                          selected: Int) -> NSAttributedString {
+                          selected: Int, overflow: Int) -> NSAttributedString {
         let font = NSFont.monospacedSystemFont(ofSize: 16, weight: .regular)
         let result = NSMutableAttributedString()
 
@@ -90,10 +96,16 @@ final class CommandPalette {
             result.append(NSAttributedString(string: "  \(candidate.display)  \n",
                                              attributes: attributes))
         }
+        if overflow > 0 {
+            result.append(NSAttributedString(
+                string: "  … and \(overflow) more\n",
+                attributes: [.font: font,
+                             .foregroundColor: NSColor(white: 0.55, alpha: 1.0)]))
+        }
         return result
     }
 
-    private func layoutAndShow(text: NSAttributedString, lines: Int) {
+    private func layoutAndShow(text: NSAttributedString, lines: Int, rowCount: Int) {
         let (panel, field) = ensurePanel()
         field.attributedStringValue = text
         let height = padding * 2 + CGFloat(lines) * lineHeight
@@ -123,7 +135,7 @@ final class CommandPalette {
                              width: width - padding * 2, height: height - padding * 2)
         paletteView?.lineHeight = lineHeight
         paletteView?.padding = padding
-        paletteView?.rowCount = lines - 1
+        paletteView?.rowCount = rowCount   // excludes any "… and N more" row
 
         if !isShown {
             isShown = true

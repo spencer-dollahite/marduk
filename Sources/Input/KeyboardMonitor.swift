@@ -57,6 +57,9 @@ final class KeyboardMonitor {
     private var commandIdleTimer: DispatchWorkItem?
     var typingEchoEnabled = false    // speak chars typed in INSERT
     var commandEchoEnabled = true    // speak chars typed after ":"
+    var speedKeysEnabled = false     // Option+Up/Down nudge speech rate (NORMAL/VISUAL)
+    var toggleEarconEnabled = false  // Ctrl+Option+M bloops instead of speaking
+    var onRateChange: ((Float) -> Void)?  // signed rate delta from the speed keys
     private var commandBuffer = ""
     // After an auto-expand ("posi" → "config position "), the user may still
     // be typing the rest of the word — those chars are absorbed, not appended.
@@ -312,10 +315,13 @@ final class KeyboardMonitor {
             let state = isEnabled ? "ON (NORMAL)" : "OFF"
             fputs("[keyboard] Marduk \(state)\n", stderr)
             let word = isEnabled ? "Systems engaged" : "Systems disengaged"
+            let on = isEnabled
             DispatchQueue.main.async { [self] in
-                onAnnounce?(word)
-                // TODO: replace with earcon bloops once audio is tuned
-                // if isEnabled { Earcon.bloopUp() } else { Earcon.bloopDown() }
+                if toggleEarconEnabled {
+                    if on { Earcon.bloopUp() } else { Earcon.bloopDown() }
+                } else {
+                    onAnnounce?(word)
+                }
             }
             return nil
         }
@@ -374,6 +380,19 @@ final class KeyboardMonitor {
             return nil
         }
 
+        // === Option+Up/Down: live speech rate (opt-in, NORMAL/VISUAL) ===
+        // No autorepeat guard on purpose — holding the key keeps nudging.
+        // INSERT and COMMAND are excluded: apps own Option+arrows there
+        // (editor move-line), and command mode arrows drive the palette.
+        // Shift excluded too — Option+Shift+arrows is text selection.
+        if speedKeysEnabled, keycode == 126 || keycode == 125,
+           mode != .insert, mode != .command,
+           hasOption, !hasCommand, !hasControl, !flags.contains(.maskShift) {
+            let delta: Float = (keycode == 126 ? 10.0 : -10.0) / 360.0
+            DispatchQueue.main.async { [self] in onRateChange?(delta) }
+            return nil
+        }
+
         // === COMMAND mode: ":" line editor, driven entirely by the tap ===
         // The palette panel (if enabled) is display-only — it renders this
         // buffer; no window ever takes focus. Echo goes through onAnnounce.
@@ -386,11 +405,13 @@ final class KeyboardMonitor {
             switch keycode {
             case 36: // Return — submit (empty buffer = cancel)
                 let cmd = commandBuffer
-                if cmd.hasPrefix("/") {
-                    // Fuzzy search: Enter accepts the selection. Stay in
-                    // COMMAND mode — the daemon either executes (and ends
-                    // the mode) or expands the buffer for further typing.
-                    fputs("[keyboard] : \(cmd) (search accept)\n", stderr)
+                if cmd.hasPrefix("/") || cmd.hasPrefix("voices") {
+                    // Fuzzy search and the voice picker: Enter accepts the
+                    // selection. Stay in COMMAND mode — the daemon either
+                    // executes (and ends the mode) or expands the buffer
+                    // for further typing. ("voices" can't collide with
+                    // another command — no name is a prefix of another.)
+                    fputs("[keyboard] : \(cmd) (selection accept)\n", stderr)
                     DispatchQueue.main.async { [self] in onCommandSubmit?(cmd) }
                     return nil
                 }

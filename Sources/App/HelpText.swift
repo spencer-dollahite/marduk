@@ -28,7 +28,9 @@ enum HelpText {
         Anywhere: Option Escape speaks the selection, or stops speech. \
         Control Option M turns Marduk on or off. \
         Colon commands: help. commands. tutorial. tip, one random feature \
-        tip. config, change a setting. quit. restart. update, install \
+        tip. config, change a setting. voices, choose the reading voice — \
+        arrows preview each voice in its own sound, Return picks it. \
+        quit. restart. update, install \
         updates now. uninstall, remove the launch agent. log, open the log \
         file. log copy, copy recent log lines to the clipboard. \
         feedback, open GitHub issues. bug, report a bug. \
@@ -46,7 +48,10 @@ enum HelpText {
         where the panel opens. Pointer keeps it inside a zoomed view. \
         border, on or off, a screen edge color showing the current mode: \
         red NORMAL, green INSERT, blue VISUAL. pointer, on or off, the same \
-        color as a dot following the mouse. thickness, border width in points.
+        color as a dot following the mouse. thickness, border width in points. \
+        speed keys, one word, on or off: Option up and down arrows change \
+        the speech rate. toggle sound, one word, speech or earcon, what \
+        Control Option M plays.
         """
 
     /// ":tip" — one is picked at random (never the same twice in a row).
@@ -70,6 +75,8 @@ enum HelpText {
         "The r command selects the whole paragraph under the mouse cursor, like a triple click, then reads the selection.",
         "Media pauses during reads and resumes after, only if it was actually playing. Music apps get volume-ducked instead of paused.",
         "If you can see some of the screen, colon config border on frames it in the mode color: red for NORMAL, green for INSERT, blue for VISUAL. Colon config pointer on adds a dot at the mouse that stays visible while zoomed in.",
+        "Colon voices opens a voice picker. Arrow through the list and each voice introduces itself in its own sound; Return keeps the one you are hearing.",
+        "With colon config speed keys on, Option up arrow and Option down arrow change the speech rate on the spot, ten words per minute at a time. Hold the key to glide.",
     ]
 
     static let welcome = """

@@ -95,6 +95,25 @@ final class DaemonServer {
     private var commandSelected = 0
     private var autoAcceptTimer: DispatchWorkItem?
     private var lastTipIndex = -1
+    // Speed keys (Option+Up/Down): announce + persist once after the last
+    // nudge, not per autorepeat event
+    private var rateSaveTimer: DispatchWorkItem?
+
+    // ":voices" picker rows: installed English voices, best quality first,
+    // enumerated once on first use (same filter/sort as `marduk voices`)
+    private lazy var voiceOptions: [(name: String, identifier: String)] = {
+        AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix("en") }
+            .sorted { a, b in
+                if a.quality != b.quality { return a.quality.rawValue > b.quality.rawValue }
+                return a.name < b.name
+            }
+            .map { v in
+                let marker = v.quality == .premium ? " — premium"
+                           : v.quality == .enhanced ? " — enhanced" : ""
+                return (name: "\(v.name)\(marker)", identifier: v.identifier)
+            }
+    }()
 
     // Update checking: `u` checks + arms; a second u while armed installs.
     // The periodic timer announces once per new remote head (or installs,
@@ -211,6 +230,9 @@ final class DaemonServer {
         keyboardMonitor?.typingRescueEnabled = typingRescueEnabled
         keyboardMonitor?.typingEchoEnabled = config.keyboard?.typingEcho ?? false
         keyboardMonitor?.commandEchoEnabled = config.keyboard?.commandEcho ?? true
+        keyboardMonitor?.speedKeysEnabled = config.keyboard?.speedKeys ?? false
+        keyboardMonitor?.toggleEarconEnabled =
+            (config.keyboard?.toggleSound ?? "speech") == "earcon"
         palette.positionMode = CommandPalette.PositionMode(
             rawValue: config.keyboard?.palettePosition ?? "pointer") ?? .pointer
         // Tutorial events ride the existing callbacks: reads complete via the
@@ -264,6 +286,23 @@ final class DaemonServer {
         keyboardMonitor?.onCommandHelp = { [self] in speakCommandOptions(explicit: true) }
         keyboardMonitor?.onCommandIdle = { [self] in speakCommandOptions(explicit: false) }
         keyboardMonitor?.onUpdateCheck = { [self] in handleUpdateKey() }
+        // Speed keys: rate applies instantly per nudge; the announcement
+        // and the config write debounce until the key is released, so a
+        // held autorepeat doesn't spam speech or disk. (Arrives on main.)
+        keyboardMonitor?.onRateChange = { [self] delta in
+            speech.adjustRate(delta: delta)
+            rateSaveTimer?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                let wpm = Int(self.speech.rate * 360)
+                self.config.speech.rate = self.speech.rate
+                ConfigLoader.save(self.config)
+                // READ voice on purpose: the confirmation demos the new rate
+                self.speech.speak("\(wpm) words per minute.")
+            }
+            rateSaveTimer = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+        }
         // Clicking a palette row acts like Tab on that row (mouseDown arrives
         // on the main thread already)
         palette.onRowClick = { [self] row in
@@ -399,9 +438,49 @@ final class DaemonServer {
                 // A config key — keep typing the value
                 speech.announce(completion.trimmingCharacters(in: .whitespaces))
                 keyboardMonitor?.replaceCommandBuffer(completion)
+            } else if completion.hasPrefix("voices ") {
+                // A voice row surfaced by "/" — apply directly (recursing
+                // into handleColonCommand would re-read the selection and
+                // loop)
+                keyboardMonitor?.endCommandMode()
+                applyVoice(identifier: String(completion.dropFirst("voices ".count)))
             } else {
                 keyboardMonitor?.endCommandMode()
                 handleColonCommand(completion)
+            }
+            return
+        }
+
+        // ":voices" picker accept — Return takes the highlighted row, dmenu
+        // style (the tap keeps COMMAND mode alive for this prefix, like "/").
+        if raw.hasPrefix("voices") {
+            // A buffer holding a full identifier (Tab/click filled it) is
+            // already a decision — apply it without consulting the selection.
+            // Identifiers are reverse-DNS; typed filter text can't contain
+            // dots (the tap has no "." key in commandKeyChars).
+            let arg = raw.dropFirst("voices".count).trimmingCharacters(in: .whitespaces)
+            if arg.contains(".") {
+                keyboardMonitor?.endCommandMode()
+                applyVoice(identifier: arg)
+                return
+            }
+            guard commandCandidates.indices.contains(commandSelected),
+                  let completion = commandCandidates[commandSelected].completion else {
+                Earcon.error()
+                speech.announce("No match.")
+                return
+            }
+            if completion.hasSuffix(" ") {
+                // The command row itself ("voices ") — enter the picker
+                speech.announce("voices")
+                keyboardMonitor?.replaceCommandBuffer(completion)
+            } else if completion.hasPrefix("voices ") {
+                keyboardMonitor?.endCommandMode()
+                applyVoice(identifier: String(completion.dropFirst("voices ".count)))
+            } else {
+                // Selection drifted off the picker (shouldn't happen)
+                Earcon.error()
+                speech.announce("No match.")
             }
             return
         }
@@ -424,6 +503,10 @@ final class DaemonServer {
             }
             lastTipIndex = index
             speech.speak("Tip: " + HelpText.tips[index])
+        case .voices:
+            // Unreachable in practice — every "voices"-prefixed buffer is
+            // intercepted above before parse. Compiler exhaustiveness only.
+            break
         case .quit:
             // Clean exit 0 — under launchd (SuccessfulExit=false) this stays
             // stopped until next login or `marduk start`.
@@ -691,12 +774,33 @@ final class DaemonServer {
     /// "?" or a typing pause in COMMAND mode: speak what can come next.
     /// The idle path stays silent when there's nothing to offer.
     private func speakCommandOptions(explicit: Bool) {
-        let displays = commandCandidates.map(\.display)
+        var displays = commandCandidates.map(\.display)
         if displays.isEmpty {
             if explicit { speech.announce("No options here. Press Return to run it.") }
             return
         }
+        // The voice picker can list 20+ voices — don't recite them all;
+        // arrows preview each one in its own voice anyway
+        if commandBufferSnapshot.hasPrefix("voices"), displays.count > 8 {
+            let more = displays.count - 6
+            displays = Array(displays.prefix(6)) + ["and \(more) more"]
+        }
         speech.speak("Options: " + displays.joined(separator: ", ") + ".")
+    }
+
+    /// Applies and persists the reading voice — the ":voices" picker accept.
+    private func applyVoice(identifier: String) {
+        guard let voice = AVSpeechSynthesisVoice(identifier: identifier) else {
+            Earcon.error()
+            speech.announce("That voice is not installed.")
+            return
+        }
+        speech.voice = voice
+        config.speech.voiceIdentifier = identifier
+        ConfigLoader.save(config)
+        fputs("[speech] Reading voice set to \(voice.name) (\(identifier))\n", stderr)
+        // READ voice on purpose: the confirmation demos the choice
+        speech.speak("This is \(voice.name).")
     }
 
     /// Applies a setting live AND persists it. Failures speak and change
@@ -846,6 +950,27 @@ final class DaemonServer {
             rebuildOverlay()
             speech.announce("Border thickness \(points) points.")
 
+        case "speedkeys":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            keyboardMonitor?.speedKeysEnabled = on
+            var kb = config.keyboard ?? .init()
+            kb.speedKeys = on
+            config.keyboard = kb
+            ConfigLoader.save(config)
+            speech.announce(on ? "Speed keys on. Option up and down change the rate."
+                               : "Speed keys off.")
+
+        case "togglesound":
+            guard ["speech", "earcon"].contains(value) else {
+                return fail("Toggle sound must be speech or earcon.")
+            }
+            keyboardMonitor?.toggleEarconEnabled = (value == "earcon")
+            var kb = config.keyboard ?? .init()
+            kb.toggleSound = value
+            config.keyboard = kb
+            ConfigLoader.save(config)
+            speech.announce("Toggle sound \(value).")
+
         case "autoupdate":
             guard let on = toggle() else { return fail("Say on or off.") }
             autoUpdate = on
@@ -875,7 +1000,8 @@ final class DaemonServer {
             } else {
                 fail("Unknown setting \(key). Settings are rate, level, hashes, "
                     + "rescue, burst, escape hold, echo, command echo, palette, "
-                    + "auto update, check hours, border, pointer, thickness.")
+                    + "auto update, check hours, border, pointer, thickness, "
+                    + "speed keys, toggle sound.")
             }
         }
     }
@@ -911,6 +1037,8 @@ final class DaemonServer {
             "border": (config.overlay?.borderEnabled ?? false) ? "on" : "off",
             "pointer": (config.overlay?.pointerEnabled ?? false) ? "on" : "off",
             "thickness": "\(config.overlay?.thickness ?? 6) pt",
+            "speedkeys": (keyboardMonitor?.speedKeysEnabled ?? false) ? "on" : "off",
+            "togglesound": (keyboardMonitor?.toggleEarconEnabled ?? false) ? "earcon" : "speech",
         ]
     }
 
@@ -955,7 +1083,8 @@ final class DaemonServer {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
         }
         commandBufferSnapshot = buffer
-        commandCandidates = CommandCompleter.candidates(for: buffer, values: settingValues())
+        commandCandidates = CommandCompleter.candidates(for: buffer, values: settingValues(),
+                                                        voices: voiceOptions)
         commandSelected = 0
         if paletteEnabled {
             palette.update(buffer: buffer, candidates: commandCandidates,
@@ -971,15 +1100,33 @@ final class DaemonServer {
             palette.update(buffer: commandBufferSnapshot, candidates: commandCandidates,
                            selected: commandSelected)
         }
-        // Arrow browsing is deliberate — speak the selection even with echo off
-        speech.announce(commandCandidates[commandSelected].display)
+        // Arrow browsing is deliberate — speak the selection even with echo
+        // off. Voice-picker rows preview IN their own voice: the name is the
+        // audition (the whole point of the picker).
+        let candidate = commandCandidates[commandSelected]
+        speech.announce(candidate.display, voice: previewVoice(for: candidate))
     }
 
     private func handleCommandTab() {
         guard commandCandidates.indices.contains(commandSelected),
               let completion = commandCandidates[commandSelected].completion else { return }
         keyboardMonitor?.replaceCommandBuffer(completion)
-        speech.announce(completion.trimmingCharacters(in: .whitespaces))
+        // Voice rows complete to "voices <identifier>" — speak the display
+        // name (in that voice), never the raw identifier
+        let candidate = commandCandidates[commandSelected]
+        if let voice = previewVoice(for: candidate) {
+            speech.announce(candidate.display, voice: voice)
+        } else {
+            speech.announce(completion.trimmingCharacters(in: .whitespaces))
+        }
+    }
+
+    /// Non-nil when the candidate is a ":voices" picker row: the voice it
+    /// names, for previewing announcements in that voice.
+    private func previewVoice(for candidate: CommandCompleter.Candidate) -> AVSpeechSynthesisVoice? {
+        guard let completion = candidate.completion,
+              completion.hasPrefix("voices "), !completion.hasSuffix(" ") else { return nil }
+        return AVSpeechSynthesisVoice(identifier: String(completion.dropFirst("voices ".count)))
     }
 
     // MARK: - Hot Update

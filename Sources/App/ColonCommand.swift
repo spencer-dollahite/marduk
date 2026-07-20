@@ -7,6 +7,7 @@ enum ColonCommand: Equatable {
     case tutorial
     case tip
     case config(key: String, value: String)
+    case voices
     case quit
     case restart
     case update
@@ -18,9 +19,10 @@ enum ColonCommand: Equatable {
     case unknown(String)
 
     // No name may be a prefix of another — auto-accept relies on it
+    // (the tap's Return handler also assumes "voices" owns that prefix)
     static let commandNames = ["help", "commands", "tutorial", "tip", "config",
-                               "quit", "restart", "update", "uninstall", "log",
-                               "feedback", "bug"]
+                               "voices", "quit", "restart", "update",
+                               "uninstall", "log", "feedback", "bug"]
 
     static func parse(_ raw: String) -> ColonCommand {
         let tokens = raw.lowercased().split(separator: " ").map(String.init)
@@ -44,6 +46,11 @@ enum ColonCommand: Equatable {
             return .tutorial
         case "tip":
             return .tip
+        case "voices":
+            // Extra tokens are picker filter text — the daemon accepts the
+            // palette selection before ever parsing, so bare .voices is
+            // only reached as a fallback.
+            return .voices
         case "quit":
             return .quit
         case "restart":
@@ -116,7 +123,10 @@ enum ColonCommand: Equatable {
         switch tokens.count {
         case 1:
             guard let name = expand(tokens[0], in: commandNames) else { return .none }
-            return name == "config" ? .expand("config ") : .execute(name)
+            // Staged commands expand instead of executing: config wants a
+            // key, voices opens the picker (selection accepts via Return)
+            if name == "config" || name == "voices" { return .expand("\(name) ") }
+            return .execute(name)
 
         case 2 where tokens[0] == "log":
             guard expand(tokens[1], in: ["copy"]) == "copy" else { return .none }
@@ -171,6 +181,9 @@ enum ColonCommand: Equatable {
         ("border", .toggle),
         ("pointer", .toggle),
         ("thickness", .number(min: 1, max: 40, unit: "points")),
+        // NOT "ratekeys" — "rate" would be its prefix, breaking expansion
+        ("speedkeys", .toggle),
+        ("togglesound", .choice(["speech", "earcon"])),
     ]
 
     static func kind(for key: String) -> SettingKind? {
@@ -194,6 +207,7 @@ enum CommandCompleter {
         "tutorial": "interactive guided tour",
         "tip": "a random feature tip",
         "config": "change a setting",
+        "voices": "choose the reading voice",
         "quit": "stop Marduk",
         "restart": "restart the daemon",
         "update": "install updates now",
@@ -208,11 +222,16 @@ enum CommandCompleter {
         return "\(name) — \(description)"
     }
 
+    /// Staged commands complete with a trailing space (the buffer stays
+    /// open for the next stage) instead of executing outright.
+    private static func commandCompletion(_ name: String) -> String {
+        name == "config" || name == "voices" ? "\(name) " : name
+    }
+
     /// Everything "/" search can land on: all commands + all config keys.
     private static func catalogEntries(values: [String: String]) -> [Candidate] {
         var entries = ColonCommand.commandNames.map {
-            Candidate(display: commandDisplay($0),
-                      completion: $0 == "config" ? "config " : $0)
+            Candidate(display: commandDisplay($0), completion: commandCompletion($0))
         }
         entries += ColonCommand.settings.map { setting in
             let current = values[setting.key].map { " — \($0)" } ?? ""
@@ -241,8 +260,11 @@ enum CommandCompleter {
     }
 
     /// Candidates for the current buffer. `values` maps setting key → spoken
-    /// current value, so the palette shows "rate — 200" style rows.
-    static func candidates(for buffer: String, values: [String: String]) -> [Candidate] {
+    /// current value, so the palette shows "rate — 200" style rows. `voices`
+    /// feeds the ":voices" picker stage (dynamic — the daemon supplies the
+    /// installed list; tests pass a fixture).
+    static func candidates(for buffer: String, values: [String: String],
+                           voices: [(name: String, identifier: String)] = []) -> [Candidate] {
         let lowered = buffer.lowercased()
 
         // "/query" — fuzzy search across the whole catalog (commands +
@@ -267,16 +289,41 @@ enum CommandCompleter {
         // Stage 1: choosing a command
         if tokens.isEmpty {
             return ColonCommand.commandNames.map {
-                Candidate(display: commandDisplay($0),
-                          completion: $0 == "config" ? "config " : $0)
+                Candidate(display: commandDisplay($0), completion: commandCompletion($0))
             }
         }
         if tokens.count == 1 && !trailingSpace {
             let matches = ColonCommand.commandNames.filter { $0.hasPrefix(tokens[0]) }
             return matches.map {
-                Candidate(display: commandDisplay($0),
-                          completion: $0 == "config" ? "config " : $0)
+                Candidate(display: commandDisplay($0), completion: commandCompletion($0))
             }
+        }
+
+        // ":voices" picker stage — every installed voice, fuzzy-filtered by
+        // whatever is typed after the command (names contain spaces, so the
+        // whole remainder is the query). Return/Tab/click accept a row; the
+        // completion carries the identifier.
+        if tokens[0] == "voices" {
+            let rows = voices.map {
+                Candidate(display: $0.name, completion: "voices \($0.identifier)")
+            }
+            // Tab/click fills the full identifier into the buffer — keep
+            // showing that voice's row (an identifier never fuzzy-matches
+            // the display names, and an empty list would break Return)
+            let remainder = tokens.dropFirst().joined(separator: " ")
+            if let exact = voices.first(where: { $0.identifier.lowercased() == remainder }) {
+                return [Candidate(display: exact.name, completion: "voices \(exact.identifier)")]
+            }
+            let query = tokens.dropFirst().joined().lowercased()
+            guard !query.isEmpty else { return rows }
+            return rows
+                .compactMap { row -> (Candidate, Int)? in
+                    guard let score = fuzzyScore(query: query,
+                                                 target: row.display.lowercased()) else { return nil }
+                    return (row, score)
+                }
+                .sorted { $0.1 < $1.1 }
+                .map(\.0)
         }
 
         // "log" has one optional argument

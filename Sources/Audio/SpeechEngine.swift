@@ -78,14 +78,17 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         readActive = true
     }
 
-    /// Speak with distinct announcement voice — status updates only
-    func announce(_ text: String, completion: (() -> Void)? = nil) {
+    /// Speak with distinct announcement voice — status updates only.
+    /// `voice:` overrides for a one-off utterance (the ":voices" picker
+    /// previews each candidate in its own voice).
+    func announce(_ text: String, voice previewVoice: AVSpeechSynthesisVoice? = nil,
+                  completion: (() -> Void)? = nil) {
         stop()
 
         // Fixed internal strings: sanitize only, no symbol verbalization
         let utterance = AVSpeechUtterance(string: SpeechPreprocessor.sanitize(text))
         utterance.rate = 0.50                          // moderate pace
-        utterance.voice = announcementVoice ?? voice
+        utterance.voice = previewVoice ?? announcementVoice ?? voice
         utterance.pitchMultiplier = 0.9                // just a touch lower, natural
         utterance.volume = 1.0
         utterance.preUtteranceDelay = 0.0

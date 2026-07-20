@@ -96,6 +96,46 @@ final class ColonCommandTests: XCTestCase {
                        .config(key: "b", value: "on"))
     }
 
+    // MARK: - ":voices" picker
+
+    func testVoicesParsesAndExpands() {
+        XCTAssertEqual(ColonCommand.parse("voices"), .voices)
+        XCTAssertEqual(ColonCommand.parse("v"), .voices)
+        XCTAssertEqual(ColonCommand.autoResolve("v"), .expand("voices "))
+        XCTAssertEqual(ColonCommand.autoResolve("voices"), .expand("voices "))
+        // Picker filter text never auto-resolves — Return accepts the row
+        XCTAssertEqual(ColonCommand.autoResolve("voices sam"), .none)
+    }
+
+    func testVoicesCommandCompletesWithTrailingSpace() {
+        let candidates = CommandCompleter.candidates(for: "voi", values: [:])
+        XCTAssertEqual(candidates.first?.completion, "voices ")
+    }
+
+    func testVoicesStageListsAndFilters() {
+        let all = CommandCompleter.candidates(for: "voices ", values: [:],
+                                              voices: voiceFixture)
+        XCTAssertEqual(all.map(\.display),
+                       ["Ava — premium", "Daniel — enhanced", "Samantha"])
+        XCTAssertEqual(all.first?.completion,
+                       "voices com.apple.voice.premium.en-US.Ava")
+
+        let filtered = CommandCompleter.candidates(for: "voices sam", values: [:],
+                                                   voices: voiceFixture)
+        XCTAssertEqual(filtered.map(\.display), ["Samantha"])
+
+        let none = CommandCompleter.candidates(for: "voices zzz", values: [:],
+                                               voices: voiceFixture)
+        XCTAssertTrue(none.isEmpty)
+
+        // Tab fills the identifier — the buffer must keep resolving to
+        // that voice's row, not an empty list
+        let filled = CommandCompleter.candidates(
+            for: "voices com.apple.voice.compact.en-US.Samantha",
+            values: [:], voices: voiceFixture)
+        XCTAssertEqual(filled.map(\.display), ["Samantha"])
+    }
+
     func testOverlayKeysExpand() {
         XCTAssertEqual(ColonCommand.parse("config bo on"),
                        .config(key: "border", value: "on"))
@@ -103,6 +143,10 @@ final class ColonCommandTests: XCTestCase {
                        .config(key: "pointer", value: "off"))
         XCTAssertEqual(ColonCommand.parse("config th 12"),
                        .config(key: "thickness", value: "12"))
+        XCTAssertEqual(ColonCommand.parse("config sp on"),
+                       .config(key: "speedkeys", value: "on"))
+        XCTAssertEqual(ColonCommand.parse("config togg e"),
+                       .config(key: "togglesound", value: "earcon"))
     }
 
     // Auto-accept and unique-prefix expansion both assume no grammar word
@@ -188,12 +232,21 @@ final class ColonCommandTests: XCTestCase {
         CommandCompleter.candidates(for: buffer, values: values).map(\.display)
     }
 
+    // The ":voices" picker is pure logic over an injected list — no
+    // AVFoundation in tests
+    private let voiceFixture = [
+        (name: "Ava — premium", identifier: "com.apple.voice.premium.en-US.Ava"),
+        (name: "Daniel — enhanced", identifier: "com.apple.voice.enhanced.en-GB.Daniel"),
+        (name: "Samantha", identifier: "com.apple.voice.compact.en-US.Samantha"),
+    ]
+
     private let commandDisplays = [
         "help — speak the basics",
         "commands — the full key reference",
         "tutorial — interactive guided tour",
         "tip — a random feature tip",
         "config — change a setting",
+        "voices — choose the reading voice",
         "quit — stop Marduk",
         "restart — restart the daemon",
         "update — install updates now",

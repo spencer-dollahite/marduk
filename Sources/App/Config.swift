@@ -26,6 +26,8 @@ struct MardukConfig: Codable {
         var commandPalette: Bool? = true // dmenu-style panel while typing a ":" command
         var palettePosition: String? = "pointer" // "pointer" | "center" — pointer is the
                                                  // only placement zoom always keeps in view
+        var speedKeys: Bool? = false     // Option+Up/Down nudge speech rate (NORMAL/VISUAL)
+        var toggleSound: String? = "speech" // "speech" | "earcon" — Ctrl+Option+M feedback
     }
 
     struct OverlayConfig: Codable {

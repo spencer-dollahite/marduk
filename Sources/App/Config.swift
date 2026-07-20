@@ -10,6 +10,7 @@ struct MardukConfig: Codable {
     var keyboard: KeyboardConfig? = KeyboardConfig()
     var verbalizer: VerbalizerConfig? = VerbalizerConfig()
     var update: UpdateConfig? = UpdateConfig()
+    var overlay: OverlayConfig? = OverlayConfig()
 
     // Every field below is Optional: synthesized Codable treats non-Optional
     // keys as REQUIRED (property defaults are ignored on decode), so a
@@ -25,6 +26,16 @@ struct MardukConfig: Codable {
         var commandPalette: Bool? = true // dmenu-style panel while typing a ":" command
         var palettePosition: String? = "pointer" // "pointer" | "center" — pointer is the
                                                  // only placement zoom always keeps in view
+    }
+
+    struct OverlayConfig: Codable {
+        var borderEnabled: Bool? = false      // colored mode border at screen edges (opt-in)
+        var pointerEnabled: Bool? = false     // mode-colored dot following the pointer (opt-in)
+        var thickness: Int? = 6               // border thickness, points
+        var pointerSize: Int? = 28            // dot diameter, points
+        var normalColor: String? = "#FF3B30"  // red; "none" or "" hides in that mode
+        var insertColor: String? = "#34C759"  // green
+        var visualColor: String? = "#007AFF"  // blue
     }
 
     struct UpdateConfig: Codable {

@@ -43,7 +43,10 @@ enum HelpText {
         as you type. command echo, one word, on or off. palette, on or off. \
         auto update, one word, on or off. check hours, one word, hours \
         between update checks, zero for never. position, center or pointer, \
-        where the panel opens. Pointer keeps it inside a zoomed view.
+        where the panel opens. Pointer keeps it inside a zoomed view. \
+        border, on or off, a screen edge color showing the current mode: \
+        red NORMAL, green INSERT, blue VISUAL. pointer, on or off, the same \
+        color as a dot following the mouse. thickness, border width in points.
         """
 
     /// ":tip" — one is picked at random (never the same twice in a row).
@@ -66,6 +69,7 @@ enum HelpText {
         "Press u in NORMAL mode to hear what updates are available. Press u twice, or u again within a minute, to install them.",
         "The r command selects the whole paragraph under the mouse cursor, like a triple click, then reads the selection.",
         "Media pauses during reads and resumes after, only if it was actually playing. Music apps get volume-ducked instead of paused.",
+        "If you can see some of the screen, colon config border on frames it in the mode color: red for NORMAL, green for INSERT, blue for VISUAL. Colon config pointer on adds a dot at the mouse that stays visible while zoomed in.",
     ]
 
     static let welcome = """

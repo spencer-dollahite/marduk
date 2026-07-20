@@ -91,6 +91,29 @@ final class ColonCommandTests: XCTestCase {
         // "o" matches on and off
         XCTAssertEqual(ColonCommand.parse("config rescue o"),
                        .config(key: "rescue", value: "o"))
+        // "b" matches burst and border
+        XCTAssertEqual(ColonCommand.parse("config b on"),
+                       .config(key: "b", value: "on"))
+    }
+
+    func testOverlayKeysExpand() {
+        XCTAssertEqual(ColonCommand.parse("config bo on"),
+                       .config(key: "border", value: "on"))
+        XCTAssertEqual(ColonCommand.parse("config poi off"),
+                       .config(key: "pointer", value: "off"))
+        XCTAssertEqual(ColonCommand.parse("config th 12"),
+                       .config(key: "thickness", value: "12"))
+    }
+
+    // Auto-accept and unique-prefix expansion both assume no grammar word
+    // swallows another — guard the settings table as it grows.
+    func testNoSettingKeyIsPrefixOfAnother() {
+        let keys = ColonCommand.settings.map(\.key)
+        for a in keys {
+            for b in keys where a != b {
+                XCTAssertFalse(b.hasPrefix(a), "\(a) is a prefix of \(b)")
+            }
+        }
     }
 
     // MARK: - Auto-accept

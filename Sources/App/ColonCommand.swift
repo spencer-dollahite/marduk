@@ -168,6 +168,9 @@ enum ColonCommand: Equatable {
         ("position", .choice(["center", "pointer"])),
         ("autoupdate", .toggle),
         ("checkhours", .number(min: 0, max: 168, unit: "hours")),
+        ("border", .toggle),
+        ("pointer", .toggle),
+        ("thickness", .number(min: 1, max: 40, unit: "points")),
     ]
 
     static func kind(for key: String) -> SettingKind? {

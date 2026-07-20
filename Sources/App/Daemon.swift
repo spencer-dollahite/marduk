@@ -76,6 +76,10 @@ final class DaemonServer {
     private var signalSources: [DispatchSourceSignal] = []
     private var keyboardMonitor: KeyboardMonitor?
     private var displayInverter: DisplayInverter?
+    // nil while border and pointer dot are both off (the default);
+    // ":config border/pointer on" creates and starts one live, turning
+    // the last indicator off stops and releases it
+    private var modeOverlay: ModeOverlay?
     private let escapeHoldThreshold: TimeInterval
     private let typingBurstThreshold: TimeInterval
     private let typingRescueEnabled: Bool
@@ -127,6 +131,7 @@ final class DaemonServer {
         }
 
         displayInverter = DisplayInverter(invertApps: config.display.invertForApps)
+        modeOverlay = ModeOverlay(config: config.overlay ?? .init())
     }
 
     func run() throws {
@@ -195,6 +200,7 @@ final class DaemonServer {
         // RunLoop below is enough — no NSApp.run() needed.
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.accessory)
+        modeOverlay?.start()
 
         tutorial.announce = { [self] text in speech.announce(text) }
 
@@ -233,6 +239,7 @@ final class DaemonServer {
         keyboardMonitor?.onModeChange = { [self] mode in
             DispatchQueue.main.async { [self] in
                 tutorial.handle(.mode(mode))
+                modeOverlay?.setMode(mode)
                 if mode != .command {
                     palette.hide()
                     autoAcceptTimer?.cancel()
@@ -241,6 +248,7 @@ final class DaemonServer {
         }
         keyboardMonitor?.onEnabledChange = { [self] enabled in
             DispatchQueue.main.async { [self] in
+                modeOverlay?.setEnabled(enabled)
                 if !enabled {
                     tutorial.abort(silent: true)
                     palette.hide()
@@ -809,6 +817,35 @@ final class DaemonServer {
             ConfigLoader.save(config)
             speech.announce("Palette position \(value).")
 
+        case "border":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            var ov = config.overlay ?? .init()
+            ov.borderEnabled = on
+            config.overlay = ov
+            ConfigLoader.save(config)
+            rebuildOverlay()
+            speech.announce("Mode border \(value).")
+
+        case "pointer":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            var ov = config.overlay ?? .init()
+            ov.pointerEnabled = on
+            config.overlay = ov
+            ConfigLoader.save(config)
+            rebuildOverlay()
+            speech.announce("Pointer dot \(value).")
+
+        case "thickness":
+            guard let points = number() else {
+                return fail("Thickness must be 1 to 40 points.")
+            }
+            var ov = config.overlay ?? .init()
+            ov.thickness = points
+            config.overlay = ov
+            ConfigLoader.save(config)
+            rebuildOverlay()
+            speech.announce("Border thickness \(points) points.")
+
         case "autoupdate":
             guard let on = toggle() else { return fail("Say on or off.") }
             autoUpdate = on
@@ -838,9 +875,22 @@ final class DaemonServer {
             } else {
                 fail("Unknown setting \(key). Settings are rate, level, hashes, "
                     + "rescue, burst, escape hold, echo, command echo, palette, "
-                    + "auto update, check hours.")
+                    + "auto update, check hours, border, pointer, thickness.")
             }
         }
+    }
+
+    /// Tears down and (if any indicator is enabled) recreates the overlay
+    /// from the current config — ":config border/pointer/thickness" apply
+    /// live this way.
+    /// Stop/start are main-queue async, so the old windows are gone before
+    /// the new ones order in.
+    private func rebuildOverlay() {
+        modeOverlay?.stop()
+        modeOverlay = ModeOverlay(config: config.overlay ?? .init())
+        modeOverlay?.start()
+        modeOverlay?.setMode(keyboardMonitor?.mode ?? .normal)
+        modeOverlay?.setEnabled(keyboardMonitor?.isEnabled ?? true)
     }
 
     /// Current values shown in the palette's key rows ("rate — 200").
@@ -858,6 +908,9 @@ final class DaemonServer {
             "position": palette.positionMode.rawValue,
             "autoupdate": autoUpdate ? "on" : "off",
             "checkhours": updateCheckHours == 0 ? "off" : "\(updateCheckHours) h",
+            "border": (config.overlay?.borderEnabled ?? false) ? "on" : "off",
+            "pointer": (config.overlay?.pointerEnabled ?? false) ? "on" : "off",
+            "thickness": "\(config.overlay?.thickness ?? 6) pt",
         ]
     }
 
@@ -1107,6 +1160,7 @@ final class DaemonServer {
     // MARK: - Cleanup
 
     private func cleanup() {
+        modeOverlay?.stop()
         displayInverter?.stop()
         keyboardMonitor?.stop()
         speech.stop()

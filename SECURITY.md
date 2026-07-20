@@ -8,6 +8,8 @@ Marduk runs with deep hooks into your Mac — an event tap on your keyboard, the
 
 From inside Marduk, the `:security` command opens a pre-addressed email.
 
+If you prefer GitHub, [private vulnerability reporting](https://github.com/spencer-dollahite/marduk/security/advisories/new) is enabled too — both routes reach the same person.
+
 Include what you can: what you found, how to reproduce it, and what an attacker could do with it. Redact anything personal from logs (`~/Library/Logs/marduk.log` contains text Marduk has spoken).
 
 ## What to expect

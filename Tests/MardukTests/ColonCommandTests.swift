@@ -67,6 +67,20 @@ final class ColonCommandTests: XCTestCase {
         XCTAssertEqual(ColonCommand.autoResolve("q"), .execute("quit"))
     }
 
+    func testSecurityNeverShadowsSetAlias() {
+        XCTAssertEqual(ColonCommand.parse("sec"), .security)
+        XCTAssertEqual(ColonCommand.autoResolve("sec"), .execute("security"))
+        // "se" must stay ambiguous (set | security) in both resolvers —
+        // ":se ra 230" is vim muscle memory for :set, and a typing pause
+        // after "se" must never open the security email
+        XCTAssertEqual(ColonCommand.parse("se"), .unknown("se"))
+        XCTAssertEqual(ColonCommand.autoResolve("se"), .none)
+        XCTAssertEqual(ColonCommand.autoResolve("set"), .none)
+        XCTAssertEqual(ColonCommand.parse("se ra 230"), .unknown("se"))
+        XCTAssertEqual(ColonCommand.parse("set rate 230"),
+                       .config(key: "rate", value: "230"))
+    }
+
     func testLogCopy() {
         XCTAssertEqual(ColonCommand.parse("log copy"), .logCopy)
         XCTAssertEqual(ColonCommand.parse("log c"), .logCopy)
@@ -254,6 +268,7 @@ final class ColonCommandTests: XCTestCase {
         "log — open the log file",
         "feedback — open GitHub issues",
         "bug — report a bug on GitHub",
+        "security — report a security issue privately",
     ]
 
     func testEmptyBufferListsAllCommands() {

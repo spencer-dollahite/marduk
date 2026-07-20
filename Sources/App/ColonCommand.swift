@@ -16,25 +16,31 @@ enum ColonCommand: Equatable {
     case logCopy
     case feedback
     case bug
+    case security
     case unknown(String)
 
     // No name may be a prefix of another — auto-accept relies on it
     // (the tap's Return handler also assumes "voices" owns that prefix)
     static let commandNames = ["help", "commands", "tutorial", "tip", "config",
                                "voices", "quit", "restart", "update",
-                               "uninstall", "log", "feedback", "bug"]
+                               "uninstall", "log", "feedback", "bug", "security"]
 
     static func parse(_ raw: String) -> ColonCommand {
         let tokens = raw.lowercased().split(separator: " ").map(String.init)
         guard let first = tokens.first else { return .unknown("") }
 
-        // Explicit aliases win, then vim-style unique-prefix expansion
+        // Explicit aliases win, then vim-style unique-prefix expansion.
+        // "set" (the config alias) isn't a commandName but must shadow the
+        // "se" prefix — ":se ra 230" is vim muscle memory for :set and can
+        // never be allowed to expand to "security".
         let name: String?
         switch first {
         case "h": name = "help"
         case "c": name = "commands"
         case "set": name = "config"
-        default: name = expand(first, in: commandNames)
+        default:
+            let expanded = expand(first, in: commandNames + ["set"])
+            name = expanded == "set" ? "config" : expanded
         }
 
         switch name {
@@ -68,6 +74,8 @@ enum ColonCommand: Equatable {
             return .feedback
         case "bug":
             return .bug
+        case "security":
+            return .security
         case "config":
             guard tokens.count == 3 else { return .unknown(raw) }
             // Expand key and (for enum kinds) value the same way, so
@@ -122,7 +130,11 @@ enum ColonCommand: Equatable {
 
         switch tokens.count {
         case 1:
-            guard let name = expand(tokens[0], in: commandNames) else { return .none }
+            // "set" shadows the "se" prefix here too — a pause after "se"
+            // mid-way through "set rate…" must stay ambiguous, not open
+            // the security email
+            guard let name = expand(tokens[0], in: commandNames + ["set"]),
+                  name != "set" else { return .none }
             // Staged commands expand instead of executing: config wants a
             // key, voices opens the picker (selection accepts via Return)
             if name == "config" || name == "voices" { return .expand("\(name) ") }
@@ -215,6 +227,7 @@ enum CommandCompleter {
         "log": "open the log file",
         "feedback": "open GitHub issues",
         "bug": "report a bug on GitHub",
+        "security": "report a security issue privately",
     ]
 
     private static func commandDisplay(_ name: String) -> String {

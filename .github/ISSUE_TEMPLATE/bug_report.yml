@@ -1,0 +1,37 @@
+name: Bug report
+description: Something broke or behaved unexpectedly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > [!IMPORTANT]
+        > **Privacy: your log contains text Marduk has spoken.** `~/Library/Logs/marduk.log` includes the first ~80 characters of everything read aloud — emails, messages, whatever you selected. **Redact before pasting.** Check the [Known quirks](../../#known-quirks-read-before-filing-bugs) section first — some surprising behaviors are deliberate.
+        >
+        > **Security problem?** Don't file it here — email [spencer@ssdollahite.com](mailto:spencer@ssdollahite.com) instead (see the [security policy](../../security/policy)).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1."
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup
+      description: Marduk version, install method, macOS version — the `:bug` command fills this in for you. Add your Mac model and `marduk status` output if relevant.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: Redacted — see the privacy note above.
+      render: text

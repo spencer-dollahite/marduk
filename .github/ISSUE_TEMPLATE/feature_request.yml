@@ -1,0 +1,16 @@
+name: Feature request
+description: Something that would make Marduk work better for you
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What would help
+      description: What you're trying to do and where Marduk falls short.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: How you do it today
+      description: Workarounds, other tools, or "I can't do this at all".

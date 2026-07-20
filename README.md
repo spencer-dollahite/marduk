@@ -64,6 +64,12 @@ Marduk is assistive technology — macOS makes you grant its two deep hooks, and
 - **Accessibility** — pick `Marduk.app` in the Settings pane Marduk opens for you. If the grant is ever missing, Marduk says so and heals within ~10 seconds of a fix (if it seems stuck: remove the entry and re-add it — toggling is not enough).
 - **Automation** — the first time speech ducks your media, allow the prompts to control System Events / Music / Spotify.
 
+### Privacy
+
+Marduk tracks nothing. No telemetry, no analytics, no accounts, no crash reporting — there is no code that phones home, and I have no interest in knowing how you use your computer. Everything runs locally on your Mac.
+
+The only network activity is checking GitHub for new versions (an unauthenticated request that carries no personal data — `:config checkhours 0` turns even that off) and downloading updates you ask for. The log file at `~/Library/Logs/marduk.log` never leaves your machine; be aware it contains the first ~80 characters of text Marduk has spoken, so redact it before pasting into a bug report (Marduk reminds you of this whenever it copies log lines).
+
 ## What it does
 
 - **Vim-style modal keyboard layer** — NORMAL (commands), INSERT (typing), VISUAL / VISUAL LINE (select with `hjkl`, count prefixes like `3j`, read with `r`). A colored-earcon mode system, an escape tap/hold that never steals Escape from vim, and a *typing rescue* that notices when you type into NORMAL mode by mistake, flips to INSERT, and replays your keystrokes so nothing is lost.
@@ -132,6 +138,12 @@ These are deliberate trade-offs of the typing-rescue system, not bugs:
 - Hand-edits to config.json need a daemon restart — use `:config` from inside Marduk (or `marduk config rate`) for live changes.
 - **Upgrading from a pre-bundle install:** the first update converts Marduk into `Marduk.app` and announces it aloud. If keyboard commands stop afterwards, re-grant Accessibility to `Marduk.app`; the Automation prompt also re-asks once (now explaining why Marduk wants media control).
 
+## Known limitations
+
+- **US (ANSI) keyboard layout is assumed.** Commands are matched by physical key position, so on AZERTY, QWERTZ, or Dvorak layouts the command letters land in the wrong places. A [Karabiner-Elements](https://karabiner-elements.pqrs.org/) remap is a workaround today; proper layout awareness is planned.
+- **English only.** Voice pickers list English voices, and everything Marduk says is English.
+- **Apple Silicon + macOS 26 (Tahoe) only.** Older macOS versions and Intel Macs are not supported.
+
 ## How it works
 
 A background daemon (no UI) built on the C-level `AXUIElement` accessibility API, `CGEventTap` for the modal keyboard layer, `AVSpeechSynthesizer` for speech, and CoreAudio + AppleScript for media-aware ducking — the same primitives VoiceOver-class tools use, since Apple ships no third-party screen-reader SDK. Architecture notes live in [CLAUDE.md](CLAUDE.md) and the long-form design in [PLAN.md](PLAN.md).
@@ -151,6 +163,8 @@ Explicitly **out of scope**: braille, and full screen-reader parity with VoiceOv
 Issues, bug reports, and "this assumption doesn't survive contact with my setup" reports are very welcome — especially from low-vision users. This is a personal project maintained at personal-project pace; PRs are welcome but may sit.
 
 **When filing bugs:** your `~/Library/Logs/marduk.log` contains snippets of text Marduk has spoken (your emails, messages, articles) — redact before pasting.
+
+**Security issues:** please email [spencer@ssdollahite.com](mailto:spencer@ssdollahite.com) instead of opening a public issue — see [SECURITY.md](SECURITY.md). From inside Marduk, `:security` opens a pre-addressed email.
 
 If Marduk is useful to you, you can [sponsor development](https://github.com/sponsors/spencer-dollahite).
 

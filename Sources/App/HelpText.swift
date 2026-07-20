@@ -33,7 +33,8 @@ enum HelpText {
         quit. restart. update, install \
         updates now. uninstall, remove the launch agent. log, open the log \
         file. log copy, copy recent log lines to the clipboard. \
-        feedback, open GitHub issues. bug, report a bug. \
+        feedback, open GitHub issues. bug, report a bug. security, report \
+        a security issue privately by email. \
         Commands complete themselves: \
         type until yours is the only match, then just stop. \
         Slash starts a fuzzy search over every command and setting; \

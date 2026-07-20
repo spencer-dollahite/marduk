@@ -3,8 +3,29 @@ import AppKit
 import AVFoundation
 
 enum MardukDaemon {
-    static let socketPath = "/tmp/marduk.sock"
-    static let pidPath = "/tmp/marduk.pid"
+    /// Per-user, mode-0700 runtime directory (Darwin's /var/folders/…/T/).
+    /// These paths used to live in world-writable /tmp, where any local
+    /// user could drive the daemon over the socket — or pre-create the
+    /// paths and block startup entirely (the sticky bit makes our unlink
+    /// fail). The CLI and daemon share these constants, so both sides of
+    /// the IPC move together.
+    static let runtimeDir: String = {
+        var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let n = confstr(_CS_DARWIN_USER_TEMP_DIR, &buf, buf.count)
+        var dir = (n > 0 && n <= buf.count) ? String(cString: buf) : NSTemporaryDirectory()
+        if !dir.hasSuffix("/") { dir += "/" }
+        // AF_UNIX sun_path caps at 104 bytes. Darwin temp dirs are ~50
+        // chars, but if one is ever too long, fall back to the (also
+        // per-user) config dir rather than producing a silently-truncated
+        // path that the CLI and daemon would resolve differently.
+        if dir.utf8.count + "marduk.sock".utf8.count >= 104 {
+            dir = NSString(string: "~/.config/marduk/").expandingTildeInPath + "/"
+            fputs("[marduk] temp dir too long for a socket — using \(dir)\n", stderr)
+        }
+        return dir
+    }()
+    static let socketPath = runtimeDir + "marduk.sock"
+    static let pidPath = runtimeDir + "marduk.pid"
 }
 
 // MARK: - Client
@@ -120,6 +141,7 @@ final class DaemonServer {
     // with autoupdate on).
     private var updateArmedUntil: Date?
     private var lastAnnouncedRemote = ""
+    private var lastAnnouncedRelease = ""  // release-channel dedup (tag, not sha)
     private var autoRetryScheduled = false
     private var updateCheckTimer: DispatchSourceTimer?
     private var autoUpdate: Bool
@@ -161,7 +183,13 @@ final class DaemonServer {
         let pid = ProcessInfo.processInfo.processIdentifier
         try "\(pid)".write(toFile: MardukDaemon.pidPath, atomically: true, encoding: .utf8)
 
-        unlink(MardukDaemon.socketPath)
+        if unlink(MardukDaemon.socketPath) != 0 && errno != ENOENT {
+            // Can't remove a pre-existing socket we don't own — surface the
+            // real cause instead of the opaque EADDRINUSE bind would give
+            throw NSError(domain: "marduk", code: 4, userInfo: [
+                NSLocalizedDescriptionKey:
+                    "Stale socket at \(MardukDaemon.socketPath) can't be removed (errno \(errno))"])
+        }
 
         serverFD = socket(AF_UNIX, SOCK_STREAM, 0)
         guard serverFD >= 0 else {
@@ -189,6 +217,9 @@ final class DaemonServer {
             throw NSError(domain: "marduk", code: 2,
                           userInfo: [NSLocalizedDescriptionKey: "Failed to bind socket (errno \(errno))"])
         }
+        // Owner-only, on top of the 0700 runtime dir — the socket carries
+        // speak/stop/reload, none of another user's business
+        chmod(MardukDaemon.socketPath, 0o600)
 
         guard Darwin.listen(serverFD, 5) == 0 else {
             close(serverFD)
@@ -350,6 +381,16 @@ final class DaemonServer {
 
     private func handleClient(_ fd: Int32) {
         defer { close(fd) }
+
+        // Same-user only. The socket path is 0600 inside a 0700 dir, but
+        // permissions are policy and credentials are proof — verify the
+        // peer before reading a byte.
+        var peerUID: uid_t = 0
+        var peerGID: gid_t = 0
+        if getpeereid(fd, &peerUID, &peerGID) != 0 || peerUID != getuid() {
+            fputs("[marduk] rejected socket connection from uid \(peerUID)\n", stderr)
+            return
+        }
 
         // A stalled or dead peer must never wedge the accept loop: bound every
         // socket operation and suppress SIGPIPE on write to a closed peer.
@@ -586,7 +627,28 @@ final class DaemonServer {
         case .bug:
             speech.announce("Opening a bug report. If you paste log lines, "
                 + "remember they contain text Marduk has spoken.")
-            openURL("https://github.com/spencer-dollahite/marduk/issues/new?template=bug_report.md")
+            // Issue forms accept per-field prefill by field id — spare the
+            // reporter the eyes-free hunt for version and install channel
+            let channel: String
+            switch installChannel {
+            case .source: channel = "source build"
+            case .homebrew: channel = "Homebrew"
+            case .release: channel = "release DMG"
+            }
+            let setup = "Marduk \(Marduk.version) (\(channel)), "
+                + "macOS \(ProcessInfo.processInfo.operatingSystemVersionString)"
+            var allowed = CharacterSet.urlQueryAllowed
+            allowed.remove(charactersIn: "&=+")
+            let encoded = setup.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
+            openURL("https://github.com/spencer-dollahite/marduk/issues/new"
+                + "?template=bug_report.yml&setup=\(encoded)")
+        case .security:
+            // Security reports go to email, never public issues — say the
+            // address aloud too, in case no mail client is configured
+            speech.announce("Opening an email to report a security issue "
+                + "privately. The address is spencer at s s dollahite dot com. "
+                + "Please don't put security problems in public GitHub issues.")
+            openURL("mailto:spencer@ssdollahite.com?subject=Marduk%20security%20report")
         case .config(let key, let value):
             applyConfig(key: key, value: value)
         case .unknown(let name):
@@ -620,15 +682,34 @@ final class DaemonServer {
         checkForUpdates(origin: .manual)
     }
 
+    /// How this copy got onto the machine — decides both the update
+    /// mechanism (git pull vs pointing at a channel) and the wording.
+    private enum InstallChannel { case source, homebrew, release }
+
+    private var installChannel: InstallChannel {
+        if projectDir != nil { return .source }
+        let fm = FileManager.default
+        if fm.fileExists(atPath: "/opt/homebrew/Caskroom/marduk")
+            || fm.fileExists(atPath: "/usr/local/Caskroom/marduk") {
+            return .homebrew
+        }
+        return .release
+    }
+
+    /// "…is available." + how to actually get it, per channel.
+    private var releaseUpdateHint: String {
+        installChannel == .homebrew
+            ? "Run brew upgrade to install it."
+            : "Download it from the GitHub releases page."
+    }
+
     /// Fetches origin/main off the main thread and reports what's new.
     private func checkForUpdates(origin: UpdateCheckOrigin) {
         guard let dir = projectDir else {
-            // No repo above the binary = installed from a release, not a
-            // clone — git-based updates don't apply.
-            if origin == .manual {
-                speech.announce("This copy of Marduk was installed from a "
-                    + "release. Download updates from the GitHub releases page.")
-            }
+            // No repo above the binary = installed from a release or via
+            // Homebrew — git-based updates don't apply, but the latest
+            // release tag tells us whether something newer exists.
+            checkLatestRelease(origin: origin)
             return
         }
         DispatchQueue.global(qos: .utility).async { [self] in
@@ -652,6 +733,40 @@ final class DaemonServer {
             DispatchQueue.main.async { [self] in
                 handleCheckResult(subjects: subjects, remote: remote,
                                   checks: checks, origin: origin)
+            }
+        }
+    }
+
+    /// Release/Homebrew installs: compare the running version against the
+    /// latest GitHub release. Manual checks always speak an answer; the
+    /// periodic path announces each new version exactly once (mirroring
+    /// the source channel's lastAnnouncedRemote). API/network failure
+    /// falls back to the old generic pointer on manual and stays silent
+    /// on periodic — never a false "up to date".
+    private func checkLatestRelease(origin: UpdateCheckOrigin) {
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let result = Self.shell("curl", "-s", "-m", "10",
+                                    "-H", "User-Agent: marduk",
+                                    "-H", "Accept: application/vnd.github+json",
+                                    "https://api.github.com/repos/spencer-dollahite/marduk/releases/latest",
+                                    cwd: "/tmp")
+            let latest = result.status == 0 ? ReleaseCheck.parseLatestTag(result.output) : nil
+            DispatchQueue.main.async { [self] in
+                guard let latest else {
+                    if origin == .manual {
+                        speech.announce("This copy of Marduk was installed from a "
+                            + "release. " + releaseUpdateHint)
+                    }
+                    return
+                }
+                if latest == Marduk.version {
+                    if origin == .manual { speech.announce("Marduk is up to date.") }
+                } else if origin == .manual {
+                    speech.announce("Marduk \(latest) is available. " + releaseUpdateHint)
+                } else if lastAnnouncedRelease != latest {
+                    lastAnnouncedRelease = latest
+                    speech.announce("Marduk \(latest) is available. " + releaseUpdateHint)
+                }
             }
         }
     }
@@ -1151,7 +1266,7 @@ final class DaemonServer {
                 guard !silent else { return }
                 DispatchQueue.main.async { [self] in
                     speech.announce("This copy of Marduk was installed from a "
-                        + "release. Download updates from the GitHub releases page.")
+                        + "release. " + releaseUpdateHint)
                 }
                 return
             }

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<!-- Landing page for ssdollahite.com/marduk — matches the main site's
+     style (black/white, inline styles, floated half-width divs).
+     Deploy as ssdollahite.com/marduk/index.html. -->
+<html lang="en">
+<head>
+	<title>Marduk — SSDollahite</title>
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body {
+	background-color: #000;
+	color: #FFF;
+}
+a {
+	color: #9CF;
+}
+header {
+    text-align: center;
+    padding: 10px;
+}
+header div {
+    width: 50%;
+    float: left;
+}
+h1 {
+    text-align: center;
+    clear: both;
+    padding-top: 20px;
+}
+p.tagline {
+    text-align: center;
+    margin: 0 auto;
+    width: 90%;
+}
+section {
+    margin: 20px auto;
+    width: 90%;
+}
+section div {
+    width: 50%;
+    float: left;
+}
+code {
+    background-color: #222;
+    padding: 2px 6px;
+}
+footer {
+    clear: both;
+    text-align: center;
+    padding: 20px;
+}
+</style>
+</head>
+<body>
+	<header>
+		<div><a href="https://github.com/spencer-dollahite/marduk">GitHub</a></div>
+        <div><a href="mailto:spencer@ssdollahite.com">spencer@ssdollahite.com</a></div>
+	</header>
+	<h1>Marduk</h1>
+	<p class="tagline">An audio-first assistive platform for macOS — vim-style modal navigation, spoken everything, no screen required. Free and open source (MIT).</p>
+	<section>
+        <div>
+            <h2>Download</h2>
+            <ol>
+                <li><a href="https://github.com/spencer-dollahite/marduk/releases/latest/download/Marduk.dmg">Download Marduk.dmg</a> (signed &amp; notarized, always the latest release)</li>
+                <li>Open it and drag <strong>Marduk</strong> into <strong>Applications</strong></li>
+                <li>Open Marduk — it installs itself and talks you through the rest, including the one permission it needs</li>
+            </ol>
+            <p>Or with <a href="https://brew.sh">Homebrew</a>:</p>
+            <p><code>brew install --cask spencer-dollahite/marduk/marduk</code></p>
+            <p>Requires an Apple Silicon Mac on macOS 26 (Tahoe).</p>
+        </div>
+        <div>
+            <h2>What it is</h2>
+            <ul>
+                <li>Vim-style modal keyboard control — NORMAL, INSERT, VISUAL, and a command line with a spoken palette</li>
+                <li>Reads what's under your cursor; pauses and resumes your music around speech automatically</li>
+                <li>Runs as a quiet background daemon — no windows, no UI to see</li>
+                <li>Built for low-vision and audio-first use, by a user, in the open</li>
+                <li>Private by design: no telemetry, no analytics, everything stays on your Mac</li>
+            </ul>
+            <p><a href="https://github.com/spencer-dollahite/marduk#readme">Full documentation on GitHub</a> · <a href="https://github.com/spencer-dollahite/marduk/security/policy">Report a security issue</a></p>
+        </div>
+	</section>
+	<footer>
+		<a href="https://ssdollahite.com">ssdollahite.com</a>
+	</footer>
+</body>
+</html>

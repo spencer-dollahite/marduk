@@ -22,7 +22,10 @@ enum HelpText {
         time. t t, time and date. s, toggle speak under pointer. u, check \
         for updates and hear what's new. u u, install the update. \
         n, in Firefox reader mode: pause your media and start Firefox's \
-        own narration. n again, or Escape, brings the media back. \
+        own narration. n again, or Escape, brings the media back. n works \
+        from INSERT mode too when the reader page has focus. \
+        8, in Firefox: open reader mode and start narrating, one key. \
+        8 again stops narrating and closes the reader. \
         Escape, stop speech. Space, pause or resume a read. \
         VISUAL mode: h j k l extend the selection. Numbers repeat a motion, \
         like 3 j. r reads the selection. Escape cancels. \
@@ -81,6 +84,7 @@ enum HelpText {
         "Colon voices opens a voice picker. Arrow through the list and each voice introduces itself in its own sound; Return keeps the one you are hearing.",
         "With colon config speed keys on, Option up arrow and Option down arrow change the speech rate on the spot, ten words per minute at a time. Hold the key to glide.",
         "In Firefox reader mode, n hands the reading to Firefox's own narrator: your music pauses, Marduk goes quiet, and Firefox reads the page. Press n again or Escape to bring the music back.",
+        "On any article in Firefox, 8 does the whole ritual at once: opens reader mode, pauses your music, and starts Firefox narrating. 8 again closes it all back down.",
     ]
 
     static let welcome = """

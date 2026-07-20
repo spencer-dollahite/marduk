@@ -411,6 +411,25 @@ final class KeyboardMonitor {
             return nil
         }
 
+        // === INSERT-mode n over a Firefox Reader document ===
+        // The key PASSES THROUGH untouched — it IS Narrate's play/pause —
+        // but Marduk reacts around it: duck + hold on start, release on
+        // the next n. The AX context check runs async on main and only
+        // matches focus inside an about:reader web area, so text boxes
+        // and the URL bar keep typing their n's; mid-narration typing in
+        // some other Firefox field stays typing too (end the handoff
+        // from NORMAL, or with the n that stops Narrate in the reader).
+        if mode == .insert, keycode == 45, !isAutorepeat, isFirefoxFrontmost,
+           !hasOption, !flags.contains(.maskShift) {
+            DispatchQueue.main.async { [self] in
+                guard Self.narrationContext() else { return }
+                narrationActive.toggle()
+                fputs("[keyboard] narration \(narrationActive ? "handoff" : "off") (INSERT)\n", stderr)
+                onNarrate?(narrationActive)
+            }
+            return pass
+        }
+
         // === Option+Up/Down: live speech rate (opt-in, NORMAL/VISUAL) ===
         // No autorepeat guard on purpose — holding the key keeps nudging.
         // INSERT and COMMAND are excluded: apps own Option+arrows there
@@ -792,20 +811,44 @@ final class KeyboardMonitor {
             // and typing rescue still treats words like "sun" as typing).
             DispatchQueue.main.async { [self] in
                 if narrationActive {
+                    // Always allowed to end the handoff, wherever focus is
                     narrationActive = false
                     fputs("[keyboard] narration off — releasing media\n", stderr)
                     postKey(keycode: 45)
                     onNarrate?(false)
                 } else {
-                    narrationActive = true
-                    fputs("[keyboard] narration handoff to Firefox\n", stderr)
-                    onNarrate?(true)
-                    // Give the media pause a beat so narration and music
-                    // don't talk over each other at the start
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
-                        guard narrationActive else { return }
-                        postKey(keycode: 45)
+                    // Only start when focus is inside a Reader document —
+                    // on a normal page n would pause media for nothing
+                    guard Self.narrationContext() else {
+                        Earcon.error()
+                        return
                     }
+                    startNarrationHandoff()
+                }
+            }
+            return nil
+
+        case 28 where isFirefoxFrontmost: // 8 — Reader mode + narration, one key
+            // Post Firefox's reader toggle (Cmd+Option+R), wait for the
+            // Reader document to exist, then run the narration handoff.
+            // Already narrating: full round trip — stop, release media,
+            // close Reader. Digits normally pass through in NORMAL; this
+            // is the one exception, Firefox-frontmost only.
+            if flags.contains(.maskShift) || hasOption { return pass }
+            if isAutorepeat { return nil }
+            DispatchQueue.main.async { [self] in
+                if narrationActive {
+                    narrationActive = false
+                    fputs("[keyboard] 8 — narration off, closing reader\n", stderr)
+                    onNarrate?(false)
+                    postKey(keycode: 15, command: true, option: true)
+                } else if Self.narrationContext() {
+                    // Reader already open — just start narrating
+                    startNarrationHandoff()
+                } else {
+                    fputs("[keyboard] 8 — opening reader mode\n", stderr)
+                    postKey(keycode: 15, command: true, option: true)
+                    pollForReader(attempt: 0)
                 }
             }
             return nil
@@ -942,6 +985,83 @@ final class KeyboardMonitor {
     /// "runs") as typing.
     private func isCommandLetter(_ keycode: Int64) -> Bool {
         Self.commandLetterKeys.contains(keycode) || (keycode == 45 && isFirefoxFrontmost)
+    }
+
+    // MARK: - Firefox Reader narration handoff
+
+    /// Duck + hold media, silence Marduk (via onNarrate), then hand `n` to
+    /// Firefox — Narrate treats it as play/pause. Main thread only.
+    private func startNarrationHandoff() {
+        narrationActive = true
+        fputs("[keyboard] narration handoff to Firefox\n", stderr)
+        onNarrate?(true)
+        // Give the media pause a beat so narration and music don't talk
+        // over each other at the start
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
+            guard narrationActive else { return }
+            postKey(keycode: 45)
+        }
+    }
+
+    /// After `8` posts Cmd+Option+R: the Reader document takes a beat to
+    /// render and receive focus. Poll until narrationContext() flips, then
+    /// start narrating; give up quietly-but-audibly after ~2.5s (page has
+    /// no reader view, or focus never entered the document).
+    private func pollForReader(attempt: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in
+            guard !narrationActive else { return }
+            if Self.narrationContext() {
+                startNarrationHandoff()
+            } else if attempt < 10 {
+                pollForReader(attempt: attempt + 1)
+            } else {
+                fputs("[keyboard] 8 — reader document never appeared\n", stderr)
+                Earcon.error()
+            }
+        }
+    }
+
+    /// True when keyboard focus sits inside a Firefox Reader document — the
+    /// context where `n` drives Narrate. Ascends from the focused element
+    /// (self included) to the nearest AXWebArea and checks for an
+    /// about:reader URL. Chrome text fields (URL bar, find bar) never reach
+    /// a web area, and normal pages have normal URLs, so every typing
+    /// context returns false. Main queue only — AX is synchronous IPC.
+    static func narrationContext() -> Bool {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.bundleIdentifier == "org.mozilla.firefox" else { return false }
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 0.5)
+
+        var focusedRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            axApp, kAXFocusedUIElementAttribute as CFString, &focusedRef
+        ) == .success,
+              let raw = focusedRef,
+              CFGetTypeID(raw) == AXUIElementGetTypeID() else { return false }
+        var element = raw as! AXUIElement
+
+        for _ in 0..<15 {
+            AXUIElementSetMessagingTimeout(element, 0.5)
+            var roleRef: CFTypeRef?
+            _ = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+            if roleRef as? String == "AXWebArea" {
+                var urlRef: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(
+                    element, kAXURLAttribute as CFString, &urlRef
+                ) == .success else { return false }
+                let url = (urlRef as? URL)?.absoluteString ?? (urlRef as? String) ?? ""
+                return url.hasPrefix("about:reader")
+            }
+            var parentRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                element, kAXParentAttribute as CFString, &parentRef
+            ) == .success,
+                  let parent = parentRef,
+                  CFGetTypeID(parent) == AXUIElementGetTypeID() else { return false }
+            element = parent as! AXUIElement
+        }
+        return false
     }
 
     // Visual motions that may legitimately follow a withheld `v`/`V`:
@@ -1213,12 +1333,14 @@ final class KeyboardMonitor {
 
     /// Post a synthetic key event (for visual mode selection).
     /// Tagged with syntheticMarker so our event tap passes them through.
-    private func postKey(keycode: CGKeyCode, shift: Bool = false, command: Bool = false, count: Int = 1) {
+    private func postKey(keycode: CGKeyCode, shift: Bool = false, command: Bool = false,
+                         option: Bool = false, count: Int = 1) {
         guard let source = CGEventSource(stateID: .hidSystemState) else { return }
 
         var flags: CGEventFlags = []
         if shift { flags.insert(.maskShift) }
         if command { flags.insert(.maskCommand) }
+        if option { flags.insert(.maskAlternate) }
 
         for _ in 0..<count {
             guard let down = CGEvent(keyboardEventSource: source, virtualKey: keycode, keyDown: true),

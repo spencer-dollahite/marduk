@@ -60,6 +60,19 @@ final class KeyboardMonitor {
     var speedKeysEnabled = false     // Option+Up/Down nudge speech rate (NORMAL/VISUAL)
     var toggleEarconEnabled = false  // Ctrl+Option+M bloops instead of speaking
     var onRateChange: ((Float) -> Void)?  // signed rate delta from the speed keys
+
+    // Firefox Reader narration handoff (`n` in NORMAL while Firefox is
+    // frontmost). true = Marduk stops its own speech and holds media
+    // paused while Firefox's Narrate reads; false = release. State is
+    // main-thread-only like all tap state.
+    var onNarrate: ((Bool) -> Void)?
+    private var narrationActive = false
+    // Cached by a workspace observer so the tap callback can gate the `n`
+    // command on the frontmost app without querying anything in-callback
+    private var frontmostBundleID =
+        NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+    private var workspaceObserver: NSObjectProtocol?
+    private var isFirefoxFrontmost: Bool { frontmostBundleID == "org.mozilla.firefox" }
     private var commandBuffer = ""
     // After an auto-expand ("posi" → "config position "), the user may still
     // be typing the rest of the word — those chars are absorbed, not appended.
@@ -150,6 +163,15 @@ final class KeyboardMonitor {
         self.isReadActive = isReadActive
         self.onPauseToggle = onPauseToggle
 
+        // Keep the frontmost-app cache warm for the `n` narration gate
+        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            self?.frontmostBundleID = (note.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication)?.bundleIdentifier ?? ""
+        }
+
         if createTap() {
             fputs("[keyboard] NORMAL mode (Ctrl+Option+M to disable, i for INSERT)\n", stderr)
         } else {
@@ -220,6 +242,10 @@ final class KeyboardMonitor {
 
     func stop() {
         stopped = true
+        if let observer = workspaceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            workspaceObserver = nil
+        }
         tapWatchdog?.cancel()
         tapWatchdog = nil
         tapRetry?.cancel()
@@ -316,6 +342,12 @@ final class KeyboardMonitor {
             let word = isEnabled ? "Systems engaged" : "Systems disengaged"
             let on = isEnabled
             DispatchQueue.main.async { [self] in
+                // Disabling mid-narration must not leave media stuck paused
+                if narrationActive {
+                    narrationActive = false
+                    postKey(keycode: 45)
+                    onNarrate?(false)
+                }
                 if toggleEarconEnabled {
                     if on { Earcon.bloopUp() } else { Earcon.bloopDown() }
                 } else {
@@ -751,8 +783,41 @@ final class KeyboardMonitor {
             }
             return nil
 
-        case 53: // Escape — stop speech if speaking
+        case 45 where isFirefoxFrontmost: // n — Firefox Reader narration handoff
+            // Marduk steps aside for Firefox's own Narrate: stop our
+            // speech, pause media and HOLD it paused, then hand the n to
+            // Firefox (Narrate treats n as play/pause). Second n (or
+            // Escape) pauses narration and releases the media. Outside
+            // Firefox, n stays a plain letter (falls to the default beep,
+            // and typing rescue still treats words like "sun" as typing).
             DispatchQueue.main.async { [self] in
+                if narrationActive {
+                    narrationActive = false
+                    fputs("[keyboard] narration off — releasing media\n", stderr)
+                    postKey(keycode: 45)
+                    onNarrate?(false)
+                } else {
+                    narrationActive = true
+                    fputs("[keyboard] narration handoff to Firefox\n", stderr)
+                    onNarrate?(true)
+                    // Give the media pause a beat so narration and music
+                    // don't talk over each other at the start
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
+                        guard narrationActive else { return }
+                        postKey(keycode: 45)
+                    }
+                }
+            }
+            return nil
+
+        case 53: // Escape — stop speech if speaking; end a narration handoff
+            DispatchQueue.main.async { [self] in
+                if narrationActive {
+                    narrationActive = false
+                    fputs("[keyboard] narration off (Escape) — releasing media\n", stderr)
+                    postKey(keycode: 45)
+                    onNarrate?(false)
+                }
                 if isSpeaking() { onStop?() }
             }
             return nil
@@ -871,6 +936,14 @@ final class KeyboardMonitor {
     // non-command letter still flips the decision to typing.
     private static let commandLetterKeys: Set<Int64> = [1, 9, 15, 17, 32, 34]
 
+    /// n (45) is a command ONLY while Firefox is frontmost (Reader
+    /// narration handoff) — everywhere else it stays a plain letter, so
+    /// typing rescue keeps treating all-command-plus-n words ("sun",
+    /// "runs") as typing.
+    private func isCommandLetter(_ keycode: Int64) -> Bool {
+        Self.commandLetterKeys.contains(keycode) || (keycode == 45 && isFirefoxFrontmost)
+    }
+
     // Visual motions that may legitimately follow a withheld `v`/`V`:
     // h j k l and g/G (no English word starts with those pairs, so fast
     // vj/Vj/vG power-use keeps working with zero added latency).
@@ -954,10 +1027,10 @@ final class KeyboardMonitor {
             // later one resolves the burst right here), so checking the head
             // plus the incoming key covers the whole buffer — this is what
             // rescues "hi"/"he"/"at", where the command letter comes second.
-            let headIsCommand = Self.commandLetterKeys.contains(
+            let headIsCommand = isCommandLetter(
                 burstBuffer[0].getIntegerValueField(.keyboardEventKeycode)
             )
-            if headIsCommand, Self.commandLetterKeys.contains(keycode) {
+            if headIsCommand, isCommandLetter(keycode) {
                 // Still ambiguous (all commands so far) — keep collecting.
                 // On expiry the whole buffer executes as commands, so
                 // deliberate rapid command pairs (s then r) stay commands.
@@ -1078,7 +1151,10 @@ final class KeyboardMonitor {
     // NORMAL-mode command keys that must fire once per physical press —
     // derived from commandLetterKeys so a future command letter can't be
     // added to one set but not the other, plus Escape (53).
-    private static let oneShotNormalKeys: Set<Int64> = commandLetterKeys.union([53])
+    // 45 = n: one-shot even though it's only a command in Firefox —
+    // suppressing a held n's autorepeat everywhere is harmless (NORMAL
+    // mode letters don't type anyway)
+    private static let oneShotNormalKeys: Set<Int64> = commandLetterKeys.union([53, 45])
 
     // macOS key codes for a-z suppressed in Normal mode to prevent typing.
     // Note: k (40) is deliberately omitted so it passes through to the app.

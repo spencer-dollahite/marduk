@@ -334,6 +334,20 @@ final class DaemonServer {
             rateSaveTimer = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
         }
+        // Firefox Reader narration handoff (`n`): Marduk gets out of the
+        // way — hold FIRST so the speech cancel's unduck lands blocked,
+        // then stop our speech and pause media. The hold keeps media
+        // paused across any announcements until narration ends.
+        keyboardMonitor?.onNarrate = { [self] active in
+            if active {
+                ducker.holdDucking()
+                speech.stop()
+                ducker.prepareToDuck()
+                ducker.duck()
+            } else {
+                ducker.releaseHoldAndUnduck()
+            }
+        }
         // Clicking a palette row acts like Tab on that row (mouseDown arrives
         // on the main thread already)
         palette.onRowClick = { [self] row in

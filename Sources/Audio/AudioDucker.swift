@@ -54,6 +54,10 @@ final class AudioDucker {
     private var originalVolumes: [DuckTarget: Int] = [:]
     private var duckedTargets: Set<DuckTarget> = []
     private var cachedPlaybackStates: [DuckTarget: PlaybackState] = [:]
+    // While true, unduck() is a no-op: an external narration (Firefox
+    // Reader's Narrate) owns the duck, and the per-utterance unducks from
+    // Marduk's own announcements must not resume media over it.
+    private var holdActive = false
     private let queue = DispatchQueue(label: "com.marduk.audioducker")
 
     init(config: Config = Config()) {
@@ -143,9 +147,31 @@ final class AudioDucker {
         }
     }
 
+    /// Pin the current duck: subsequent unduck() calls are ignored until
+    /// releaseHoldAndUnduck(). Set BEFORE stopping any in-flight speech —
+    /// the cancel's own unduck lands on this queue after the flag flips.
+    func holdDucking() {
+        queue.async { [self] in
+            holdActive = true
+            log("duck hold ON (external narration)")
+        }
+    }
+
+    func releaseHoldAndUnduck() {
+        queue.async { [self] in
+            holdActive = false
+            log("duck hold OFF")
+        }
+        unduck()  // same serial queue: ordered after the flag clears
+    }
+
     func unduck() {
         queue.async { [self] in
             log("unduck() called, duckedTargets=\(duckedTargets.map { $0.displayName })")
+            guard !holdActive else {
+                log("duck hold active — skipping unduck")
+                return
+            }
             guard !duckedTargets.isEmpty else {
                 log("nothing ducked, skipping")
                 return

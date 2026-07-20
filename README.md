@@ -106,7 +106,7 @@ The only network activity is checking GitHub for new versions (an unauthenticate
 
 **Space (NORMAL/VISUAL):** pauses/resumes an active read — but only while something is actually being read; otherwise it's a normal Space, and in INSERT mode it is *always* a normal space. `Escape` cancels a paused read, freeing Space immediately.
 
-**NORMAL mode** (default): `i` → INSERT · `v` / `V` → VISUAL / VISUAL LINE · `r` selects the paragraph under the cursor (like a triple-click) and reads it · `t` speaks the time (`tt` = time + date) · `s` toggles macOS speak-under-pointer · `u` speaks available updates, `uu` (or `u` again within a minute) installs them · `Escape` stops speech. Letters you type by mistake trigger the typing rescue (see above); numbers, arrows, and Cmd/Ctrl shortcuts always pass through.
+**NORMAL mode** (default): `i` → INSERT · `v` / `V` → VISUAL / VISUAL LINE · `r` selects the paragraph under the cursor (like a triple-click) and reads it · `t` speaks the time (`tt` = time + date) · `s` toggles macOS speak-under-pointer · `u` speaks available updates, `uu` (or `u` again within a minute) installs them · `n` (Firefox only) hands off to Reader-mode narration — Marduk goes quiet, your media pauses and stays paused until `n` again or `Escape` · `Escape` stops speech. Letters you type by mistake trigger the typing rescue (see above); numbers, arrows, and Cmd/Ctrl shortcuts always pass through.
 
 **INSERT mode:** everything passes to the app. *Tap* Escape and the app gets it (vim keeps its Escape); *hold* Escape (~400 ms, configurable) to return to NORMAL.
 

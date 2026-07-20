@@ -21,6 +21,8 @@ enum HelpText {
         v, visual selection. Capital V, select whole lines. t, speak the \
         time. t t, time and date. s, toggle speak under pointer. u, check \
         for updates and hear what's new. u u, install the update. \
+        n, in Firefox reader mode: pause your media and start Firefox's \
+        own narration. n again, or Escape, brings the media back. \
         Escape, stop speech. Space, pause or resume a read. \
         VISUAL mode: h j k l extend the selection. Numbers repeat a motion, \
         like 3 j. r reads the selection. Escape cancels. \
@@ -78,6 +80,7 @@ enum HelpText {
         "If you can see some of the screen, colon config border on frames it in the mode color: red for NORMAL, green for INSERT, blue for VISUAL. Colon config pointer on adds a dot at the mouse that stays visible while zoomed in.",
         "Colon voices opens a voice picker. Arrow through the list and each voice introduces itself in its own sound; Return keeps the one you are hearing.",
         "With colon config speed keys on, Option up arrow and Option down arrow change the speech rate on the spot, ten words per minute at a time. Hold the key to glide.",
+        "In Firefox reader mode, n hands the reading to Firefox's own narrator: your music pauses, Marduk goes quiet, and Firefox reads the page. Press n again or Escape to bring the music back.",
     ]
 
     static let welcome = """

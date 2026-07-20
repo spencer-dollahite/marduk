@@ -289,9 +289,8 @@ final class KeyboardMonitor {
             DispatchQueue.main.async { [self] in
                 if isSpeaking() {
                     onStop?()
-                } else if let text = Self.getSelectedText(), !text.isEmpty {
-                    fputs("[keyboard] speak selection (\(text.count) chars)\n", stderr)
-                    onSpeak?(text)
+                } else {
+                    Self.readSelection { [self] text in onSpeak?(text) }
                 }
             }
             return nil
@@ -594,16 +593,7 @@ final class KeyboardMonitor {
                 pendingCount = 0
                 DispatchQueue.main.async { [self] in
                     visualAXState = nil
-                    if let text = Self.getSelectedText(), !text.isEmpty {
-                        fputs("[keyboard] visual r → read selection (\(text.count) chars)\n", stderr)
-                        onSpeak?(text)
-                    } else {
-                        Self.copySelectionAndRead { [self] text in
-                            if let text, !text.isEmpty {
-                                onSpeak?(text)
-                            }
-                        }
-                    }
+                    Self.readSelection { [self] text in onSpeak?(text) }
                 }
                 return nil
 
@@ -719,17 +709,7 @@ final class KeyboardMonitor {
             DispatchQueue.main.async { [self] in
                 tripleClickAtCursor()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [self] in
-                    if let text = Self.getSelectedText(), !text.isEmpty {
-                        onSpeak?(text)
-                    } else {
-                        // Fallback for apps where AX selected text doesn't work (e.g. iMessage):
-                        // copy selection to clipboard via Cmd+C, then read pasteboard
-                        Self.copySelectionAndRead { [self] text in
-                            if let text, !text.isEmpty {
-                                onSpeak?(text)
-                            }
-                        }
-                    }
+                    Self.readSelection { [self] text in onSpeak?(text) }
                 }
             }
             return nil
@@ -1382,6 +1362,26 @@ final class KeyboardMonitor {
 
     // MARK: - AX Selected Text
 
+    /// Speak-the-selection with resilience: AX first, clipboard-copy
+    /// fallback when AX fails or comes back empty. Huge selections (Cmd+A
+    /// on a whole document) routinely exceed the 0.5s AX messaging timeout,
+    /// and some apps never expose kAXSelectedTextAttribute at all — without
+    /// the fallback those reads are silent no-ops. Shared by Option+Escape,
+    /// normal-mode r (post triple-click), and visual r. Main queue only;
+    /// `deliver` is called at most once, never with empty text.
+    static func readSelection(_ deliver: @escaping (String) -> Void) {
+        if let text = getSelectedText(), !text.isEmpty {
+            fputs("[keyboard] speak selection (\(text.count) chars)\n", stderr)
+            deliver(text)
+            return
+        }
+        copySelectionAndRead { text in
+            guard let text, !text.isEmpty else { return }
+            fputs("[keyboard] speak selection via clipboard fallback (\(text.count) chars)\n", stderr)
+            deliver(text)
+        }
+    }
+
     static func getSelectedText() -> String? {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
@@ -1389,20 +1389,27 @@ final class KeyboardMonitor {
         AXUIElementSetMessagingTimeout(axApp, 0.5)
 
         var focusedElement: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            axApp, kAXFocusedUIElementAttribute as CFString, &focusedElement
-        ) == .success,
+        let focusErr = AXUIElementCopyAttributeValue(
+            axApp, kAXFocusedUIElementAttribute as CFString, &focusedElement)
+        guard focusErr == .success,
               let focused = focusedElement,
               CFGetTypeID(focused) == AXUIElementGetTypeID() else {
+            if focusErr != .success {
+                fputs("[keyboard] AX focused-element copy failed (\(focusErr.rawValue))\n", stderr)
+            }
             return nil
         }
         let element = focused as! AXUIElement
         AXUIElementSetMessagingTimeout(element, 0.5)
 
         var selectedText: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            element, kAXSelectedTextAttribute as CFString, &selectedText
-        ) == .success else {
+        let textErr = AXUIElementCopyAttributeValue(
+            element, kAXSelectedTextAttribute as CFString, &selectedText)
+        guard textErr == .success else {
+            // -1001 CannotComplete is the 0.5s timeout — typically a huge
+            // Cmd+A selection; the clipboard fallback in readSelection
+            // covers it
+            fputs("[keyboard] AX selected-text copy failed (\(textErr.rawValue))\n", stderr)
             return nil
         }
 

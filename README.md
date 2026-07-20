@@ -135,6 +135,7 @@ These are deliberate trade-offs of the typing-rescue system, not bugs:
 - **Single-letter commands fire ~300 ms late** (`r`, `t`, `s`, `u` alone) — that's the typing-rescue window deciding you weren't typing a word. `v`+motion and `i` are instant. Set `keyboard.typingRescue: false` to make all commands instant at the cost of the rescue (and of `tt`).
 - **A command followed quickly by `k` reads as typing** — protects words like "skip".
 - **Short reads pause your media briefly** even for a two-word utterance — pause/resume is deliberate (volume-ducking a browser can't stop a video, and lowering system volume would quiet Marduk itself).
+- **Reading a selection can overwrite your clipboard** in apps whose accessibility tree won't hand over the selected text (Firefox text boxes, iMessage) or when the selection is huge (Cmd+A on a long document): Marduk falls back to a synthetic Cmd+C and reads the pasteboard, so the clipboard ends up holding the text it just read.
 - Hand-edits to config.json need a daemon restart — use `:config` from inside Marduk (or `marduk config rate`) for live changes.
 - **Upgrading from a pre-bundle install:** the first update converts Marduk into `Marduk.app` and announces it aloud. If keyboard commands stop afterwards, re-grant Accessibility to `Marduk.app`; the Automation prompt also re-asks once (now explaining why Marduk wants media control).
 

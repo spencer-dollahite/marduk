@@ -6,7 +6,8 @@
 # Flow: bump Version.swift → commit + tag + push → wait for CI green →
 # release build → assemble bundle → Developer ID sign (hardened runtime,
 # secure timestamp, Apple-Events entitlement) → notarize → staple →
-# zip → publish GitHub Release with commit-derived notes.
+# zip → publish GitHub Release with commit-derived notes → update the
+# Homebrew tap (spencer-dollahite/homebrew-marduk) with the new cask.
 #
 # Requires: a "Developer ID Application" certificate in the keychain,
 # a notarytool keychain profile (default "marduk-notary"; override with
@@ -93,7 +94,51 @@ NOTES=$(git log --format='- %s' "$RANGE" | head -40)
 gh release create "v$VERSION" "$DMG" --title "Marduk $VERSION" --notes "$NOTES
 
 ---
-**Install:** download \`Marduk.dmg\`, open it, drag **Marduk** into **Applications**, then open Marduk from Applications. It installs itself and talks you through the rest — no Terminal, no Xcode."
+**Install:** download \`Marduk.dmg\`, open it, drag **Marduk** into **Applications**, then open Marduk from Applications. It installs itself and talks you through the rest — no Terminal, no Xcode.
+
+Or with Homebrew: \`brew install --cask spencer-dollahite/marduk/marduk\`"
+
+echo "==> Updating Homebrew tap"
+# The cask pins the VERSIONED asset URL (releases/download/v$VERSION/),
+# never the floating releases/latest link — the sha256 must keep
+# matching the bytes the URL serves. Runs before the local DMG is
+# deleted, and after the release exists (so the URL is live).
+SHA=$(shasum -a 256 "$DMG" | cut -d' ' -f1)
+TAP=$(mktemp -d -t marduk-tap)
+gh repo clone spencer-dollahite/homebrew-marduk "$TAP" -- --depth 1
+mkdir -p "$TAP/Casks"
+cat > "$TAP/Casks/marduk.rb" <<CASK
+cask "marduk" do
+  version "$VERSION"
+  sha256 "$SHA"
+
+  url "https://github.com/spencer-dollahite/marduk/releases/download/v#{version}/Marduk.dmg"
+  name "Marduk"
+  desc "Audio-first assistive platform for macOS with Vim-style modal navigation"
+  homepage "https://github.com/spencer-dollahite/marduk"
+
+  depends_on macos: ">= :tahoe"
+
+  app "Marduk.app"
+  binary "#{appdir}/Marduk.app/Contents/MacOS/marduk"
+
+  caveats <<~EOS
+    Open Marduk from Applications — it installs itself and talks you
+    through the rest, including the Accessibility permission.
+  EOS
+
+  uninstall launchctl: "com.marduk.daemon"
+  zap trash: [
+    "~/.config/marduk",
+    "~/Library/LaunchAgents/com.marduk.daemon.plist",
+    "~/Library/Logs/marduk.log",
+  ]
+end
+CASK
+git -C "$TAP" add Casks/marduk.rb
+git -C "$TAP" commit -m "marduk $VERSION"
+git -C "$TAP" push
+rm -rf "$TAP"
 
 rm -f "$DMG" "$ENT"
 echo "==> Done: https://github.com/spencer-dollahite/marduk/releases/tag/v$VERSION"

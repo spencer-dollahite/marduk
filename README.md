@@ -30,7 +30,15 @@ All you need is an **Apple Silicon Mac running macOS 26 (Tahoe)**. Optional: [Ka
 2. Drag **Marduk** into **Applications**.
 3. Open Marduk. It installs itself, starts talking, and opens the right Settings pane for the one permission it needs — follow the voice.
 
-Releases are signed and notarized — no Xcode, no Terminal, no warnings from macOS. Updates for release installs come from the same Releases page (press `u` and Marduk will remind you); in-app updating for release installs is planned.
+Or with [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask spencer-dollahite/marduk/marduk
+```
+
+then open Marduk from Applications as in step 3. `brew upgrade` brings future releases.
+
+Releases are signed and notarized — no Xcode, no Terminal, no warnings from macOS. Updates for release installs come from the same Releases page or `brew upgrade` (press `u` and Marduk will remind you); in-app updating for release installs is planned.
 
 <details>
 <summary><strong>Install from source</strong> (developers — enables <code>u</code>-key self-updates)</summary>

@@ -94,6 +94,20 @@ final class DisplayInverter: @unchecked Sendable {
 
     static let previewBundle = "com.apple.Preview"
 
+    /// Always inversion candidates, matched by bundle-ID PREFIX — Cisco
+    /// Packet Tracer versions its bundle ID per release
+    /// (com.netacad.PacketTracer9.0.0…). User-ratified hardcoding after
+    /// auto-detection lost the war against PT's activation/window churn.
+    static let builtInInvertPrefixes = [
+        "com.netacad.PacketTracer",
+        "com.apple.iWork.Pages",
+    ]
+
+    private func isListed(_ bundleID: String) -> Bool {
+        invertApps.contains(bundleID)
+            || Self.builtInInvertPrefixes.contains { bundleID.hasPrefix($0) }
+    }
+
     init(invertApps: [String]) {
         self.invertApps = Set(invertApps)
     }
@@ -143,6 +157,7 @@ final class DisplayInverter: @unchecked Sendable {
             themeObserver = nil
         }
         teardownPreviewObserver()
+        cancelPendingRevert()
         // Revert inversion if active
         if isInverted {
             applyInversion(false)
@@ -153,6 +168,7 @@ final class DisplayInverter: @unchecked Sendable {
 
     /// Live `:config invert off` mid-invert must hand the display back.
     func revertIfInverted() {
+        cancelPendingRevert()
         if isInverted {
             applyInversion(false)
             isInverted = false
@@ -252,17 +268,18 @@ final class DisplayInverter: @unchecked Sendable {
 
     private func handleAppActivated(_ bundleID: String, pid: pid_t) {
         if invertEnabled {
-            // The LIST is unconditional certainty — invert on arrival, no
-            // capture, no permission. Auto-measurement judges only UNLISTED
-            // apps, so a black-styled Pages deck stays safe by staying off
-            // the list and letting the measurement see it.
-            if invertApps.contains(bundleID) {
+            // The LIST (built-in prefixes + config) is unconditional
+            // certainty — invert on arrival, no capture, no permission.
+            // Auto-measurement judges only unlisted apps. Reverts are
+            // NEVER immediate: see requestRevert.
+            if isListed(bundleID) {
+                cancelPendingRevert()
                 ensureInverted(true, reason: bundleID)
             } else if autoInvert, bundleID != Self.previewBundle || !previewDarkActive,
                       bundleID != Bundle.main.bundleIdentifier {
                 evaluateBrightness(bundleID: bundleID, pid: pid)
             } else {
-                ensureInverted(false, reason: "left invert app")
+                requestRevert(from: bundleID, reason: "left invert app")
             }
         }
 
@@ -274,6 +291,37 @@ final class DisplayInverter: @unchecked Sendable {
         } else {
             teardownPreviewObserver()
         }
+    }
+
+    // TWO-STRIKE REVERT: inverting is instant, un-inverting needs the
+    // non-listed app to STILL own the screen after a confirmation delay.
+    // Packet Tracer's churn (activation flaps, window-stack flaps — every
+    // instantaneous signal proved unreliable in the field) can kill a
+    // pending revert simply by coming back; a real app switch sails
+    // through, just fashionably late.
+    private var pendingRevert: DispatchWorkItem?
+    private static let revertConfirmDelay: TimeInterval = 2.2
+
+    private func cancelPendingRevert() {
+        pendingRevert?.cancel()
+        pendingRevert = nil
+    }
+
+    private func requestRevert(from bundleID: String, reason: String) {
+        guard isInverted else { cancelPendingRevert(); return }
+        guard pendingRevert == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingRevert = nil
+            guard self.isInverted,
+                  let front = Self.visuallyFrontmostApp(),
+                  front.bundleID == bundleID,
+                  !self.isListed(front.bundleID) else { return }
+            self.ensureInverted(false, reason: "\(reason), confirmed")
+        }
+        pendingRevert = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.revertConfirmDelay,
+                                      execute: work)
     }
 
     private func ensureInverted(_ wanted: Bool, reason: String) {
@@ -361,9 +409,13 @@ final class DisplayInverter: @unchecked Sendable {
                 // apps from flapping across re-measures.
                 let wanted = measured > self.autoInvertThreshold
                     - (self.isInverted ? 0.08 : 0)
-                self.ensureInverted(wanted,
-                                    reason: "auto \(bundleID) "
-                                        + String(format: "%.2f", measured))
+                let reason = "auto \(bundleID) " + String(format: "%.2f", measured)
+                if wanted {
+                    self.cancelPendingRevert()
+                    self.ensureInverted(true, reason: reason)
+                } else {
+                    self.requestRevert(from: bundleID, reason: reason)
+                }
             }
         }
     }

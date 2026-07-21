@@ -38,7 +38,7 @@ brew install --cask spencer-dollahite/marduk/marduk
 
 then open Marduk from Applications as in step 3. `brew upgrade` brings future releases.
 
-Releases are signed and notarized — no Xcode, no Terminal, no warnings from macOS. Updates for release installs come from the same Releases page or `brew upgrade` (press `u` and Marduk will remind you); in-app updating for release installs is planned.
+Releases are signed and notarized — no Xcode, no Terminal, no warnings from macOS. Updates are built in on every install channel: press `u` and Marduk reads the release notes aloud, `u` again installs — the download is verified against the developer signature and notarization before a byte of the running app is touched. `:config autoupdate on` installs silently in the background instead; `brew upgrade` also works for Homebrew installs.
 
 <details>
 <summary><strong>Install from source</strong> (developers — enables <code>u</code>-key self-updates)</summary>
@@ -68,18 +68,25 @@ Marduk is assistive technology — macOS makes you grant its two deep hooks, and
 
 Marduk tracks nothing. No telemetry, no analytics, no accounts, no crash reporting — there is no code that phones home, and I have no interest in knowing how you use your computer. Everything runs locally on your Mac.
 
-The only network activity is checking GitHub for new versions (an unauthenticated request that carries no personal data — `:config checkhours 0` turns even that off) and downloading updates you ask for. The log file at `~/Library/Logs/marduk.log` never leaves your machine; be aware it contains the first ~80 characters of text Marduk has spoken, so redact it before pasting into a bug report (Marduk reminds you of this whenever it copies log lines).
+The only network activity is checking GitHub for new versions (an unauthenticated request that carries no personal data — `:config checkhours 0` turns even that off) and downloading updates you ask for. The log file at `~/Library/Logs/marduk.log` never leaves your machine — and it never contains the text Marduk reads to you. Logging is allowlisted to metadata (character counts, key codes, error codes, file paths), precisely so a log can be pasted into a public bug report without leaking what you were reading.
 
 ## What it does
 
 - **Vim-style modal keyboard layer** — NORMAL (commands), INSERT (typing), VISUAL / VISUAL LINE (select with `hjkl`, count prefixes like `3j`, read with `r`). A colored-earcon mode system, an escape tap/hold that never steals Escape from vim, and a *typing rescue* that notices when you type into NORMAL mode by mistake, flips to INSERT, and replays your keystrokes so nothing is lost.
 - **Reading that respects your audio** — speech pauses your browser/system media (play/pause, only if it was actually playing) and volume-ducks Apple Music/Spotify, then puts everything back when the read ends. Speech and media never fight.
 - **Pause and resume** — Space pauses an active read at a word boundary and resumes it; the moment nothing is being read, Space is just Space.
+- **A vim reading mode** — while anything is being read, the keyboard becomes reading controls, no matter what mode you were in: `b`/`w` step by word, `(`/`)` by sentence, `j`/`k` by line, `{`/`}` by paragraph, with vim counts (`3(`); `gg`/`G` jump to the ends, `f`+any character hops to it, `/` searches the text, `.` repeats the last motion. `z` spells the current word letter by letter — press it again for NATO phonetics ("Mike versus November") — and `Z` spells the sentence. A tap of Escape pauses like Space; only holding Escape (back to NORMAL) or `i` (drop to INSERT) leaves the read, so stray keys buzz instead of typing into your app.
+- **Whole-document reading** — `R` turns a Notes page or a Terminal window into an audiobook, starting where the mouse points. PDFs in Preview read page-aware: `Ctrl+F`/`Ctrl+B` turn pages, `12G` jumps to page twelve. Web pages read in Safari and Firefox — open the Reader view first and it's just the title and article, no site clutter.
+- **Dialog announcements** — password prompts, permission dialogs, and sheets are announced the moment they appear, with their title, even when they open outside your zoomed-in view. No more "why is my Mac unresponsive" while an invisible dialog waits. `:config dialogs off` to silence.
+- **Hover speech** — `s` speaks whatever is under the mouse pointer as it moves, in your reading voice at your rate and pitch, and never interrupts an active read.
+- **Your voice, your pronunciations** — Marduk starts in the voice you already chose for macOS Spoken Content, upgraded to its best installed edition; `:voices` auditions every installed voice in its own sound, `:config pitch` tunes it. And the pronunciations you add in System Settings (`:pronunciation` jumps there) apply to Marduk's speech too — typed respellings, voice-captured phonetics, even entries scoped to a single app — something macOS itself never grants third-party speech.
+- **A mode overlay for residual vision (opt-in)** — `:config border on` frames the screen in the current mode's color (red NORMAL, green INSERT, blue VISUAL, purple while reading); `:config pointer on` puts the same color in a dot that follows the mouse and stays visible while zoomed in.
+- **Karabiner-Elements handoff** — with Karabiner installed, your read button reaches Marduk while it runs and falls back to macOS Speak Selection the moment it stops — even after a crash. Marduk manages its own Karabiner profile and always hands yours back (details in Known quirks).
 - **A speech preprocessor built for real content** — strips the invisible Unicode that makes TTS silently bail; speaks code symbols by name with configurable verbosity (`->` "arrow", `!=` "not equals"); collapses symbol runs ("5 dash" instead of dash-dash-dash-dash-dash); abbreviates hex digests ("md5 ending in 2 7 e" instead of 32 characters of hex).
 - **Two voices** — one for reading content, one for status announcements, so you always know which is which.
 - **A vim-style command line with a visual palette** — press `:` in NORMAL mode and a dmenu-style panel opens at your cursor (so it's always inside a zoomed-in view — `:config position center` if you prefer it screen-centered), listing everything you can type with descriptions and current values, filtering as you go: `:help`, `:commands`, `:tutorial`, `:config rate 230`. The moment your typing is unambiguous it just goes — `:h` runs help, `:con` becomes `config` and moves on — no Enter needed except for numbers. Tab completes, arrows browse (spoken), rows are clickable, `?` — or just pausing — speaks your options, and `/` fuzzy-searches everything at once. Settings changed via `:config` apply instantly and persist.
 - **A talking interactive tutorial** — `:tutorial` walks you through the modes vimtutor-style: it asks you to actually press the keys and confirms out loud when you get it. First run also greets you with a short spoken orientation.
-- **Runs as a proper service** — a launchd agent starts Marduk at login, restarts it if it crashes, and logs to `~/Library/Logs/marduk.log`. Updates are spoken before they're installed: `u` fetches and reads the release notes aloud, `uu` installs (pull, build, codesign, restart), and a daily background check announces when something new is available (`:config autoupdate on` to install automatically, `:config checkhours 0` to disable checks).
+- **Runs as a proper service** — a launchd agent starts Marduk at login, restarts it if it crashes, and logs to `~/Library/Logs/marduk.log`. Updates are spoken before they're installed: `u` fetches and reads the release notes aloud, `uu` installs (source builds: pull, build, codesign, restart — release installs: download the signed DMG, verify, swap), and a daily background check announces when something new is available (`:config autoupdate on` to install automatically, `:config checkhours 0` to disable checks).
 - **Signed builds** — binaries are codesigned with your (free) Apple Development certificate so macOS Accessibility permission survives rebuilds.
 - **No dependencies** — pure Swift and native Apple frameworks. No Electron, no Python, no network calls.
 
@@ -106,23 +113,24 @@ The only network activity is checking GitHub for new versions (an unauthenticate
 
 **Space (NORMAL/VISUAL):** pauses/resumes an active read — but only while something is actually being read; otherwise it's a normal Space, and in INSERT mode it is *always* a normal space. `Escape` cancels a paused read, freeing Space immediately.
 
-**NORMAL mode** (default): `i` → INSERT · `v` / `V` → VISUAL / VISUAL LINE · `r` selects the paragraph under the cursor (like a triple-click) and reads it · `t` speaks the time (`tt` = time + date) · `s` toggles macOS speak-under-pointer · `u` speaks available updates, `uu` (or `u` again within a minute) installs them · `n` (Firefox Reader only, works from INSERT too when the reader page has focus) hands off to Reader-mode narration — Marduk goes quiet, your media pauses and stays paused until `n` again or `Escape` · `8` (Firefox only) opens Reader mode *and* starts narration in one key; `8` again stops and closes the reader · `Escape` stops speech. Letters you type by mistake trigger the typing rescue (see above); numbers, arrows, and Cmd/Ctrl shortcuts always pass through.
+**NORMAL mode** (default): `i` → INSERT · `v` / `V` → VISUAL / VISUAL LINE · `r` selects the paragraph under the cursor (like a triple-click) and reads it · `t` speaks the time (`tt` = time + date) · `R` reads the whole document from the pointer (see Whole-document reading) · `s` toggles hover speech — what's under the pointer, spoken in your reading voice · `u` speaks available updates, `uu` (or `u` again within a minute) installs them · `n` (Firefox Reader only, works from INSERT too when the reader page has focus) hands off to Reader-mode narration — Marduk goes quiet, your media pauses and stays paused until `n` again or `Escape` · `8` (Firefox only) opens Reader mode *and* starts narration in one key; `8` again stops and closes the reader · `Escape` stops speech. Letters you type by mistake trigger the typing rescue (see above); numbers, arrows, and Cmd/Ctrl shortcuts always pass through.
 
 **INSERT mode:** everything passes to the app. *Tap* Escape and the app gets it (vim keeps its Escape); *hold* Escape (~400 ms, configurable) to return to NORMAL.
 
 **VISUAL / VISUAL LINE:** `hjkl` extend the selection (with count prefixes: `v3j`), `G` to end, `r` reads the selection and returns to NORMAL, `Escape` cancels.
 
-**COMMAND mode (`:`):** type `:` in NORMAL for a vim-style command line with a floating palette showing your options. `:help` speaks the basics, `:commands` the full reference, `:tutorial` starts the guided tour, `:tip` speaks a random feature tip, `:quit` / `:restart` control the daemon, `:update` installs updates, `:uninstall` removes the launch agent, `:log` opens the log, `:feedback` / `:bug` open GitHub issues, and `:config <setting> <value>` changes settings live — `rate` (50–360 wpm), `level` (`none`/`some`/`most`/`all`), `hashes`, `rescue`, `burst`, `escapehold`, `echo` (speak keys as you type, off by default), `commandecho`, `palette` (all `on`/`off` or a number). Unique prefixes work everywhere (`:conf ra 230`); Tab completes; `?` or a moment's pause speaks what you can type next; Escape cancels.
+**COMMAND mode (`:`):** type `:` in NORMAL for a vim-style command line with a floating palette showing your options. `:help` speaks the basics, `:commands` the full reference, `:tutorial` starts the guided tour, `:tip` speaks a random feature tip, `:quit` / `:restart` control the daemon, `:update` installs updates, `:uninstall` removes the launch agent, `:log` opens the log, `:feedback` / `:bug` open GitHub issues, `:voices` opens the voice picker (each candidate previews in its own voice), `:pronunciation` opens the system pronunciation editor, and `:config <setting> <value>` changes settings live — `rate` (50–360 wpm), `pitch` (50–200%), `level` (`none`/`some`/`most`/`all`), `hashes`, `rescue`, `burst`, `escapehold`, `echo` (speak keys as you type, off by default), `commandecho`, `palette`, `position` (`pointer`/`center`), `autoupdate`, `checkhours`, `border`, `pointer`, `thickness`, `speedkeys` (Option+arrows nudge the rate), `togglesound`, `readmotions`, `dialogs` (all toggles `on`/`off` or a number). Unique prefixes work everywhere (`:conf ra 230`); Tab completes; `?` or a moment's pause speaks what you can type next; Escape cancels.
 
 ### Configuration
 
 `~/.config/marduk/config.json` (auto-created with defaults):
 
-- `speech` — rate, voice identifier
-- `ducking` — duck level, ramp, per-app targets, media-key pause on/off
-- `keyboard` — escape hold threshold, typing-rescue window, rescue on/off
+- `speech` — rate, pitch, voice identifier
+- `ducking` — duck level, ramp, per-app targets, media-key pause on/off, extra media-key apps
+- `keyboard` — escape hold threshold, typing-rescue window and on/off, palette and its position, read motions, dialog alerts, speed keys, toggle sound, Karabiner read button key
 - `verbalizer` — symbol verbosity (`none`/`some`/`most`/`all`), per-symbol overrides (`{"*": "asterisk", "%": ""}`), hash abbreviation on/off
 - `update` — periodic check interval in hours (0 = off), auto-install on/off
+- `overlay` — mode border / pointer dot, per-mode colors, thickness
 - `display` — per-app color inversion list
 
 Config is read at daemon start. Most settings can be changed live from inside Marduk with `:config` (which also saves them); if you hand-edit the file instead, restart (or `marduk update`) to apply.
@@ -159,10 +167,9 @@ A background daemon (no UI) built on the C-level `AXUIElement` accessibility API
 ## Roadmap (rough, no promises)
 
 - Accessibility-tree navigation (element-wise `hjkl`, headings/links quick-nav)
-- OCR fallback for inaccessible apps (Vision framework)
+- OCR fallback for scanned PDFs and inaccessible apps (Vision framework)
 - Spatial/earcon audio themes
-- Firefox Reader Mode auto-activation
-- Speech rate keys, repeat-last-utterance, richer mode announcements
+- Non-US keyboard layouts
 
 Explicitly **out of scope**: braille, and full screen-reader parity with VoiceOver/NVDA.
 
@@ -170,7 +177,7 @@ Explicitly **out of scope**: braille, and full screen-reader parity with VoiceOv
 
 Issues, bug reports, and "this assumption doesn't survive contact with my setup" reports are very welcome — especially from low-vision users. This is a personal project maintained at personal-project pace; PRs are welcome but may sit.
 
-**When filing bugs:** your `~/Library/Logs/marduk.log` contains snippets of text Marduk has spoken (your emails, messages, articles) — redact before pasting.
+**When filing bugs:** `:bug` opens a prefilled report and `:log copy` puts the recent log on your clipboard — the log contains no text Marduk has read (only key codes and metadata), so it's safe to paste as-is.
 
 **Security issues:** please email [spencer@ssdollahite.com](mailto:spencer@ssdollahite.com) instead of opening a public issue — see [SECURITY.md](SECURITY.md). From inside Marduk, `:security` opens a pre-addressed email.
 

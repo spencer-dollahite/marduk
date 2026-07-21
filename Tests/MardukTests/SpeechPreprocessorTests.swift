@@ -124,22 +124,34 @@ final class SpeechPreprocessorTests: XCTestCase {
         XCTAssertEqual(SpeechPreprocessor.process("aaaa 1111", settings: most), "aaaa 1111")
     }
 
-    func testHashBeforeDigitsSaysNumber() {
+    func testHashContextThreeWays() {
+        // Pure digits → number
         XCTAssertEqual(SpeechPreprocessor.process("item #66", settings: most),
                        "item number 66")
         XCTAssertEqual(SpeechPreprocessor.process("issue #72 closed", settings: most),
                        "issue number 72 closed")
-        // Non-digit contexts keep the code reading
+        // Letters, mixed alphanumerics, or symbols attached → hashtag
+        XCTAssertEqual(SpeechPreprocessor.process("#topic", settings: most),
+                       "hashtag topic")
+        XCTAssertEqual(SpeechPreprocessor.process("#tag2you", settings: most),
+                       "hashtag tag2you")
+        XCTAssertEqual(SpeechPreprocessor.process("#2fast", settings: most),
+                       "hashtag 2fast")
         XCTAssertEqual(SpeechPreprocessor.process("#include", settings: most),
-                       "hash include")
+                       "hashtag include")
+        // Standalone → hash
+        XCTAssertEqual(SpeechPreprocessor.process("a # b", settings: most),
+                       "a hash b")
         // Runs still collapse as symbols
         XCTAssertEqual(SpeechPreprocessor.process("### title", settings: most),
                        "3 hash title")
-        // A user override of # wins everywhere, digits included
+        // A user override of # wins in every context
         let pound = SpeechPreprocessor.Settings(verbosity: .most,
                                                 overrides: ["#": "pound"])
         XCTAssertEqual(SpeechPreprocessor.process("item #66", settings: pound),
                        "item pound 66")
+        XCTAssertEqual(SpeechPreprocessor.process("#topic", settings: pound),
+                       "pound topic")
     }
 
     // MARK: - Overrides

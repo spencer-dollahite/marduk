@@ -372,12 +372,22 @@ enum SpeechPreprocessor {
             }
 
             if let name = settings.single[c] {
-                // "#66" is spoken English for "number 66" — the hash reading
-                // is for code (#include, #topic). Digit lookahead decides;
-                // a user override of "#" wins everywhere, unchanged.
+                // "#" is three words in spoken English: "#66" is NUMBER
+                // 66, "#topic" / "#tag2you" / "#!" are HASHTAGs, and a
+                // standalone "#" is hash. The following run decides: all
+                // digits → number, anything else attached → hashtag,
+                // whitespace/end → hash. A user override of "#" wins in
+                // every context, unchanged.
                 if c == "#", name == "hash",
-                   i + 1 < chars.count, chars[i + 1].isNumber {
-                    out += " number "
+                   i + 1 < chars.count, !chars[i + 1].isWhitespace {
+                    var sawLetter = false
+                    var sawDigit = false
+                    var j = i + 1
+                    while j < chars.count, chars[j].isLetter || chars[j].isNumber {
+                        if chars[j].isLetter { sawLetter = true } else { sawDigit = true }
+                        j += 1
+                    }
+                    out += (sawDigit && !sawLetter) ? " number " : " hashtag "
                 } else {
                     out += name.isEmpty ? " " : " \(name) "
                 }

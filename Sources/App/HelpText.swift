@@ -67,7 +67,8 @@ enum HelpText {
         Slash starts a fuzzy search over every command and setting; \
         Return accepts the highlighted match. \
         Config takes a setting and a value, like colon config rate 200. \
-        Settings: rate, 50 to 360 words per minute. level, none, some, most, \
+        Settings: rate, 50 to 360 words per minute. pitch, 50 to 200 \
+        percent, for the reading voice. level, none, some, most, \
         or all. hashes, on or off. rescue, on or off. burst, in milliseconds. \
         escape hold, one word, in milliseconds. echo, on or off, speaks keys \
         as you type. command echo, one word, on or off. palette, on or off. \

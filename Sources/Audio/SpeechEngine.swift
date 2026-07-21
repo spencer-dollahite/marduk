@@ -7,6 +7,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     private let ducker: AudioDucker
 
     var rate: Float = AVSpeechUtteranceDefaultSpeechRate
+    var pitch: Float = 1.0  // reading voice only; announcements/echo keep their own
     var voice: AVSpeechSynthesisVoice?
     var announcementVoice: AVSpeechSynthesisVoice?
     var preprocessor: SpeechPreprocessor.Settings = .default
@@ -127,7 +128,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         let utterance = AVSpeechUtterance(string: text)
         utterance.rate = rate
         utterance.voice = voice
-        utterance.pitchMultiplier = 1.0
+        utterance.pitchMultiplier = pitch
         utterance.volume = 1.0
         utterance.preUtteranceDelay = 0.05
         utterance.postUtteranceDelay = 0.05

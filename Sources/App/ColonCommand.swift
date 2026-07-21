@@ -179,6 +179,7 @@ enum ColonCommand: Equatable {
 
     static let settings: [(key: String, kind: SettingKind)] = [
         ("rate", .number(min: 50, max: 360, unit: "words per minute")),
+        ("pitch", .number(min: 50, max: 200, unit: "percent")),
         ("level", .choice(["none", "some", "most", "all"])),
         ("hashes", .toggle),
         ("rescue", .toggle),

@@ -169,6 +169,7 @@ final class DaemonServer {
         ducker = AudioDucker(config: duckerConfig)
         speech = SpeechEngine(ducker: ducker)
         speech.rate = config.speech.rate
+        speech.pitch = config.speech.pitch ?? 1.0
         speech.preprocessor = SpeechPreprocessor.settings(from: config.verbalizer)
 
         if let voiceId = config.speech.voiceIdentifier,
@@ -1107,6 +1108,16 @@ final class DaemonServer {
             // READ voice on purpose: the confirmation demos the new rate
             speech.speak("Rate set to \(wpm) words per minute.")
 
+        case "pitch":
+            guard let percent = number() else {
+                return fail("Pitch must be 50 to 200 percent.")
+            }
+            speech.pitch = Float(percent) / 100.0
+            config.speech.pitch = speech.pitch
+            ConfigLoader.save(config)
+            // READ voice on purpose: the confirmation demos the new pitch
+            speech.speak("Pitch \(percent) percent.")
+
         case "level":
             guard ["none", "some", "most", "all"].contains(value) else {
                 return fail("Level must be none, some, most, or all.")
@@ -1288,7 +1299,7 @@ final class DaemonServer {
             if matches.count > 1 {
                 fail("\(key) is ambiguous: \(matches.joined(separator: ", ")).")
             } else {
-                fail("Unknown setting \(key). Settings are rate, level, hashes, "
+                fail("Unknown setting \(key). Settings are rate, pitch, level, hashes, "
                     + "rescue, burst, escape hold, echo, command echo, palette, "
                     + "auto update, check hours, border, pointer, thickness, "
                     + "speed keys, toggle sound, read motions.")
@@ -1314,6 +1325,7 @@ final class DaemonServer {
     private func settingValues() -> [String: String] {
         [
             "rate": "\(Int(speech.rate * 360)) wpm",
+            "pitch": "\(Int(speech.pitch * 100)) percent",
             "level": config.verbalizer?.level ?? "most",
             "hashes": (config.verbalizer?.hashes ?? true) ? "on" : "off",
             "rescue": (keyboardMonitor?.typingRescueEnabled ?? true) ? "on" : "off",

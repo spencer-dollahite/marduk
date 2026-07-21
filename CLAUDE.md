@@ -20,7 +20,7 @@ marduk update                        # Git pull + build + hot-reload (run from p
 marduk speak "text"                  # Speak text (forwards to daemon if running, else inline)
 marduk speak --debug "text"          # Speak with ducking debug logs
 marduk config                        # Show config JSON
-marduk config rate <50-360>          # Set speech rate in WPM
+marduk config rate <50-360>          # Set speech rate in WPM (`:config pitch <50-200>` = reading-voice pitch %)
 marduk voices --test                 # Interactive voice tester
 ```
 

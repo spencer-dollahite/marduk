@@ -65,6 +65,7 @@ struct MardukConfig: Codable {
     struct SpeechConfig: Codable {
         var rate: Float = 0.59       // ~213 WPM (0.0=min, 1.0=max)
         var voiceIdentifier: String? // nil = auto-select best English voice
+        var pitch: Float?            // reading-voice multiplier, 0.5-2.0 (nil = 1.0)
     }
 
     struct DisplayConfig: Codable {

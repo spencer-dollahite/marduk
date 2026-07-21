@@ -90,6 +90,7 @@ final class KeyboardMonitor {
     private var readMotionCount = 0          // pending vim count, e.g. 3(
     private var pendingReadG = false         // first g of gg seen (no timeout — vim style)
     var onReadJumpEdge: ((ReadDirection) -> Void)?   // gg (.back) / G (.forward)
+    var onReadLineStart: (() -> Void)?               // bare 0 — restart the line
     // `.` repeats the last motion (vim). Repeating a search re-hunts from
     // the new position — vim's n by another name, without the Firefox-n
     // collision. Persists across reads, like vim's dot across edits.
@@ -154,6 +155,12 @@ final class KeyboardMonitor {
     private var pendingEscapeHold: DispatchWorkItem?
     private var escapeHoldFired = false
     var escapeHoldThreshold: TimeInterval = 0.4
+
+    // Tap/hold Escape in READING capture: tap = pause/resume (same as
+    // Space), hold = stop the read and return to NORMAL. Same threshold
+    // and the same escapeHoldFired keyUp-swallow as the INSERT machinery;
+    // the two pendings are mutually exclusive (different modes).
+    private var pendingReadingEscape: DispatchWorkItem?
 
     // Visual mode count prefix (e.g. V3j)
     private var pendingCount: Int = 0
@@ -296,6 +303,8 @@ final class KeyboardMonitor {
         readMotionCount = 0
         pendingReadG = false
         readingCapture = false
+        pendingReadingEscape?.cancel()
+        pendingReadingEscape = nil
         discardBurstAndReplay()
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
@@ -375,6 +384,8 @@ final class KeyboardMonitor {
             // Escape must not fire (or swallow a keyUp) after re-enable
             pendingEscapeHold?.cancel()
             pendingEscapeHold = nil
+            pendingReadingEscape?.cancel()
+            pendingReadingEscape = nil
             escapeHoldFired = false
             // Same for a half-decided typing burst: discard, don't flush
             discardBurstAndReplay()
@@ -411,6 +422,17 @@ final class KeyboardMonitor {
 
         // === Marduk disabled: pass everything through ===
         guard isEnabled else { return pass }
+
+        // READING-Escape rollover: another key while the reading Escape is
+        // still withheld resolves it as a tap (pause), then the new key
+        // takes its normal route — the pause dispatch lands on main before
+        // any motion the key produces, so ordering holds (a fast Esc-then-(
+        // pauses, then the jump's respeak resumes from the target).
+        if pendingReadingEscape != nil, keycode != 53 {
+            pendingReadingEscape?.cancel()
+            pendingReadingEscape = nil
+            DispatchQueue.main.async { [self] in onPauseToggle?() }
+        }
 
         // Rollover: another key while a tapped Escape is still withheld means
         // the user typed on (fast Esc then j in vim). Letting this event pass
@@ -575,12 +597,23 @@ final class KeyboardMonitor {
                 return nil
             }
 
-            if keycode == 53 { // Escape — stop the read, back to NORMAL
+            if keycode == 53 { // Escape — tap pauses/resumes, hold exits
                 if isAutorepeat { return nil }
-                readingCapture = false
-                mode = .normal
-                fputs("[keyboard] READING → NORMAL (Escape)\n", stderr)
-                DispatchQueue.main.async { [self] in onStop?() }
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    self.pendingReadingEscape = nil
+                    guard self.readingCapture else { return }
+                    self.escapeHoldFired = true
+                    self.readingCapture = false
+                    self.mode = .normal
+                    fputs("[keyboard] READING escape held → NORMAL\n", stderr)
+                    self.onStop?()
+                    Earcon.riseToNormal()
+                }
+                pendingReadingEscape?.cancel() // never stack two
+                pendingReadingEscape = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + escapeHoldThreshold,
+                                              execute: work)
                 return nil
             }
 
@@ -623,10 +656,16 @@ final class KeyboardMonitor {
 
             // Digits accumulate a count. Bare 0 never starts one (vim: 0
             // is a motion, not a count starter) — it only joins after 3,
-            // 30… and otherwise falls to the buzz below.
+            // 30…; on its own it restarts the current line below.
             if !hasShift, let digit = Self.digitKeyCodes[keycode],
                digit != 0 || readMotionCount > 0 {
                 readMotionCount = min(readMotionCount * 10 + digit, 999)
+                return nil
+            }
+
+            // Bare 0 — vim line start: restart the current line
+            if !hasShift, keycode == 29 {
+                DispatchQueue.main.async { [self] in onReadLineStart?() }
                 return nil
             }
 
@@ -668,6 +707,10 @@ final class KeyboardMonitor {
                 switch keycode {
                 case 11: jump = (.word, .back)         // b
                 case 13: jump = (.word, .forward)      // w
+                case 4:  jump = (.word, .back)         // h — hjkl cluster:
+                case 37: jump = (.word, .forward)      // l   h/l word,
+                case 38: jump = (.line, .forward)      // j   j/k line
+                case 40: jump = (.line, .back)         // k
                 default: break
                 }
             }
@@ -682,10 +725,10 @@ final class KeyboardMonitor {
             }
             // Everything else typing-shaped buzzes — reading owns the
             // keyboard, and a silently swallowed key would read as a dead
-            // keyboard. Covers letters (including k), stray digits (bare 0),
-            // punctuation, Return, Tab, Delete. Non-typing keys — arrows,
-            // F-keys, media, Naga button codes — pass through untouched.
-            if Self.alphaKeyCodes.contains(keycode) || keycode == 40
+            // keyboard. Covers letters, shifted digits, punctuation,
+            // Return, Tab, Delete. Non-typing keys — arrows, F-keys,
+            // media, Naga button codes — pass through untouched.
+            if Self.alphaKeyCodes.contains(keycode) || keycode == 40 // K
                 || Self.digitKeyCodes[keycode] != nil
                 || Self.typingPunctuationKeys.contains(keycode)
                 || keycode == 36 || keycode == 48 || keycode == 51 {
@@ -1213,6 +1256,10 @@ final class KeyboardMonitor {
             readingCapture = false
             readMotionCount = 0
             pendingReadG = false
+            // A withheld Escape must not fire its hold on a dead read; its
+            // trailing keyUp passes as an orphan, which apps ignore
+            pendingReadingEscape?.cancel()
+            pendingReadingEscape = nil
             fputs("[keyboard] read ended → \(mode)\n", stderr)
         }
     }
@@ -1257,6 +1304,14 @@ final class KeyboardMonitor {
     /// trailing keyUp of a hold that already fired. Any other Escape keyUp
     /// passes through (apps ignore orphan keyUps anyway).
     private func handleEscapeKeyUp(pass: Unmanaged<CGEvent>) -> Unmanaged<CGEvent>? {
+        if pendingReadingEscape != nil {
+            // READING: released before the hold threshold — a tap = pause
+            // (or resume a paused read), exactly like Space
+            pendingReadingEscape?.cancel()
+            pendingReadingEscape = nil
+            DispatchQueue.main.async { [self] in onPauseToggle?() }
+            return nil
+        }
         if pendingEscapeHold != nil {
             flushPendingEscapeAsTap()
             return nil // the synthetic down+up replaces the real events

@@ -93,10 +93,44 @@ final class ReadNavigatorTests: XCTestCase {
                                             unit: .paragraph, direction: .back), 0)
     }
 
-    func testSingleNewlineAlsoBreaksParagraphs() {
+    func testParagraphsFallBackToLinesWithoutBlankLines() {
         let text = "Line one here.\nLine two here."
         XCTAssertEqual(ReadNavigator.target(in: text, from: 5,
                                             unit: .paragraph, direction: .forward), 15)
+    }
+
+    func testBlankLinesTrumpSingleNewlinesForParagraphs() {
+        // Lines at 0, 10, 21; the only PARAGRAPH break is the blank line
+        // before 21 — paragraph-forward from line 1 skips line 2
+        let text = "One line.\nTwo line.\n\nNew para."
+        XCTAssertEqual(ReadNavigator.target(in: text, from: 2,
+                                            unit: .paragraph, direction: .forward), 21)
+        XCTAssertEqual(ReadNavigator.target(in: text, from: 2,
+                                            unit: .line, direction: .forward), 10)
+    }
+
+    // MARK: - Lines
+
+    func testLineForwardAndBack() {
+        // Line 2 starts at 22 and is longer than the 12-unit grace
+        let text = "A first line of text.\nThe second line is long enough."
+        XCTAssertEqual(ReadNavigator.target(in: text, from: 5,
+                                            unit: .line, direction: .forward), 22)
+        // Deep in line 2: back restarts it…
+        XCTAssertEqual(ReadNavigator.target(in: text, from: 40,
+                                            unit: .line, direction: .back), 22)
+        // …but within the grace of its start: previous line
+        XCTAssertEqual(ReadNavigator.target(in: text, from: 26,
+                                            unit: .line, direction: .back), 0)
+    }
+
+    func testLineStart() {
+        let text = "One line.\nTwo line.\n\nNew para."
+        XCTAssertEqual(ReadNavigator.lineStart(in: text, at: 15), 10)
+        // No grace: at the line's own start it stays put (caller's no-op)
+        XCTAssertEqual(ReadNavigator.lineStart(in: text, at: 10), 10)
+        XCTAssertEqual(ReadNavigator.lineStart(in: text, at: 5), 0)
+        XCTAssertEqual(ReadNavigator.lineStart(in: "", at: 0), 0)
     }
 
     func testSingleParagraphBackRestartsRead() {

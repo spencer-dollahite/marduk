@@ -2,7 +2,7 @@ import Foundation
 import NaturalLanguage
 
 /// Units and directions for in-read navigation (vim-style read motions).
-enum ReadUnit { case word, sentence, paragraph }
+enum ReadUnit { case word, sentence, line, paragraph }
 enum ReadDirection { case back, forward }
 
 /// Pure boundary math for navigating within a read's text. All positions are
@@ -21,6 +21,7 @@ enum ReadNavigator {
         switch unit {
         case .word: return 0
         case .sentence: return 12
+        case .line: return 12
         case .paragraph: return 24
         }
     }
@@ -92,37 +93,66 @@ enum ReadNavigator {
         unitStarts(in: text, unit: .paragraph).last ?? 0
     }
 
+    /// Vim 0: the start of the line containing `position` — no grace, no
+    /// travel; pressing it at the line's start is the caller's no-op edge.
+    static func lineStart(in text: String, at position: Int) -> Int {
+        let position = max(0, min(position, (text as NSString).length))
+        return unitStarts(in: text, unit: .line)
+            .last(where: { $0 <= position }) ?? 0
+    }
+
     /// UTF-16 start offsets of every unit, ascending. Words and sentences
     /// come from NLTokenizer (handles "Dr. Smith", "e.g.", "?" and "!"
     /// correctly — vim's own sentence motion isn't period-based either);
-    /// paragraphs are maximal runs separated by newlines, which matches how
-    /// AX-extracted text actually breaks.
+    /// lines break on every newline; paragraphs are blank-line-separated
+    /// blocks (vim's definition), falling back to lines when the text has
+    /// no blank lines so {/} stay useful in terminal-style output. The
+    /// sanitizer normalizes \r\n → \n before text ever reaches a read, so
+    /// a CRLF can't masquerade as a blank line.
     private static func unitStarts(in text: String, unit: ReadUnit) -> [Int] {
-        if unit == .paragraph { return paragraphStarts(in: text) }
-        let tokenizer = NLTokenizer(unit: unit == .word ? .word : .sentence)
-        tokenizer.string = text
-        var starts: [Int] = []
-        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
-            starts.append(NSRange(range, in: text).location)
-            return true
+        switch unit {
+        case .line:
+            return lineStarts(in: text)
+        case .paragraph:
+            let blocks = blankLineBlockStarts(in: text)
+            if blocks.count > 1 { return blocks }
+            let lines = lineStarts(in: text)
+            return lines.count > 1 ? lines : blocks
+        case .word, .sentence:
+            let tokenizer = NLTokenizer(unit: unit == .word ? .word : .sentence)
+            tokenizer.string = text
+            var starts: [Int] = []
+            tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+                starts.append(NSRange(range, in: text).location)
+                return true
+            }
+            return starts
         }
-        return starts
     }
 
-    private static func paragraphStarts(in text: String) -> [Int] {
+    private static func lineStarts(in text: String) -> [Int] {
+        starts(in: text, breakRun: 1)
+    }
+
+    private static func blankLineBlockStarts(in text: String) -> [Int] {
+        starts(in: text, breakRun: 2)
+    }
+
+    /// Starts of maximal content runs separated by at least `breakRun`
+    /// consecutive newlines (1 = lines, 2 = blank-line paragraphs).
+    private static func starts(in text: String, breakRun: Int) -> [Int] {
         let ns = text as NSString
-        var starts: [Int] = []
-        var inParagraph = false
+        var result: [Int] = []
+        var newlineRun = breakRun  // text start counts as a break
         for i in 0..<ns.length {
             let ch = ns.character(at: i)
-            let isNewline = ch == 0x0A || ch == 0x0D
-            if isNewline {
-                inParagraph = false
-            } else if !inParagraph {
-                starts.append(i)
-                inParagraph = true
+            if ch == 0x0A || ch == 0x0D {
+                newlineRun += 1
+            } else {
+                if newlineRun >= breakRun { result.append(i) }
+                newlineRun = 0
             }
         }
-        return starts
+        return result
     }
 }

@@ -185,6 +185,17 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         return true
     }
 
+    /// Vim 0: restart the current line. False at the line's start (or when
+    /// nothing is navigable) — the caller buzzes.
+    @discardableResult
+    func jumpToLineStart() -> Bool {
+        guard readActive, let text = readText else { return false }
+        let target = ReadNavigator.lineStart(in: text, at: readPosition)
+        guard target != readPosition else { return false }
+        respeak(from: target)
+        return true
+    }
+
     /// The current read's full text and voice position, for search.
     var readSnapshot: (text: String, position: Int)? {
         guard readActive, let text = readText else { return nil }

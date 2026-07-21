@@ -358,6 +358,11 @@ final class DaemonServer {
                 Earcon.error()
             }
         }
+        keyboardMonitor?.onReadLineStart = { [self] in
+            if !speech.jumpToLineStart() {
+                Earcon.error()
+            }
+        }
         keyboardMonitor?.onReadSearchBegin = { [self] in
             if speech.isSpeaking, !speech.isPaused {
                 speech.pause()
@@ -1150,8 +1155,8 @@ final class DaemonServer {
             speech.announce(on
                 ? "Read motions on. During a read: b and w step words, "
                     + "parens sentences, braces paragraphs, g g start, "
-                    + "capital G end, slash searches. i or Escape leaves "
-                    + "the read."
+                    + "capital G end, slash searches. Tap Escape to pause. "
+                    + "Hold Escape, or press i, to leave the read."
                 : "Read motions off.")
 
         case "togglesound":

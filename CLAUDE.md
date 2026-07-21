@@ -32,7 +32,7 @@ No external dependencies — pure Swift Package Manager with native Apple framew
 main.swift (CLI argument parser)
   ↓
 DaemonServer (Unix socket IPC, per-user $DARWIN_USER_TEMP_DIR/marduk.sock)
-  ├── SpeechEngine (AVSpeechSynthesizer — dual voices: reading + announcement; auto-select prefers premium > enhanced > compact — Apple's premium voices are user-downloaded in Settings > Accessibility > Read and Speak Content, no API can fetch them, so :voices speaks a download hint when none is installed)
+  ├── SpeechEngine (AVSpeechSynthesizer — dual voices: reading + announcement; auto-select is IDENTITY-FIRST: the system's default voice for en-US (`AVSpeechSynthesisVoice(language:)` — reflects the user's Spoken Content choice; Marduk users are existing AT users whose familiar voice beats any quality ranking) upgraded within the SAME NAME to the best installed edition (compact Samantha → enhanced Samantha), falling back enhanced > premium > compact only when there's no system default. Premium voices trade articulation for naturalness and degrade at high rates (field-tested), so they're OFFERED (welcome line, :voices download hint, tip) never imposed; user-downloaded in Settings > Accessibility > Read and Speak Content, no API can fetch them; an explicit voiceIdentifier always wins)
   │   └── AudioDucker (probes playback state, ducks external audio during speech)
   ├── KeyboardMonitor (CGEventTap — Vim modal: NORMAL/INSERT)
   └── ModeOverlay (click-through NSWindows — opt-in mode border + pointer dot, OFF by default)

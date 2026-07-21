@@ -82,18 +82,33 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         let voices = AVSpeechSynthesisVoice.speechVoices()
         let en = voices.filter { $0.language.hasPrefix("en") }
 
-        // Reading voice: best installed English voice — premium (the
-        // user-downloadable neural voices, Settings > Accessibility >
-        // Spoken Content; no API can fetch them for us) beats enhanced
-        // beats compact. An explicit voiceIdentifier in config overrides
-        // this afterward.
-        voice = en.first(where: { $0.quality == .premium })
-            ?? en.first(where: { $0.quality == .enhanced })
-            ?? AVSpeechSynthesisVoice(language: "en-US")
+        // Reading voice default: IDENTITY FIRST. Marduk's users are
+        // existing AT users who already picked a voice they trust in
+        // Spoken Content — familiarity IS intelligibility (field lesson
+        // 2026-07), so the system's default voice for the language wins
+        // over any quality ranking. The API may return the COMPACT
+        // edition of that choice, so upgrade within the same name to the
+        // best installed build (Samantha → Samantha Enhanced). No system
+        // default at all → enhanced (the battle-tested screen-reader
+        // class, crisp at speed) → premium → compact. Premium voices are
+        // OFFERED (welcome line, :voices hint, tip), never imposed. An
+        // explicit voiceIdentifier in config overrides all of this
+        // afterward and is never touched.
+        var systemDefault = false
+        if let sys = AVSpeechSynthesisVoice(language: "en-US") {
+            systemDefault = true
+            voice = en.filter { $0.name == sys.name }
+                .max(by: { $0.quality.rawValue < $1.quality.rawValue }) ?? sys
+        } else {
+            voice = en.first(where: { $0.quality == .enhanced })
+                ?? en.first(where: { $0.quality == .premium })
+                ?? en.first
+        }
         let quality = voice?.quality == .premium ? "premium"
             : voice?.quality == .enhanced ? "enhanced" : "default"
-        fputs("[speech] Reading voice: \(voice?.name ?? "default") "
-            + "(\(voice?.language ?? "en"), \(quality))\n", stderr)
+        fputs("[speech] Reading voice: \(voice?.name ?? "none") "
+            + "(\(voice?.language ?? "en"), \(quality)"
+            + "\(systemDefault ? ", system default" : ""))\n", stderr)
 
         // Announcement voice: Daniel (en-GB) for status updates
         announcementVoice = en.first(where: { $0.name == "Daniel" && $0.language == "en-GB" })

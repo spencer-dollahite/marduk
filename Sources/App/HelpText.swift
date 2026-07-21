@@ -116,7 +116,7 @@ enum HelpText {
         "During a read, f plus any character hops forward to it, like vim: f q jumps to the next q. Capital F hunts backward, and period repeats the hop.",
         "Open a PDF in Preview and press capital R: Marduk reads the file itself, starting at the page you are looking at. Control F turns the page, twelve then capital G jumps to page twelve.",
         "With Karabiner installed, Marduk runs its own Karabiner profile while active and hands yours back the moment it stops, even on a crash. Your read button reaches Marduk while it is up, and falls back to macOS Speak Selection whenever it is down. Nothing to switch by hand.",
-        "Apple's premium voices are a big upgrade and run entirely on your Mac, free, no account. Download one like Ava in System Settings, Accessibility, Read and Speak Content, System Voice, Manage Voices — then pick it with colon voices. Marduk will even prefer it automatically.",
+        "Apple's premium voices sound more natural and run entirely on your Mac, free, no account. Download one like Ava in System Settings, Accessibility, Read and Speak Content, System Voice, Manage Voices — then audition it with colon voices. Fair warning: at fast speaking rates, the classic enhanced voices often stay clearer.",
     ]
 
     static let welcome = """
@@ -126,7 +126,8 @@ enum HelpText {
         to stop speech. \
         The most important key is colon, that is shift semicolon: it opens \
         the command panel, which shows and speaks everything Marduk can do. \
-        From there, type h for help, or t u for the guided tour. \
+        From there, type h for help, or t u for the guided tour. To try a \
+        different voice any time, type colon voices. \
         This message plays only once.
         """
 }

@@ -1281,10 +1281,10 @@ final class DaemonServer {
             $0.language.hasPrefix("en") && $0.quality == .premium
         }
         speech.announce(hasPremium ? "voices"
-            : "voices. For much better voices, download a premium voice like "
+            : "voices. For more natural voices, download a premium voice like "
             + "Ava: System Settings, Accessibility, Read and Speak Content, "
-            + "System Voice, Manage Voices. It is free, entirely on device, "
-            + "and will appear here.")
+            + "System Voice, Manage Voices. Free, entirely on device — it "
+            + "will appear here to audition.")
     }
 
     /// Applies and persists the reading voice — the ":voices" picker accept.

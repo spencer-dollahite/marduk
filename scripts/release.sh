@@ -27,6 +27,21 @@ PROFILE="${MARDUK_NOTARY_PROFILE:-marduk-notary}"
 echo "==> Syncing with origin"
 git pull --ff-only origin main
 
+# Monotonic guard: an older-but-never-tagged version would fully
+# succeed and poison everything downstream (releases/latest goes by
+# creation date, brew would see installed users as "ahead", and the
+# self-updater offers any tag != running version — a downgrade party).
+CURRENT=$(sed -n 's/.*static let version = "\(.*\)".*/\1/p' Sources/App/Version.swift)
+NEWEST_TAG=$(git tag --list 'v*' | sed 's/^v//' | sort -V | tail -1)
+for BASE in "$CURRENT" "$NEWEST_TAG"; do
+    [[ -z "$BASE" ]] && continue
+    HIGHEST=$(printf '%s\n%s\n' "$BASE" "$VERSION" | sort -V | tail -1)
+    if [[ "$HIGHEST" != "$VERSION" || "$BASE" == "$VERSION" ]]; then
+        echo "error: version $VERSION is not greater than $BASE" >&2
+        exit 1
+    fi
+done
+
 echo "==> Version $VERSION"
 sed -i '' "s/static let version = \".*\"/static let version = \"$VERSION\"/" \
     Sources/App/Version.swift

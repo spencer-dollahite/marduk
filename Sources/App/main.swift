@@ -278,7 +278,10 @@ case "status":
     // Socket ping is the source of truth; the pid file is validated, not trusted.
     var daemonLine = "not running"
     if DaemonClient.isRunning {
-        daemonLine = "running"
+        daemonLine = DaemonClient.send("ping")?.contains("safe") == true
+            ? "running in SAFE MODE (crash loop detected — press u to update, "
+                + "or restart Marduk for a full start)"
+            : "running"
         if let pidStr = try? String(contentsOfFile: MardukDaemon.pidPath, encoding: .utf8),
            let pid = Int32(pidStr.trimmingCharacters(in: .whitespacesAndNewlines)) {
             daemonLine += kill(pid, 0) == 0 ? " (PID \(pid))" : " (stale pid file)"

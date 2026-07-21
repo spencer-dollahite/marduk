@@ -159,7 +159,7 @@ These are deliberate trade-offs of the typing-rescue system, not bugs:
 
 - **US (ANSI) keyboard layout is assumed.** Commands are matched by physical key position, so on AZERTY, QWERTZ, or Dvorak layouts the command letters land in the wrong places. A [Karabiner-Elements](https://karabiner-elements.pqrs.org/) remap is a workaround today; proper layout awareness is planned.
 - **English only.** Voice pickers list English voices, and everything Marduk says is English.
-- **Apple Silicon + macOS 26 (Tahoe) only.** Older macOS versions and Intel Macs are not supported.
+- **Apple Silicon + macOS 26 (Tahoe) only.** Older macOS versions and Intel Macs are not supported. On a newer macOS major, Marduk says so once and keeps going; if it ever crash-loops there, it restarts in a safe mode that keeps speech and self-update alive so the fix can reach you.
 
 ## How it works
 

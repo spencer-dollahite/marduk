@@ -120,6 +120,9 @@ final class DaemonServer {
     private var signalSources: [DispatchSourceSignal] = []
     private var keyboardMonitor: KeyboardMonitor?
     private var displayInverter: DisplayInverter?
+    // Boot-minimal after rapid crashes: risky subsystems skipped, update
+    // train preserved (BootGuard)
+    private var safeMode = false
     // nil while border and pointer dot are both off (the default);
     // ":config border/pointer on" creates and starts one live, turning
     // the last indicator off stops and releases it
@@ -217,6 +220,18 @@ final class DaemonServer {
     }
 
     func run() throws {
+        // Rapid-crash guard: at the threshold, boot minimal — speech,
+        // socket, tap, updates — so a startup crash on some future macOS
+        // can never lock users out of the fix (see BootGuard).
+        let bootAttempt = BootGuard.register()
+        safeMode = bootAttempt >= BootGuard.safeModeThreshold
+        if safeMode {
+            fputs("[marduk] SAFE MODE (boot attempt \(bootAttempt))\n", stderr)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) {
+            BootGuard.markStable()
+        }
+
         // A client that disconnects before we write its response would
         // otherwise kill the whole daemon with SIGPIPE.
         signal(SIGPIPE, SIG_IGN)
@@ -291,7 +306,7 @@ final class DaemonServer {
         // RunLoop below is enough — no NSApp.run() needed.
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.accessory)
-        modeOverlay?.start()
+        if !safeMode { modeOverlay?.start() }
 
         tutorial.announce = { [self] text in speech.announce(text) }
 
@@ -303,7 +318,7 @@ final class DaemonServer {
         dialogSentinel.level = DialogSentinel.Level(
             rawValue: config.keyboard?.dialogLevel ?? "")
             ?? ((config.keyboard?.dialogAlerts ?? true) ? .all : .off)
-        dialogSentinel.start()
+        if !safeMode { dialogSentinel.start() }
 
         // One-time onboarding: automatic dark PDFs are an invisible
         // automation — the first success explains itself, once ever
@@ -551,7 +566,7 @@ final class DaemonServer {
         }
         scheduleUpdateChecks()
 
-        displayInverter?.start()
+        if !safeMode { displayInverter?.start() }
 
         // First-run welcome: marker written immediately so a crash mid-speech
         // can never replay-loop it. Spoken via the READ path — Space-pausable,
@@ -572,6 +587,15 @@ final class DaemonServer {
         Self.setKarabinerVariable(up: true)
         activateKarabinerProfile()
         announceKarabinerAbsenceOnce()
+        announceUntestedMacOSOnce()
+        if safeMode {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [self] in
+                speech.announce("Marduk started in safe mode after repeated "
+                    + "crashes. Reading and updates work; extras are off. An "
+                    + "update may fix this — press u to check. Colon restart "
+                    + "tries a full start.")
+            }
+        }
 
         // SIGTERM (logout, launchctl bootout) → flag polled by the loop →
         // FULL clean teardown, Karabiner profile included. Signal handlers
@@ -663,7 +687,7 @@ final class DaemonServer {
 
         switch cmd {
         case "ping":
-            return "OK pong\n"
+            return safeMode ? "OK pong safe\n" : "OK pong\n"
         case "speak":
             guard !arg.isEmpty else { return "ERR no text\n" }
             DispatchQueue.main.async { [self] in speech.speak(arg) }
@@ -1309,6 +1333,34 @@ final class DaemonServer {
     /// they've never heard of. Spoken once per install (marker written
     /// when actually spoken), delayed and yielding so it can never talk
     /// over the first-run welcome or an early read.
+    /// Running on a macOS major newer than Marduk has been validated on:
+    /// say so once per major — early upgraders should expect oddities and
+    /// know the update train will carry fixes. Same yielding-delay shape
+    /// as the Karabiner hint so it never talks over the welcome.
+    private func announceUntestedMacOSOnce() {
+        let major = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        guard major > Marduk.testedMacOSMajor else { return }
+        let marker = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/marduk/.macos-\(major)-noticed")
+        guard !FileManager.default.fileExists(atPath: marker.path) else { return }
+        func attempt(remaining: Int) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 35) { [self] in
+                if speech.isSpeaking {
+                    if remaining > 0 { attempt(remaining: remaining - 1) }
+                    return
+                }
+                try? Data().write(to: marker)
+                speech.announce("A note: you are running macOS \(major), newer "
+                    + "than this version of Marduk has been tested on. Most "
+                    + "things should work. If something misbehaves, press u — "
+                    + "a compatibility update may already be waiting.")
+                fputs("[marduk] spoke the untested-macOS notice (major \(major))\n",
+                      stderr)
+            }
+        }
+        attempt(remaining: 3)
+    }
+
     private func announceKarabinerAbsenceOnce() {
         let cli = "/Library/Application Support/org.pqrs/Karabiner-Elements/bin/karabiner_cli"
         guard !FileManager.default.isExecutableFile(atPath: cli) else { return }
@@ -2184,6 +2236,7 @@ final class DaemonServer {
     // MARK: - Cleanup
 
     private func cleanup() {
+        BootGuard.markStable()  // reaching teardown at all means no crash
         modeOverlay?.stop()
         displayInverter?.stop()
         keyboardMonitor?.stop()

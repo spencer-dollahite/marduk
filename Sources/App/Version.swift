@@ -4,4 +4,7 @@ import Foundation
 /// and the bundle's Info.plist both read it.
 enum Marduk {
     static let version = "0.4.3"
+    /// Newest macOS major Marduk has been validated on — bump after each
+    /// major's beta checklist passes (see memory: macos-27-readiness).
+    static let testedMacOSMajor = 26
 }

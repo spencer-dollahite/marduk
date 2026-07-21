@@ -24,9 +24,11 @@ enum HelpText {
     static let commands = """
         Marduk commands. NORMAL mode: i, enter INSERT mode. lowercase r, select \
         the paragraph under the cursor, like a triple click, and read it. \
-        Uppercase R, read the whole document to the end, starting from the \
-        mouse pointer when it is over text, or from the text cursor \
-        otherwise, in apps that share their text, like Notes and Terminal. On \
+        Uppercase R, read the whole document to the end. It starts from \
+        your selection when you have one — select all, then uppercase R, \
+        reads everything from the top — otherwise from the mouse pointer \
+        over text, or the text cursor, in apps that share their text, \
+        like Notes and Terminal. On \
         a PDF, uppercase R reads the file itself, page aware: control F \
         and control B turn pages, a number then capital G jumps to that \
         page, g g goes to page one, capital G to the last page. \

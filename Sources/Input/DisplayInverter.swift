@@ -142,10 +142,21 @@ final class DisplayInverter: @unchecked Sendable {
             // dark-PDF likewise. Only auto-measurement rides the dwell.
             if self.isListed(bundleID) {
                 self.lastHolderSeen = Date()
-                self.ensureInverted(true, holder: bundleID, reason: bundleID)
+                self.fastConfirmGeneration += 1  // holder is back — abort any burst
+                // Post-revert guard: our own revert kicks Qt rebuilds whose
+                // activation blips would instantly re-darken the next app;
+                // a genuine return still re-inverts via the dwell path
+                if Date().timeIntervalSince(self.lastRevertAt) > 2.5 {
+                    self.ensureInverted(true, holder: bundleID, reason: bundleID)
+                }
             } else if bundleID == Self.previewBundle, self.previewDarkActive {
                 self.applyPreviewDarkMode(pid: app.processIdentifier)
                 self.observePreviewWindows(pid: app.processIdentifier)
+            } else if self.isInverted {
+                // A deliberate switch-away deserves a snappy revert: the
+                // event STARTS a fast multi-sample envelope — it never
+                // decides. The holder resurfacing (PT flap) aborts it.
+                self.beginFastRevertConfirm()
             }
             self.scheduleActivation(bundleID, pid: app.processIdentifier)
         }
@@ -288,10 +299,21 @@ final class DisplayInverter: @unchecked Sendable {
             // dark-PDF likewise. Only auto-measurement rides the dwell.
             if self.isListed(bundleID) {
                 self.lastHolderSeen = Date()
-                self.ensureInverted(true, holder: bundleID, reason: bundleID)
+                self.fastConfirmGeneration += 1  // holder is back — abort any burst
+                // Post-revert guard: our own revert kicks Qt rebuilds whose
+                // activation blips would instantly re-darken the next app;
+                // a genuine return still re-inverts via the dwell path
+                if Date().timeIntervalSince(self.lastRevertAt) > 2.5 {
+                    self.ensureInverted(true, holder: bundleID, reason: bundleID)
+                }
             } else if bundleID == Self.previewBundle, self.previewDarkActive {
                 self.applyPreviewDarkMode(pid: app.processIdentifier)
                 self.observePreviewWindows(pid: app.processIdentifier)
+            } else if self.isInverted {
+                // A deliberate switch-away deserves a snappy revert: the
+                // event STARTS a fast multi-sample envelope — it never
+                // decides. The holder resurfacing (PT flap) aborts it.
+                self.beginFastRevertConfirm()
             }
             self.scheduleActivation(bundleID, pid: app.processIdentifier)
         }
@@ -368,6 +390,37 @@ final class DisplayInverter: @unchecked Sendable {
     private static let pollInterval: TimeInterval = 1.0
     private static let revertAfter: TimeInterval = 3.0
 
+    // FAST REVERT CONFIRM: three samples 0.5s apart after a switch-away
+    // event. Reverts at ~1.5s instead of the heartbeat's quiet-case pace —
+    // still an envelope judgment, never an instant one. Any listed
+    // activation bumps the generation and kills the burst.
+    private var fastConfirmGeneration = 0
+    private var lastRevertAt = Date.distantPast
+
+    private func beginFastRevertConfirm() {
+        fastConfirmGeneration += 1
+        let generation = fastConfirmGeneration
+        var checks = 0
+        func step() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self, generation == self.fastConfirmGeneration,
+                      self.isInverted, self.invertEnabled else { return }
+                guard let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+                      !self.isListed(front), front != self.invertHolder else { return }
+                checks += 1
+                if checks >= 3,
+                   Date().timeIntervalSince(self.lastHolderSeen) > 1.4 {
+                    self.ensureInverted(false, holder: nil,
+                                        reason: "left \(self.invertHolder ?? "invert app") "
+                                            + "for \(front), fast")
+                } else if checks < 3 {
+                    step()
+                }
+            }
+        }
+        step()
+    }
+
     private func poll() {
         guard invertEnabled,
               let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
@@ -404,7 +457,10 @@ final class DisplayInverter: @unchecked Sendable {
         lastToggleAt = Date()
         applyInversion(wanted)
         isInverted = wanted
-        if !wanted { invertHolder = nil }
+        if !wanted {
+            invertHolder = nil
+            lastRevertAt = Date()
+        }
         beginSettleWindow()
         fputs("[display] \(wanted ? "Inverted" : "Reverted") (\(reason))\n", stderr)
         verifyInversion(wanted)

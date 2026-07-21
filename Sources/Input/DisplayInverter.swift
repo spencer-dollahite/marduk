@@ -147,8 +147,9 @@ final class DisplayInverter: @unchecked Sendable {
             self?.applyPreviewDarkModeIfFront()
         }
 
-        fputs("[display] tracking started (\(invertApps.count) invert app(s), "
-            + "PDF dark \(pdfDarkStyle.rawValue))\n", stderr)
+        fputs("[display] tracking started (\(invertApps.count) listed + "
+            + "\(Self.builtInInvertPrefixes.count) built-in, PDF dark "
+            + "\(pdfDarkStyle.rawValue), lease+pulse)\n", stderr)
     }
 
     func stop() {
@@ -356,20 +357,42 @@ final class DisplayInverter: @unchecked Sendable {
                                       execute: work)
     }
 
+    // False until this session has actually driven the setter once —
+    // inherited state is never trusted (see the pulse below).
+    private var hasAppliedThisSession = false
+
     private func ensureInverted(_ wanted: Bool, reason: String) {
         guard wanted != isInverted else {
-            // Reality check: bookkeeping can go stale (a restart or crash
+            // Reality checks: bookkeeping can go stale (a restart or crash
             // mid-toggle) — if the system's own record disagrees with the
             // state we think we're already in, act anyway
             if Self.displayIsInverted() != wanted {
                 fputs("[display] state drift — reapplying \(wanted ? "invert" : "revert") "
                     + "(\(reason))\n", stderr)
                 applyInversion(wanted)
+                hasAppliedThisSession = true
                 beginSettleWindow()
                 verifyInversion(wanted, retryWithChord: Self.uaSetWhiteOnBlack != nil)
+            } else if !hasAppliedThisSession && wanted {
+                // Pref and bookkeeping agree we're inverted, but this
+                // session never proved it — after a crash the PREF can say
+                // inverted while the actual screen filter is off, and a
+                // trusting no-op leaves listed apps bright forever (field:
+                // Pages, a well-behaved app, wouldn't invert). PULSE for a
+                // coherent state: off, then on.
+                fputs("[display] unverified inherited invert state — pulsing "
+                    + "(\(reason))\n", stderr)
+                hasAppliedThisSession = true
+                applyInversion(false)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                    self?.applyInversion(true)
+                }
+                beginSettleWindow()
+                verifyInversion(wanted, retryWithChord: false)
             }
             return
         }
+        hasAppliedThisSession = true
         applyInversion(wanted)
         isInverted = wanted
         beginSettleWindow()

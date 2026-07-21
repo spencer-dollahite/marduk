@@ -372,7 +372,15 @@ enum SpeechPreprocessor {
             }
 
             if let name = settings.single[c] {
-                out += name.isEmpty ? " " : " \(name) "
+                // "#66" is spoken English for "number 66" — the hash reading
+                // is for code (#include, #topic). Digit lookahead decides;
+                // a user override of "#" wins everywhere, unchanged.
+                if c == "#", name == "hash",
+                   i + 1 < chars.count, chars[i + 1].isNumber {
+                    out += " number "
+                } else {
+                    out += name.isEmpty ? " " : " \(name) "
+                }
             } else {
                 out.append(c)
             }

@@ -124,6 +124,24 @@ final class SpeechPreprocessorTests: XCTestCase {
         XCTAssertEqual(SpeechPreprocessor.process("aaaa 1111", settings: most), "aaaa 1111")
     }
 
+    func testHashBeforeDigitsSaysNumber() {
+        XCTAssertEqual(SpeechPreprocessor.process("item #66", settings: most),
+                       "item number 66")
+        XCTAssertEqual(SpeechPreprocessor.process("issue #72 closed", settings: most),
+                       "issue number 72 closed")
+        // Non-digit contexts keep the code reading
+        XCTAssertEqual(SpeechPreprocessor.process("#include", settings: most),
+                       "hash include")
+        // Runs still collapse as symbols
+        XCTAssertEqual(SpeechPreprocessor.process("### title", settings: most),
+                       "3 hash title")
+        // A user override of # wins everywhere, digits included
+        let pound = SpeechPreprocessor.Settings(verbosity: .most,
+                                                overrides: ["#": "pound"])
+        XCTAssertEqual(SpeechPreprocessor.process("item #66", settings: pound),
+                       "item pound 66")
+    }
+
     // MARK: - Overrides
 
     func testOverrideRenamesSymbol() {

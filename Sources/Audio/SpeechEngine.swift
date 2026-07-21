@@ -48,6 +48,22 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     private var readBase = 0
     private var readPosition = 0
 
+    // Back-motion anchor: at fast speech rates the boundary callbacks race
+    // ahead of comprehension — by the time a `b` lands, readPosition is
+    // several words past what the user absorbed, and repeated back-jumps
+    // tread water (each respeak blurts a few words before the next press).
+    // Within this window of a segment starting (read start or any jump),
+    // back motions anchor at the segment's BEGINNING (readBase), so a
+    // second `b` reliably lands one unit before the last target. After the
+    // window, the user has genuinely listened — anchor at the live position.
+    // Forward motions always use the live position.
+    private var segmentStartedAt = Date.distantPast
+    private let backAnchorWindow: TimeInterval = 1.5
+    private var backAnchor: Int {
+        Date().timeIntervalSince(segmentStartedAt) < backAnchorWindow
+            ? readBase : readPosition
+    }
+
     // Dedicated synthesizer for search-entry echo: announce() stop()s the
     // main synthesizer, which would destroy the paused read mid-search.
     // A second synthesizer speaks over it without touching read state,
@@ -93,6 +109,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         readText = processed
         readBase = 0
         readPosition = 0
+        segmentStartedAt = Date()
         startSpeaking(makeReadUtterance(processed), completion: completion)
         readActive = true
     }
@@ -157,7 +174,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     @discardableResult
     func jump(_ unit: ReadUnit, direction: ReadDirection, count: Int = 1) -> Bool {
         guard readActive, let text = readText else { return false }
-        var position = readPosition
+        var position = direction == .back ? backAnchor : readPosition
         for _ in 0..<max(1, count) {
             let next = ReadNavigator.target(in: text, from: position,
                                             unit: unit, direction: direction)
@@ -190,7 +207,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     @discardableResult
     func jumpToLineStart() -> Bool {
         guard readActive, let text = readText else { return false }
-        let target = ReadNavigator.lineStart(in: text, at: readPosition)
+        let target = ReadNavigator.lineStart(in: text, at: backAnchor)
         guard target != readPosition else { return false }
         respeak(from: target)
         return true
@@ -223,6 +240,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         stop()
         readBase = clamped
         readPosition = clamped
+        segmentStartedAt = Date()
         startSpeaking(makeReadUtterance(remainder), completion: carried)
         readActive = true
     }

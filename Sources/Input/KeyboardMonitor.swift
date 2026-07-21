@@ -1841,9 +1841,16 @@ final class KeyboardMonitor {
                 // No AX text — PDF viewers (Preview) expose almost none.
                 // Fall back to reading the FILE: the window's document
                 // path + PDFKit gives per-page text, and pages become
-                // first-class reading targets.
+                // first-class reading targets. Safari exposes no AX text
+                // either, but it IS scriptable — extract the page text
+                // via AppleScript instead (Marduk-native continuous
+                // reading, no Apple narrator needed).
                 if !readPDFDocument(app: app) {
-                    noDocument("focused element has no text value")
+                    if app.bundleIdentifier == "com.apple.Safari" {
+                        readSafariPage()
+                    } else {
+                        noDocument("focused element has no text value")
+                    }
                 }
                 return
             }
@@ -1907,6 +1914,55 @@ final class KeyboardMonitor {
         guard AXValueGetValue(rr as! AXValue, .cfRange, &range),
               range.location >= 0 else { return nil }
         return range.location
+    }
+
+    /// Safari fallback for R: web areas expose no AX text value, but
+    /// Safari is scriptable — `text of front document` returns the
+    /// page's readable text (Reader view via Shift+Cmd+R first gives a
+    /// cleaner extraction; raw pages include nav clutter). Runs off-main
+    /// (osascript is slow); first use triggers macOS's one-time
+    /// Automation prompt for Safari, same as the Music/Spotify grants.
+    /// Whole-page read from the top — a web page has no caret.
+    private func readSafariPage() {
+        fputs("[keyboard] R: Safari page extraction\n", stderr)
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let script = "tell application \"Safari\" to get text of front document"
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = ["-e", script]
+            let outPipe = Pipe()
+            let errPipe = Pipe()
+            process.standardOutput = outPipe
+            process.standardError = errPipe
+            var text: String?
+            do {
+                try process.run()
+                // Drain before waiting — the pipe-buffer deadlock guard
+                let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+                let err = errPipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                if process.terminationStatus == 0 {
+                    text = String(data: data, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                } else {
+                    let msg = String(data: err, encoding: .utf8) ?? ""
+                    fputs("[keyboard] Safari extraction failed (status "
+                        + "\(process.terminationStatus)): "
+                        + "\(msg.trimmingCharacters(in: .whitespacesAndNewlines))\n", stderr)
+                }
+            } catch {
+                fputs("[keyboard] osascript launch failed: \(error.localizedDescription)\n", stderr)
+            }
+            DispatchQueue.main.async { [self] in
+                guard let text, !text.isEmpty else {
+                    Earcon.error()
+                    onAnnounce?("No readable document here.")
+                    return
+                }
+                fputs("[keyboard] R: Safari page (\(text.count) chars)\n", stderr)
+                onSpeak?(text)
+            }
+        }
     }
 
     /// PDF fallback for R: the focused window's document path (standard

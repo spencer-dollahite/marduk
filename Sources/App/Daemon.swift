@@ -339,6 +339,12 @@ final class DaemonServer {
             rateSaveTimer = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
         }
+        // READING capture: the engine's readActive flips drive the keyboard's
+        // modal reading state, synchronously (speak() and the AV delegate
+        // both run on main) — a read can never be active without its capture
+        speech.onReadActiveChange = { [weak self] active in
+            self?.keyboardMonitor?.readStateChanged(active)
+        }
         // Read motions: all handlers arrive on main (the monitor dispatches).
         // The buzz on an unmoved jump keeps edges audible — silence after a
         // keypress would read as a broken key.
@@ -1144,7 +1150,8 @@ final class DaemonServer {
             speech.announce(on
                 ? "Read motions on. During a read: b and w step words, "
                     + "parens sentences, braces paragraphs, g g start, "
-                    + "capital G end, slash searches."
+                    + "capital G end, slash searches. i or Escape leaves "
+                    + "the read."
                 : "Read motions off.")
 
         case "togglesound":

@@ -28,7 +28,14 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     // True while a content read (not an announcement) is speaking or paused.
     // Plain stored state, not an AV query — the event-tap callback reads it
     // synchronously to decide whether Space is pause/resume or a normal key.
-    private(set) var readActive = false
+    // The didSet drives the keyboard's READING capture — fired synchronously
+    // (speak() runs on main, delegate callbacks land on main), so the tap
+    // never sees a read without its capture. Consecutive reads and respeak
+    // jumps stay true throughout: no spurious exit/re-enter events.
+    private(set) var readActive = false {
+        didSet { if readActive != oldValue { onReadActiveChange?(readActive) } }
+    }
+    var onReadActiveChange: ((Bool) -> Void)?
 
     // Read-motion state: the FULL processed text of the current read plus
     // where the voice is in it. AVSpeechSynthesizer cannot seek, so a jump

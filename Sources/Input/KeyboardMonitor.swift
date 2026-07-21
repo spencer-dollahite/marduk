@@ -63,10 +63,23 @@ final class KeyboardMonitor {
 
     // Read motions (opt-in): vim navigation inside an active read — b/w
     // word, (/) sentence, {/} paragraph, digits count, / and ? search.
-    // Only live while a content read is speaking or paused (NORMAL mode);
-    // everywhere else the keys keep their normal behavior. State is
+    // While enabled, an active read CAPTURES the keyboard from any mode
+    // (READING is a real mode: i and Escape are the only exits); with the
+    // setting off, every key keeps its normal behavior. State is
     // main-thread-only like all tap state.
-    var readMotionsEnabled = false
+    var readMotionsEnabled = false {
+        didSet {
+            // Turned off mid-read (socket-side :config): drop the capture,
+            // or the motions would keep firing with the feature off
+            if !readMotionsEnabled { readingCapture = false }
+        }
+    }
+    // True while a read owns the keyboard. Set by readStateChanged (the
+    // engine's readActive didSet, synchronous on main) — the tap callback
+    // reads it directly. The underlying `mode` is left untouched while
+    // capturing; only the explicit exits (i, Escape) change it, so a read
+    // that ends naturally returns the user exactly where they were.
+    private var readingCapture = false
     var onReadJump: ((ReadUnit, ReadDirection, Int) -> Void)?
     var onReadSearch: ((String, ReadDirection) -> Void)?
     var onReadSearchBegin: (() -> Void)?    // pause the read while typing
@@ -282,6 +295,7 @@ final class KeyboardMonitor {
         readSearchBuffer = ""
         readMotionCount = 0
         pendingReadG = false
+        readingCapture = false
         discardBurstAndReplay()
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
@@ -374,6 +388,7 @@ final class KeyboardMonitor {
             readSearchBuffer = ""
             readMotionCount = 0
             pendingReadG = false
+            readingCapture = false
             let state = isEnabled ? "ON (NORMAL)" : "OFF"
             fputs("[keyboard] Marduk \(state)\n", stderr)
             let word = isEnabled ? "Systems engaged" : "Systems disengaged"
@@ -520,19 +535,54 @@ final class KeyboardMonitor {
             return nil
         }
 
-        // === Read motions (opt-in): vim navigation inside an active read ===
-        // Same gate shape as Space above, NORMAL only (VISUAL owns its
-        // letters as selection motions). b/w step words, (/) sentences,
-        // {/} paragraphs, digits build a count (3( = back three), / and ?
-        // open search. Motions deliberately ALLOW autorepeat — holding (
-        // glides back sentence by sentence; the engine recomputes from the
-        // live position each time. Outside a read every key here keeps its
-        // normal meaning, so the letters stay typing-rescue letters and
-        // the punctuation keeps passing through.
-        if readMotionsEnabled, mode == .normal,
-           !hasCommand, !hasControl, !hasOption,
-           burstBuffer.isEmpty, isReadActive() {
+        // === READING capture (readmotions on): the read owns the keyboard ===
+        // Engaged from ANY mode when a read starts (readStateChanged) —
+        // reading is a real mode, not a NORMAL overlay: a read fired from
+        // INSERT used to let ( and gg type straight over the selection.
+        // b/w step words, (/) sentences, {/} paragraphs, digits build a
+        // count (3( = back three), gg/G edges, . repeats, / and ? search,
+        // Space pauses. i and Escape are the ONLY exits (both stop the
+        // read); every other typing-shaped key buzzes instead of leaking
+        // into the app. Cmd/Ctrl/Option combos and non-typing keys
+        // (arrows, F-keys, media) still pass. Motions deliberately ALLOW
+        // autorepeat — holding ( glides back sentence by sentence; the
+        // engine recomputes from the live position each time. A typing
+        // burst in flight predates the read — typing intent wins
+        // (declareTyping drops the capture).
+        if readingCapture, !isReadActive() {
+            readingCapture = false  // engine state is the truth; heal drift
+        }
+        if readingCapture, !hasCommand, !hasControl, !hasOption,
+           burstBuffer.isEmpty {
             let hasShift = flags.contains(.maskShift)
+
+            if keycode == 49, !flags.contains(.maskShift) { // Space — pause/resume
+                if isAutorepeat { return nil }
+                DispatchQueue.main.async { [self] in onPauseToggle?() }
+                return nil
+            }
+
+            if keycode == 34 { // i — stop the read, drop to INSERT
+                if isAutorepeat { return nil }
+                readingCapture = false
+                mode = .insert
+                suppressInsertEntryRepeat = true
+                fputs("[keyboard] READING → INSERT\n", stderr)
+                DispatchQueue.main.async { [self] in
+                    onStop?()
+                    Earcon.fallToInsert()
+                }
+                return nil
+            }
+
+            if keycode == 53 { // Escape — stop the read, back to NORMAL
+                if isAutorepeat { return nil }
+                readingCapture = false
+                mode = .normal
+                fputs("[keyboard] READING → NORMAL (Escape)\n", stderr)
+                DispatchQueue.main.async { [self] in onStop?() }
+                return nil
+            }
 
             if keycode == 44 { // / or ? — search entry
                 if isAutorepeat { return nil }
@@ -571,8 +621,9 @@ final class KeyboardMonitor {
             }
             pendingReadG = false  // any non-g key breaks a pending gg
 
-            // Digits accumulate a count. Bare 0 stays app-bound (vim: 0 is
-            // a motion, not a count starter); it only joins after 3, 30…
+            // Digits accumulate a count. Bare 0 never starts one (vim: 0
+            // is a motion, not a count starter) — it only joins after 3,
+            // 30… and otherwise falls to the buzz below.
             if !hasShift, let digit = Self.digitKeyCodes[keycode],
                digit != 0 || readMotionCount > 0 {
                 readMotionCount = min(readMotionCount * 10 + digit, 999)
@@ -629,9 +680,22 @@ final class KeyboardMonitor {
                 }
                 return nil
             }
-            // Not a motion: drop any half-typed count and fall through to
-            // the normal dispatch (Escape still stops the read, etc.)
-            readMotionCount = 0
+            // Everything else typing-shaped buzzes — reading owns the
+            // keyboard, and a silently swallowed key would read as a dead
+            // keyboard. Covers letters (including k), stray digits (bare 0),
+            // punctuation, Return, Tab, Delete. Non-typing keys — arrows,
+            // F-keys, media, Naga button codes — pass through untouched.
+            if Self.alphaKeyCodes.contains(keycode) || keycode == 40
+                || Self.digitKeyCodes[keycode] != nil
+                || Self.typingPunctuationKeys.contains(keycode)
+                || keycode == 36 || keycode == 48 || keycode == 51 {
+                readMotionCount = 0
+                if !isAutorepeat {
+                    DispatchQueue.main.async { Earcon.error() }
+                }
+                return nil
+            }
+            return pass
         }
 
         // === INSERT-mode n over a Firefox Reader document ===
@@ -1131,6 +1195,28 @@ final class KeyboardMonitor {
         }
     }
 
+    /// Read started/ended (the engine's readActive didSet, via the daemon).
+    /// Main-thread only, synchronous with speak()/the delegate callbacks, so
+    /// the tap can never see an active read without its capture. Entry only
+    /// when read motions are on and the keyboard is ours; COMMAND keeps its
+    /// line editor (confirmation reads right after a : command must not
+    /// steal the palette's keys). Natural end just drops the capture — the
+    /// underlying mode was never changed, so the user lands back exactly
+    /// where they were (INSERT stays INSERT).
+    func readStateChanged(_ active: Bool) {
+        if active {
+            guard readMotionsEnabled, isEnabled, mode != .command,
+                  !readingCapture else { return }
+            readingCapture = true
+            fputs("[keyboard] → READING\n", stderr)
+        } else if readingCapture {
+            readingCapture = false
+            readMotionCount = 0
+            pendingReadG = false
+            fputs("[keyboard] read ended → \(mode)\n", stderr)
+        }
+    }
+
     /// Replaces the COMMAND-mode buffer (Tab autocomplete). Main-thread only,
     /// same as every other piece of tap state; re-fires onCommandChange so
     /// the palette re-renders.
@@ -1460,6 +1546,9 @@ final class KeyboardMonitor {
     private func declareTyping(currentEvent: CGEvent) {
         var events = takeBurst()
         if let copy = currentEvent.copy() { events.append(copy) }
+        // A burst that resolves as typing predates any read that started
+        // mid-burst — the user's typing intent wins over the capture
+        readingCapture = false
         mode = .insert
         fputs("[keyboard] typing burst (\(events.count) keys) → INSERT\n", stderr)
         DispatchQueue.main.async { Earcon.fallToInsert() }

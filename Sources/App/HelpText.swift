@@ -27,14 +27,16 @@ enum HelpText {
         8, in Firefox: open reader mode and start narrating, one key. \
         8 again stops narrating and closes the reader. \
         Escape, stop speech. Space, pause or resume a read. \
-        With read motions on, vim keys navigate inside a read: b and w \
-        step back and forward a word. Parentheses step a sentence. Braces \
-        step a paragraph. Numbers repeat, like 3 then open paren. g g \
-        restarts from the top, capital G jumps to the last paragraph. \
-        Slash searches forward, question mark searches back: the read \
-        pauses while you type, Return jumps to the match, Escape resumes \
-        where you were. Period repeats the last motion or search, so \
-        period after a search hops match to match. \
+        With read motions on, a read takes the whole keyboard, from any \
+        mode: b and w step back and forward a word. Parentheses step a \
+        sentence. Braces step a paragraph. Numbers repeat, like 3 then \
+        open paren. g g restarts from the top, capital G jumps to the \
+        last paragraph. Slash searches forward, question mark searches \
+        back: the read pauses while you type, Return jumps to the match, \
+        Escape resumes where you were. Period repeats the last motion or \
+        search, so period after a search hops match to match. Only two \
+        keys leave a read: Escape stops it and returns to NORMAL, i stops \
+        it and drops to INSERT for typing. Other letters buzz. \
         VISUAL mode: h j k l extend the selection. Numbers repeat a motion, \
         like 3 j. r reads the selection. Escape cancels. \
         INSERT mode: hold Escape half a second to return to NORMAL. \

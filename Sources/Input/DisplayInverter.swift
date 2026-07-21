@@ -6,12 +6,12 @@ import ScreenCaptureKit
 /// Display management for bright apps in a dark-mode workflow. Two tools:
 ///
 /// 1. FULL-DISPLAY INVERSION for apps that are hopelessly light (Pages,
-///    Packet Tracer): observes foreground app changes and toggles macOS
-///    Invert Colors by posting its keyboard shortcut when a configured
-///    bundle ID takes the front, reverting the moment it leaves. The
-///    shortcut must be enabled in System Settings → Keyboard → Shortcuts →
-///    Accessibility (default here: Shift+Cmd+F13, `display.invertShortcut*`
-///    overrides).
+///    Packet Tracer): inverts the moment a listed app is seen in front;
+///    un-inverts ONLY via the 2s heartbeat poll, after 6 continuous
+///    seconds of the holder being gone. Events may invert; they may NEVER
+///    revert — an entire evening of field logs proved every event-shaped
+///    signal (activation, dwell, settle, window stack, leases) eventually
+///    lies, in both directions, for both Qt and native apps.
 /// 2. PREVIEW DARK PDFs: Preview's per-window dark-appearance menu item
 ///    ("Use Dark Appearance for PDF" on macOS 26) — pressed directly via
 ///    the AX menu bar (no shortcut needed) whenever Preview comes front or
@@ -125,9 +125,6 @@ final class DisplayInverter: @unchecked Sendable {
             guard let self,
                   let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   let bundleID = app.bundleIdentifier else { return }
-            // Raw stamp, BEFORE any dwell/settle filtering: a listed app's
-            // own activation churn renews its lease (see requestRevert)
-            if self.isListed(bundleID) { self.lastListedSeen = Date() }
             self.scheduleActivation(bundleID, pid: app.processIdentifier)
         }
 
@@ -147,9 +144,17 @@ final class DisplayInverter: @unchecked Sendable {
             self?.applyPreviewDarkModeIfFront()
         }
 
+        // The heartbeat: the ONLY authority allowed to revert. 2s of
+        // NSWorkspace reads is negligible; its judgments are about
+        // envelopes (6s of absence), never instants.
+        pollTimer = Timer.scheduledTimer(withTimeInterval: Self.pollInterval,
+                                         repeats: true) { [weak self] _ in
+            self?.poll()
+        }
+
         fputs("[display] tracking started (\(invertApps.count) listed + "
             + "\(Self.builtInInvertPrefixes.count) built-in, PDF dark "
-            + "\(pdfDarkStyle.rawValue), lease+pulse)\n", stderr)
+            + "\(pdfDarkStyle.rawValue), heartbeat)\n", stderr)
     }
 
     func stop() {
@@ -162,7 +167,8 @@ final class DisplayInverter: @unchecked Sendable {
             themeObserver = nil
         }
         teardownPreviewObserver()
-        cancelPendingRevert()
+        pollTimer?.invalidate()
+        pollTimer = nil
         // Revert inversion if active
         if isInverted {
             applyInversion(false)
@@ -173,7 +179,6 @@ final class DisplayInverter: @unchecked Sendable {
 
     /// Live `:config invert off` mid-invert must hand the display back.
     func revertIfInverted() {
-        cancelPendingRevert()
         if isInverted {
             applyInversion(false)
             isInverted = false
@@ -291,19 +296,16 @@ final class DisplayInverter: @unchecked Sendable {
 
     private func handleAppActivated(_ bundleID: String, pid: pid_t) {
         if invertEnabled {
-            // The LIST (built-in prefixes + config) is unconditional
-            // certainty — invert on arrival, no capture, no permission.
-            // Auto-measurement judges only unlisted apps. Reverts are
-            // NEVER immediate: see requestRevert.
+            // Events may INVERT (snappier than waiting for the heartbeat):
+            // the list is unconditional certainty, auto-measurement judges
+            // unlisted apps. Events NEVER revert — that's the heartbeat's
+            // monopoly (poll()).
             if isListed(bundleID) {
-                lastListedSeen = Date()
-                cancelPendingRevert()
-                ensureInverted(true, reason: bundleID)
+                lastHolderSeen = Date()
+                ensureInverted(true, holder: bundleID, reason: bundleID)
             } else if autoInvert, bundleID != Self.previewBundle || !previewDarkActive,
                       bundleID != Bundle.main.bundleIdentifier {
                 evaluateBrightness(bundleID: bundleID, pid: pid)
-            } else {
-                requestRevert(from: bundleID, reason: "left invert app")
             }
         }
 
@@ -317,51 +319,44 @@ final class DisplayInverter: @unchecked Sendable {
         }
     }
 
-    // TWO-STRIKE REVERT: inverting is instant, un-inverting needs the
-    // non-listed app to STILL own the screen after a confirmation delay.
-    // Packet Tracer's churn (activation flaps, window-stack flaps — every
-    // instantaneous signal proved unreliable in the field) can kill a
-    // pending revert simply by coming back; a real app switch sails
-    // through, just fashionably late.
-    private var pendingRevert: DispatchWorkItem?
-    private static let revertConfirmDelay: TimeInterval = 2.2
+    // THE HEARTBEAT — the only authority allowed to revert. Every
+    // event-shaped scheme of the field campaign (immediate, dwell, settle,
+    // window stack, two-strike, lease) eventually reverted falsely: events
+    // sample instants, and instants lie on this system. The poll reasons
+    // about the ENVELOPE: whoever earned the inversion (the holder) merely
+    // has to be SEEN in front once every revertAfter seconds to keep it.
+    // Sitting still in a listed app renews every beat — flicker is
+    // structurally impossible. A real departure stops the sightings and
+    // reverts once, ~6-8s later.
+    private var pollTimer: Timer?
+    private var invertHolder: String?
+    private var lastHolderSeen = Date.distantPast
+    private static let pollInterval: TimeInterval = 2.0
+    private static let revertAfter: TimeInterval = 6.0
 
-    // The lease: field log showed the window signal PERSISTENTLY wrong for
-    // PT (claims Firefox while PT is front) and activation flapping — so
-    // instant samples can never be trusted to confirm a revert. But PT's
-    // churn fires a PT activation every second or two: the noise itself is
-    // the keepalive. No listed app seen for listedGrace = genuinely gone.
-    private var lastListedSeen = Date.distantPast
-    private static let listedGrace: TimeInterval = 3.0
-
-    private func cancelPendingRevert() {
-        pendingRevert?.cancel()
-        pendingRevert = nil
-    }
-
-    private func requestRevert(from bundleID: String, reason: String) {
-        guard isInverted else { cancelPendingRevert(); return }
-        guard pendingRevert == nil else { return }
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.pendingRevert = nil
-            guard self.isInverted,
-                  Date().timeIntervalSince(self.lastListedSeen) > Self.listedGrace,
-                  let front = self.resolveFront(),
-                  front.bundleID == bundleID,
-                  !self.isListed(front.bundleID) else { return }
-            self.ensureInverted(false, reason: "\(reason), confirmed")
+    private func poll() {
+        guard invertEnabled,
+              let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        else { return }
+        if isListed(front) {
+            lastHolderSeen = Date()
+            ensureInverted(true, holder: front, reason: front)
+        } else if isInverted {
+            if front == invertHolder {
+                lastHolderSeen = Date()  // auto-inverted app still front
+            } else if Date().timeIntervalSince(lastHolderSeen) > Self.revertAfter {
+                ensureInverted(false, holder: nil,
+                               reason: "left \(invertHolder ?? "invert app") for \(front)")
+            }
         }
-        pendingRevert = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.revertConfirmDelay,
-                                      execute: work)
     }
 
     // False until this session has actually driven the setter once —
     // inherited state is never trusted (see the pulse below).
     private var hasAppliedThisSession = false
 
-    private func ensureInverted(_ wanted: Bool, reason: String) {
+    private func ensureInverted(_ wanted: Bool, holder: String?, reason: String) {
+        if wanted { invertHolder = holder }
         guard wanted != isInverted else {
             // Reality checks: bookkeeping can go stale (a restart or crash
             // mid-toggle) — if the system's own record disagrees with the
@@ -395,6 +390,7 @@ final class DisplayInverter: @unchecked Sendable {
         hasAppliedThisSession = true
         applyInversion(wanted)
         isInverted = wanted
+        if !wanted { invertHolder = nil }
         beginSettleWindow()
         fputs("[display] \(wanted ? "Inverted" : "Reverted") (\(reason))\n", stderr)
         verifyInversion(wanted, retryWithChord: Self.uaSetWhiteOnBlack != nil)
@@ -478,11 +474,11 @@ final class DisplayInverter: @unchecked Sendable {
                     - (self.isInverted ? 0.08 : 0)
                 let reason = "auto \(bundleID) " + String(format: "%.2f", measured)
                 if wanted {
-                    self.cancelPendingRevert()
-                    self.ensureInverted(true, reason: reason)
-                } else {
-                    self.requestRevert(from: bundleID, reason: reason)
+                    self.lastHolderSeen = Date()
+                    self.ensureInverted(true, holder: bundleID, reason: reason)
                 }
+                // Dark verdicts do NOTHING — reverting is the heartbeat's
+                // monopoly, and this measurement is just one instant
             }
         }
     }

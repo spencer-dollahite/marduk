@@ -9,6 +9,7 @@ import PDFKit
 struct PagedText: Equatable {
     let text: String        // pages joined with "\n\n" (paragraph breaks)
     let pageStarts: [Int]   // UTF-16 offset of each page start, ascending
+    let pages: [String]     // retained for WINDOWING (see window(startingAt:))
 
     var pageCount: Int { pageStarts.count }
 
@@ -22,6 +23,27 @@ struct PagedText: Equatable {
         }
         text = joined
         pageStarts = starts
+        self.pages = pages
+    }
+
+    /// A contiguous page WINDOW starting at `page` (0-based, clamped),
+    /// sized so preprocessing stays bounded — the whole document of a
+    /// large PDF used to be processed at once, and the speech input cap
+    /// then made pages past ~60k chars unreachable. Windows make every
+    /// page of any size document reachable: jumps outside the current
+    /// window rebuild a new one there. Always contains at least one page.
+    func window(startingAt page: Int, budget: Int = 45_000)
+        -> (firstPage: Int, window: PagedText) {
+        let first = max(0, min(page, pageCount - 1))
+        var last = first
+        var total = (pages[first] as NSString).length
+        while last + 1 < pageCount {
+            let next = (pages[last + 1] as NSString).length + 2
+            guard total + next <= budget else { break }
+            total += next
+            last += 1
+        }
+        return (first, PagedText(pages: Array(pages[first...last])))
     }
 
     /// The page containing `offset` (0-based). An offset in the join

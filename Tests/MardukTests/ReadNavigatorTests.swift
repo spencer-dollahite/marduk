@@ -300,3 +300,50 @@ final class ReadNavigatorTests: XCTestCase {
         XCTAssertNil(PagedText.previewPage(fromTitle: "Page of nothing"))
     }
 }
+
+final class PagedWindowTests: XCTestCase {
+
+    private func paged(pageSize: Int, count: Int) -> PagedText {
+        PagedText(pages: (0..<count).map { i in
+            String(repeating: "p\(i) ", count: pageSize / 4)
+        })
+    }
+
+    func testWindowRespectsBudget() {
+        let doc = paged(pageSize: 10_000, count: 50)   // ~500k chars total
+        let (first, window) = doc.window(startingAt: 0)
+        XCTAssertEqual(first, 0)
+        XCTAssertLessThanOrEqual((window.text as NSString).length, 45_000)
+        XCTAssertGreaterThan(window.pageCount, 1)
+        XCTAssertLessThan(window.pageCount, doc.pageCount)
+    }
+
+    func testWindowFromLatePageReachesIt() {
+        let doc = paged(pageSize: 10_000, count: 50)
+        let (first, window) = doc.window(startingAt: 40)
+        XCTAssertEqual(first, 40)
+        XCTAssertTrue(window.text.hasPrefix("p40 "))
+    }
+
+    func testWindowAlwaysHasAtLeastOnePage() {
+        // A single page larger than the budget still loads whole
+        let doc = PagedText(pages: [String(repeating: "x", count: 60_000)])
+        let (first, window) = doc.window(startingAt: 0)
+        XCTAssertEqual(first, 0)
+        XCTAssertEqual(window.pageCount, 1)
+    }
+
+    func testWindowClampsOutOfRange() {
+        let doc = paged(pageSize: 100, count: 5)
+        XCTAssertEqual(doc.window(startingAt: 99).firstPage, 4)
+        XCTAssertEqual(doc.window(startingAt: -3).firstPage, 0)
+    }
+
+    func testSmallDocumentWindowIsWholeDocument() {
+        let doc = paged(pageSize: 500, count: 10)
+        let (first, window) = doc.window(startingAt: 0)
+        XCTAssertEqual(first, 0)
+        XCTAssertEqual(window.pageCount, 10)
+        XCTAssertEqual(window.text, doc.text)
+    }
+}

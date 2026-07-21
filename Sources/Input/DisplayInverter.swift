@@ -80,6 +80,10 @@ final class DisplayInverter: @unchecked Sendable {
     }
 
     func start() {
+        // The user (or a crash) may have left the display inverted —
+        // bookkeeping starts from the system's actual state
+        isInverted = Self.displayIsInverted()
+
         observer = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
@@ -188,6 +192,18 @@ final class DisplayInverter: @unchecked Sendable {
         toggleInversion()
         isInverted = wanted
         fputs("[display] \(wanted ? "Inverted" : "Reverted") (\(reason))\n", stderr)
+        // Verify against the system's own record and resync — a disabled
+        // shortcut otherwise leaves the bookkeeping lying forever
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self else { return }
+            let actual = Self.displayIsInverted()
+            if actual != self.isInverted {
+                self.isInverted = actual
+                fputs("[display] invert chord had no effect — enable the "
+                    + "Invert Colors shortcut in Settings, Keyboard, "
+                    + "Keyboard Shortcuts, Accessibility\n", stderr)
+            }
+        }
     }
 
     // MARK: - Brightness auto-detection
@@ -230,21 +246,17 @@ final class DisplayInverter: @unchecked Sendable {
                 guard let self, self.invertEnabled, self.autoInvert,
                       NSWorkspace.shared.frontmostApplication?.bundleIdentifier
                           == bundleID else { return }
-                // The capture sees the screen AS DISPLAYED — including our
-                // own inversion (field-diagnosed: invert → next measurement
-                // reads dark → revert → oscillation). Inversion is exactly
-                // 255−x per channel, so undo it in the math, and keep a
-                // deadband so boundary values can't flap on re-measures.
-                let effective = self.isInverted ? 1 - measured : measured
-                let wanted: Bool
-                if self.isInverted {
-                    wanted = effective > self.autoInvertThreshold - 0.08
-                } else {
-                    wanted = effective > self.autoInvertThreshold
-                }
+                // Window captures come from the backing store, BEFORE the
+                // display-level inversion filter — the measurement is the
+                // app's true brightness either way. (The one observed
+                // oscillation was a dialog window getting measured; the
+                // largest-window pick fixed it.) Hysteresis keeps boundary
+                // apps from flapping across re-measures.
+                let wanted = measured > self.autoInvertThreshold
+                    - (self.isInverted ? 0.08 : 0)
                 self.ensureInverted(wanted,
                                     reason: "auto \(bundleID) "
-                                        + String(format: "%.2f", effective))
+                                        + String(format: "%.2f", measured))
             }
         }
     }
@@ -274,25 +286,40 @@ final class DisplayInverter: @unchecked Sendable {
         return Double(total) / Double(samples) / 255.0
     }
 
-    /// Posts the system Invert Colors shortcut (default Shift+Cmd+F13,
-    /// keycode 105 — configure the same chord in System Settings →
-    /// Keyboard → Shortcuts → Accessibility → Invert colors).
+    /// Posts the system Invert Colors shortcut (default Shift+Cmd+F13 —
+    /// enable the same chord in System Settings → Keyboard → Shortcuts →
+    /// Accessibility → Invert colors). Symbolic hotkeys want to SEE the
+    /// modifiers pressed — real Shift/Cmd key events around the F13, the
+    /// way a hand types it — flags-only events reach apps but not the
+    /// system hotkey handler (field-diagnosed: chord posted, nothing
+    /// inverted).
     private func toggleInversion() {
         let source = CGEventSource(stateID: .hidSystemState)
-        let keycode: CGKeyCode = 105 // F13
+        let shift: CGKeyCode = 56, command: CGKeyCode = 55, f13: CGKeyCode = 105
+        let chord: [(key: CGKeyCode, down: Bool, flags: CGEventFlags)] = [
+            (shift, true, .maskShift),
+            (command, true, [.maskShift, .maskCommand]),
+            (f13, true, [.maskShift, .maskCommand]),
+            (f13, false, [.maskShift, .maskCommand]),
+            (command, false, .maskShift),
+            (shift, false, []),
+        ]
+        for step in chord {
+            guard let event = CGEvent(keyboardEventSource: source,
+                                      virtualKey: step.key, keyDown: step.down) else { continue }
+            event.flags = step.flags
+            event.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMarker)
+            event.post(tap: .cghidEventTap)
+        }
+    }
 
-        guard let down = CGEvent(keyboardEventSource: source, virtualKey: keycode, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: keycode, keyDown: false) else { return }
-
-        let flags: CGEventFlags = [.maskShift, .maskCommand]
-
-        down.flags = flags
-        down.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMarker)
-        down.post(tap: .cghidEventTap)
-
-        up.flags = flags
-        up.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMarker)
-        up.post(tap: .cghidEventTap)
+    /// Ground truth from the same store Settings writes — no guessing
+    /// whether the chord landed.
+    static func displayIsInverted() -> Bool {
+        let domain = "com.apple.universalaccess" as CFString
+        CFPreferencesAppSynchronize(domain)
+        return (CFPreferencesCopyAppValue("whiteOnBlack" as CFString, domain)
+            as? Bool) ?? false
     }
 
     // MARK: - Preview "View in Dark Mode"

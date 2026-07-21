@@ -82,7 +82,7 @@ struct MardukConfig: Codable {
 
     struct DisplayConfig: Codable {
         var invertForApps: [String] = []  // bundle IDs, e.g. ["com.apple.iWork.Pages"]
-        var invertEnabled: Bool? = true       // master switch for app-list inversion
+        var invertEnabled: Bool? = false      // app-list inversion — OPT-IN (:config invert on)
         var pdfDark: String? = "auto"         // auto (follow system theme) | on | off
         var autoInvert: Bool? = false         // measure window brightness (Screen Recording)
         var autoInvertThreshold: Int? = 70    // percent brightness that counts as "bright"

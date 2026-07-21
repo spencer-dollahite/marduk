@@ -204,7 +204,10 @@ final class DaemonServer {
         }
 
         displayInverter = DisplayInverter(invertApps: config.display.invertForApps)
-        displayInverter?.invertEnabled = config.display.invertEnabled ?? true
+        // OPT-IN: inversion fires keystrokes and Automation prompts —
+        // never a surprise default (the built-in app list only matters
+        // once the user says :config invert on)
+        displayInverter?.invertEnabled = config.display.invertEnabled ?? false
         displayInverter?.pdfDarkStyle = DisplayInverter.PDFDarkStyle(
             rawValue: config.display.pdfDark ?? "") ?? .auto
         displayInverter?.autoInvert = config.display.autoInvert ?? false
@@ -1784,7 +1787,7 @@ final class DaemonServer {
             "readmotions": (keyboardMonitor?.readMotionsEnabled ?? false) ? "on" : "off",
             "dialogs": dialogSentinel.level.rawValue,
             "follow": (keyboardMonitor?.followEnabled ?? true) ? "on" : "off",
-            "invert": (config.display.invertEnabled ?? true) ? "on" : "off",
+            "invert": (config.display.invertEnabled ?? false) ? "on" : "off",
             "pdfdark": config.display.pdfDark ?? "auto",
             "autoinvert": (config.display.autoInvert ?? false) ? "on" : "off",
         ]

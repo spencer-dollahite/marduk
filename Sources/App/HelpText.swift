@@ -91,8 +91,10 @@ enum HelpText {
         only the central password and permission prompts. follow, on or \
         off: the app's view tracks the read — Preview turns to the page \
         you jump to, and reader articles scroll with the voice. \
-        invert, on or off: flip the display for bright apps you list in \
-        the config file, and restore it when you leave them. p d f dark, \
+        invert, on or off, off by \
+        default: flip the display for bright apps — Packet Tracer and \
+        Pages are built in, add more in the config file — and restore \
+        it when you leave them. p d f dark, \
         one word, auto, on, or off: Preview documents switch to dark view \
         by themselves — auto follows your system theme. auto invert, one word, on or off: measure each app's \
         real brightness with a tiny screenshot and invert only when it is \

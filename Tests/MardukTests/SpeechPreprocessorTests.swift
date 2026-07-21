@@ -331,6 +331,19 @@ final class SpeechPreprocessorTests: XCTestCase {
         XCTAssertEqual(out, "call read Document From Caret on user id count")
     }
 
+    func testHugeInputIsCappedBeforeProcessing() {
+        // 9.1M-char Terminal scrollback froze the main thread (field) —
+        // the input cap must bound the pipeline's work
+        let huge = String(repeating: "word ", count: 400_000)  // 2M chars
+        let start = Date()
+        let out = SpeechPreprocessor.process(huge, settings: .default)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2.0,
+                          "processing must be bounded regardless of input size")
+        XCTAssertLessThanOrEqual(out.utf16.count,
+                                 SpeechPreprocessor.maxInputLength)
+        XCTAssertTrue(out.hasPrefix("word word"))
+    }
+
     func testHashAbbreviationWinsOverSplitting() {
         // A digest is collapsed by the hash stage before the splitter runs —
         // mixed-case hex like DeadBeef… must not come out camel-split

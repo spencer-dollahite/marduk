@@ -108,6 +108,21 @@ enum SpeechPreprocessor {
 
     /// Full pipeline. Returns "" when nothing speakable remains.
     static func process(_ text: String, settings: Settings) -> String {
+        // INPUT cap, before any pass: the pipeline is several O(n) walks
+        // with grapheme segmentation, and the output is capped at 50k
+        // anyway — processing more input is pure wasted main-thread time.
+        // Field incident: R in Terminal handed over a 9.1 MILLION char
+        // scrollback; seconds of blocked main thread starved the event
+        // tap and froze keyboard input system-wide. utf16.count is the
+        // cheap gate; the cut itself only walks the kept prefix.
+        var text = text
+        if text.utf16.count > maxInputLength {
+            let originalUTF16 = text.utf16.count
+            let cut = text.index(text.startIndex, offsetBy: maxInputLength,
+                                 limitedBy: text.endIndex) ?? text.endIndex
+            text = String(text[..<cut])
+            fputs("[verbalizer] input capped (\(originalUTF16) chars)\n", stderr)
+        }
         var result = sanitize(text)
         if settings.hashes {
             result = abbreviateHashes(result)
@@ -401,6 +416,9 @@ enum SpeechPreprocessor {
     // MARK: - Tables
 
     private static let maxSpokenLength = 50_000
+    /// Cap on INPUT characters (comfortably above maxSpokenLength — the
+    /// verbalizer usually grows text, never shrinks it much).
+    static let maxInputLength = 60_000
 
     /// Digest hex-lengths → spoken name. Naming is by length convention:
     /// 40-hex could be a git commit, 64-hex could be BLAKE2s — "sha1 ending

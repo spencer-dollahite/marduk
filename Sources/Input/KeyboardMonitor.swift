@@ -896,6 +896,18 @@ final class KeyboardMonitor {
         // The palette panel (if enabled) is display-only — it renders this
         // buffer; no window ever takes focus. Echo goes through onAnnounce.
         if mode == .command {
+            // Ctrl+N / Ctrl+P — vim's completion-menu next/previous,
+            // synonyms for Down/Up. The second Ctrl carve-out (after
+            // reading's Ctrl+F/B), COMMAND-only: the user is driving
+            // Marduk's command line, and passing these through would move
+            // the app's cursor (macOS emacs bindings) mid-command anyway.
+            // Autorepeat allowed, like the arrows.
+            if hasControl, !hasCommand, !hasOption,
+               keycode == 45 || keycode == 35 {
+                let delta = keycode == 45 ? 1 : -1  // n down, p up
+                DispatchQueue.main.async { [self] in onCommandSelect?(delta) }
+                return nil
+            }
             if hasCommand || hasControl { return pass }   // app shortcuts untouched
             if isAutorepeat, keycode != 51, keycode != 125, keycode != 126 {
                 return nil                                 // only Delete/arrows repeat

@@ -96,7 +96,7 @@ enum HelpText {
         "The buzzer means you pressed a letter in NORMAL mode that is not a command. Press i first if you meant to type.",
         "Option Escape works everywhere, even in INSERT mode: it speaks the current selection, or stops speech that is already playing.",
         "Change the voice speed any time with colon config rate, for example colon config rate 230. It applies instantly and is saved.",
-        "In the colon command line, stop typing for a moment and Marduk speaks your options. Question mark does the same on demand.",
+        "In the colon command line, stop typing for a moment and Marduk speaks your options. Question mark does the same on demand. Arrows move through them, or control N and control P, vim style.",
         "You can shorten colon commands like vim: colon conf ra 230 is colon config rate 230.",
         "Long hex strings are shortened when read: an m d 5 hash becomes m d 5 ending in its last three characters. Turn that off with colon config hashes off.",
         "The s command speaks whatever is under your mouse pointer. It needs a one-time shortcut assignment in System Settings, Keyboard, Accessibility.",

@@ -509,6 +509,7 @@ final class DaemonServer {
         fputs("[marduk] Socket: \(MardukDaemon.socketPath)\n", stderr)
         Self.setKarabinerVariable(up: true)
         activateKarabinerProfile()
+        announceKarabinerAbsenceOnce()
 
         // SIGTERM (logout, launchctl bootout) → flag polled by the loop →
         // FULL clean teardown, Karabiner profile included. Signal handlers
@@ -1223,6 +1224,38 @@ final class DaemonServer {
         if let name = karabinerUserProfile {
             Self.armCrashRestore(userProfile: name)
         }
+    }
+
+    /// Marduk assumes Karabiner but never requires it — runtime absence
+    /// is silent by design. ONBOARDING absence shouldn't be: an audio-
+    /// first user can't discover that button-mapped reads, the automatic
+    /// macOS fallback, and non-US-layout support exist behind an install
+    /// they've never heard of. Spoken once per install (marker written
+    /// when actually spoken), delayed and yielding so it can never talk
+    /// over the first-run welcome or an early read.
+    private func announceKarabinerAbsenceOnce() {
+        let cli = "/Library/Application Support/org.pqrs/Karabiner-Elements/bin/karabiner_cli"
+        guard !FileManager.default.isExecutableFile(atPath: cli) else { return }
+        let marker = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/marduk/.ke-noticed")
+        guard !FileManager.default.fileExists(atPath: marker.path) else { return }
+        func attempt(remaining: Int) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [self] in
+                if speech.isSpeaking {
+                    if remaining > 0 { attempt(remaining: remaining - 1) }
+                    return  // stay unnoticed; try again next daemon start
+                }
+                try? Data().write(to: marker)
+                speech.announce("A tip: Marduk is designed to pair with "
+                    + "Karabiner Elements. Everything works without it, but "
+                    + "installing Karabiner unlocks mapping a mouse button to "
+                    + "reads, automatic fallback to the system voice whenever "
+                    + "Marduk is off, and remapped keyboard layouts. "
+                    + "Details are in the read me.")
+                fputs("[marduk] spoke the Karabiner onboarding hint\n", stderr)
+            }
+        }
+        attempt(remaining: 2)
     }
 
     /// Hand the keyboard back to the user's own profile. Every exit path

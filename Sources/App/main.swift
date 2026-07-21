@@ -299,6 +299,14 @@ case "status":
     } else {
         print("Agent:   not installed — run 'marduk install' for login autostart")
     }
+    // Karabiner is assumed (button routing, macOS-fallback handoff) but
+    // never required — surface which mode this machine is in
+    let keCLI = "/Library/Application Support/org.pqrs/Karabiner-Elements/bin/karabiner_cli"
+    if FileManager.default.isExecutableFile(atPath: keCLI) {
+        print("Karabiner: installed (profile handoff active)")
+    } else {
+        print("Karabiner: not found — read-button routing and automatic macOS fallback inactive")
+    }
 
 case "install":
     guard let binary = LaunchAgent.resolvedBinaryPath() else {

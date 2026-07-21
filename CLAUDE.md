@@ -102,7 +102,7 @@ DaemonServer (Unix socket IPC, per-user $DARWIN_USER_TEMP_DIR/marduk.sock)
 
 - `$(getconf DARWIN_USER_TEMP_DIR)marduk.sock` — daemon IPC socket (per-user /var/folders/…/T/; `MardukDaemon.runtimeDir` via confstr, NOT /tmp — world-writable /tmp let any local user drive the socket or squat the paths and block startup). Socket is chmod 0600 and `handleClient` getpeereid-rejects other UIDs. CLI and daemon share the path constants, so an updated CLI can't reach a pre-update daemon until its restart — one-time blip, `marduk start` heals.
 - `$(getconf DARWIN_USER_TEMP_DIR)marduk.pid` — daemon PID file
-- `~/.config/marduk/config.json` — user configuration
+- `~/.config/marduk/config.json` — user configuration (`.welcomed` / `.ke-noticed` markers live beside it — first-run welcome and the once-only no-Karabiner onboarding hint; `marduk status` also reports Karabiner presence)
 - `~/Library/LaunchAgents/com.marduk.daemon.plist` — launch agent (when installed)
 - `~/Library/Logs/marduk.log` — daemon log (when running under launchd)
 - `<repo>/Marduk.app` — assembled bundle (gitignored; rebuilt by install/update)

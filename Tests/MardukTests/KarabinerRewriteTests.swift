@@ -42,7 +42,7 @@ final class KarabinerRewriteTests: XCTestCase {
         let marduk = all.first { ($0["name"] as? String) == "Marduk" }
         XCTAssertNotNil(marduk)
         XCTAssertEqual(marduk?["selected"] as? Bool, false)
-        XCTAssertEqual(rules(of: marduk!).count, 1)
+        XCTAssertEqual(rules(of: marduk!).count, 2)  // read button + panic chord
     }
 
     func testAdoptsExistingMardukProfileAndRefreshesOnlyOurRule() {
@@ -54,10 +54,23 @@ final class KarabinerRewriteTests: XCTestCase {
         XCTAssertEqual(all.count, 2)  // adopted, not duplicated
         let marduk = all.first { ($0["name"] as? String) == "Marduk" }!
         let r = rules(of: marduk)
-        XCTAssertEqual(r.count, 2)  // stale ours removed, fresh ours added
+        XCTAssertEqual(r.count, 3)  // stale ours removed; read + panic added
         XCTAssertTrue((r[0]["description"] as? String)?
             .hasPrefix("Marduk read button") == true)  // ours first
-        XCTAssertEqual(r[1]["description"] as? String, "my zoom keys")
+        XCTAssertTrue((r[1]["description"] as? String)?
+            .hasPrefix("Marduk panic chord") == true)
+        XCTAssertEqual(r[2]["description"] as? String, "my zoom keys")
+    }
+
+    func testPanicChordKillsViaShellUpstreamOfMarduk() {
+        let rule = DaemonServer.panicRule()
+        let manipulators = rule["manipulators"] as! [[String: Any]]
+        XCTAssertEqual(manipulators.count, 1)
+        let to = manipulators[0]["to"] as! [[String: Any]]
+        XCTAssertEqual(to.first?["shell_command"] as? String,
+                       "/usr/bin/pkill -9 marduk")
+        let from = manipulators[0]["from"] as! [String: Any]
+        XCTAssertEqual(from["key_code"] as? String, "delete_or_backspace")
     }
 
     func testCrashRecoveryFindsUserProfileWhenMardukIsSelected() {

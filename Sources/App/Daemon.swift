@@ -310,7 +310,10 @@ final class DaemonServer {
         // .accessory keeps us out of the Dock and app switcher. The existing
         // RunLoop below is enough — no NSApp.run() needed.
         _ = NSApplication.shared
-        NSApp.setActivationPolicy(.accessory)
+        // Visible-app mode is opt-in: .regular puts Marduk in the Dock,
+        // the app switcher, and the Force Quit window (macOS ties all
+        // three to one policy — there is no Force-Quit-only state)
+        NSApp.setActivationPolicy((config.display.dockIcon ?? false) ? .regular : .accessory)
         if !safeMode { modeOverlay?.start() }
 
         tutorial.announce = { [self] text in speech.announce(text) }
@@ -1336,7 +1339,11 @@ final class DaemonServer {
         }
         var cm = marduk["complex_modifications"] as? [String: Any] ?? [:]
         var rules = cm["rules"] as? [[String: Any]] ?? []
-        rules.removeAll { ($0["description"] as? String)?.hasPrefix("Marduk read button") == true }
+        rules.removeAll {
+            let d = ($0["description"] as? String) ?? ""
+            return d.hasPrefix("Marduk read button") || d.hasPrefix("Marduk panic chord")
+        }
+        rules.insert(panicRule(), at: 0)
         rules.insert(readButtonRule(key: key, vendorId: vendorId,
                                     productId: productId), at: 0)
         cm["rules"] = rules
@@ -1470,6 +1477,24 @@ final class DaemonServer {
     /// any device (the old behavior, for exotic setups). BOTH manipulators
     /// carry the condition — the fallback would otherwise turn the
     /// keyboard's = into Option+Escape whenever Marduk is down.
+    /// PANIC CHORD, handled entirely by Karabiner — upstream of Marduk's
+    /// event tap, so it works precisely when a wedged Marduk is strangling
+    /// the keyboard (field: main-thread starvation left keys half-dead and
+    /// the user rebooting). Kills hard; KeepAlive relaunches fresh in ~10s
+    /// and repeated panics walk BootGuard into safe mode. Ctrl+Option+
+    /// Delete: memorable, two-handed enough to never happen by accident.
+    static func panicRule() -> [String: Any] {
+        [
+            "description": "Marduk panic chord (managed by Marduk — regenerated every start)",
+            "manipulators": [[
+                "type": "basic",
+                "from": ["key_code": "delete_or_backspace",
+                         "modifiers": ["mandatory": ["control", "option"]]],
+                "to": [["shell_command": "/usr/bin/pkill -9 marduk"]],
+            ]],
+        ]
+    }
+
     static func readButtonRule(key: String, vendorId: Int,
                                        productId: Int?) -> [String: Any] {
         var deviceCondition: [String: Any]?
@@ -1779,6 +1804,17 @@ final class DaemonServer {
                 speech.announce("P D F dark off.")
             }
 
+        case "dock":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            config.display.dockIcon = on
+            ConfigLoader.save(config)
+            NSApp.setActivationPolicy(on ? .regular : .accessory)
+            speech.announce(on
+                ? "Marduk now appears in the Dock, the app switcher, and the "
+                    + "Force Quit window. Note: force quitting only restarts "
+                    + "it — marduk stop, or colon quit, keeps it stopped."
+                : "Marduk is hidden from the Dock and Force Quit again.")
+
         case "autoinvert":
             guard let on = toggle() else { return fail("Say on or off.") }
             displayInverter?.autoInvert = on
@@ -1866,7 +1902,7 @@ final class DaemonServer {
                     + "rescue, burst, escape hold, echo, command echo, palette, "
                     + "auto update, check hours, border, pointer, thickness, "
                     + "speed keys, toggle sound, read motions, dialogs, follow, "
-                    + "invert, p d f dark, auto invert.")
+                    + "invert, p d f dark, auto invert, dock.")
             }
         }
     }
@@ -1913,6 +1949,7 @@ final class DaemonServer {
             "invert": (config.display.invertEnabled ?? false) ? "on" : "off",
             "pdfdark": config.display.pdfDark ?? "auto",
             "autoinvert": (config.display.autoInvert ?? false) ? "on" : "off",
+            "dock": (config.display.dockIcon ?? false) ? "on" : "off",
         ]
     }
 

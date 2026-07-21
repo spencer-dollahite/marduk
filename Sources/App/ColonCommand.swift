@@ -211,6 +211,7 @@ enum ColonCommand: Equatable {
         ("invert", .toggle),
         ("pdfdark", .choice(["auto", "on", "off"])),
         ("autoinvert", .toggle),
+        ("dock", .toggle),
     ]
 
     static func kind(for key: String) -> SettingKind? {

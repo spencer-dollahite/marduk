@@ -86,6 +86,7 @@ struct MardukConfig: Codable {
         var pdfDark: String? = "auto"         // auto (follow system theme) | on | off
         var autoInvert: Bool? = false         // measure window brightness (Screen Recording)
         var autoInvertThreshold: Int? = 70    // percent brightness that counts as "bright"
+        var dockIcon: Bool? = false           // .regular policy: Dock + app switcher + Force Quit
     }
 }
 

@@ -31,3 +31,25 @@ jobs:
 
       - name: Test
         run: swift test
+
+      # The closest a headless runner gets to E2E: the daemon boots
+      # without Karabiner or any TCC grant (exactly a fresh install's
+      # worst case), serves its socket, answers status, and exits clean
+      # on stop. Catches the "does it even start" class that safe mode
+      # exists to worry about.
+      - name: Smoke (daemon boots, serves socket, stops clean)
+        run: |
+          .build/debug/marduk start --foreground &
+          DAEMON=$!
+          ok=0
+          for i in $(seq 1 30); do
+            if .build/debug/marduk status | grep -q "Daemon:  running"; then ok=1; break; fi
+            sleep 1
+          done
+          .build/debug/marduk status || true
+          test "$ok" -eq 1
+          .build/debug/marduk stop
+          for i in $(seq 1 15); do kill -0 $DAEMON 2>/dev/null || break; sleep 1; done
+          if wait $DAEMON; then EXIT=0; else EXIT=$?; fi
+          echo "daemon exit code: $EXIT"
+          test "$EXIT" -eq 0

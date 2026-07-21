@@ -1303,19 +1303,21 @@ final class DaemonServer {
     /// modified or deleted. The read button's key_code comes from
     /// keyboard.karabinerReadKey (default equal_sign — a Razer Naga's
     /// side button 12).
-    private func activateKarabinerProfile() {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: Self.karabinerConfigPath) else { return }
-        guard let data = fm.contents(atPath: Self.karabinerConfigPath),
-              var root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              var profiles = root["profiles"] as? [[String: Any]], !profiles.isEmpty else {
-            fputs("[marduk] karabiner.json unreadable — leaving it alone\n", stderr)
-            return
-        }
+    /// PURE karabiner.json surgery, unit-tested with fixtures (the actual
+    /// KE driver can never run on CI — a DriverKit extension needs an
+    /// interactive approval — so the high-stakes half, rewriting the
+    /// user's config, is what the tests pin down). Nil = leave the file
+    /// alone (no profiles / no usable source).
+    static func rewriteKarabinerConfig(_ input: [String: Any], key: String,
+                                       vendorId: Int, productId: Int?)
+        -> (root: [String: Any], userProfile: String?)? {
+        var root = input
+        guard var profiles = root["profiles"] as? [[String: Any]],
+              !profiles.isEmpty else { return nil }
 
         // The user's own profile: selected and not ours (after a crash the
         // selected one may still be "Marduk" — fall back to any other)
-        karabinerUserProfile = (profiles.first(where: {
+        let userProfile = (profiles.first(where: {
             ($0["selected"] as? Bool == true) && ($0["name"] as? String) != "Marduk"
         }) ?? profiles.first(where: { ($0["name"] as? String) != "Marduk" }))?["name"] as? String
 
@@ -1324,22 +1326,19 @@ final class DaemonServer {
             marduk = existing  // adopt as-is; only our rule is refreshed
         } else {
             guard let source = profiles.first(where: {
-                ($0["name"] as? String) == karabinerUserProfile
-            }) else { return }
+                ($0["name"] as? String) == userProfile
+            }) else { return nil }
             marduk = source
             marduk["name"] = "Marduk"
             marduk["selected"] = false  // karabiner_cli does the selecting
             fputs("[marduk] no Marduk profile — bootstrapping from "
-                + "\"\(karabinerUserProfile ?? "?")\"\n", stderr)
+                + "\"\(userProfile ?? "?")\"\n", stderr)
         }
         var cm = marduk["complex_modifications"] as? [String: Any] ?? [:]
         var rules = cm["rules"] as? [[String: Any]] ?? []
         rules.removeAll { ($0["description"] as? String)?.hasPrefix("Marduk read button") == true }
-        rules.insert(Self.readButtonRule(
-                         key: config.keyboard?.karabinerReadKey ?? "equal_sign",
-                         vendorId: config.keyboard?.karabinerReadVendorId ?? 5426,
-                         productId: config.keyboard?.karabinerReadProductId),
-                     at: 0)
+        rules.insert(readButtonRule(key: key, vendorId: vendorId,
+                                    productId: productId), at: 0)
         cm["rules"] = rules
         marduk["complex_modifications"] = cm
 
@@ -1349,6 +1348,23 @@ final class DaemonServer {
             profiles.append(marduk)
         }
         root["profiles"] = profiles
+        return (root, userProfile)
+    }
+
+    private func activateKarabinerProfile() {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: Self.karabinerConfigPath) else { return }
+        guard let data = fm.contents(atPath: Self.karabinerConfigPath),
+              let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            fputs("[marduk] karabiner.json unreadable — leaving it alone\n", stderr)
+            return
+        }
+        guard let (root, userProfile) = Self.rewriteKarabinerConfig(
+                  parsed,
+                  key: config.keyboard?.karabinerReadKey ?? "equal_sign",
+                  vendorId: config.keyboard?.karabinerReadVendorId ?? 5426,
+                  productId: config.keyboard?.karabinerReadProductId) else { return }
+        karabinerUserProfile = userProfile
 
         do {
             let backup = Self.karabinerConfigPath + ".marduk-backup"
@@ -1454,7 +1470,7 @@ final class DaemonServer {
     /// any device (the old behavior, for exotic setups). BOTH manipulators
     /// carry the condition — the fallback would otherwise turn the
     /// keyboard's = into Option+Escape whenever Marduk is down.
-    private static func readButtonRule(key: String, vendorId: Int,
+    static func readButtonRule(key: String, vendorId: Int,
                                        productId: Int?) -> [String: Any] {
         var deviceCondition: [String: Any]?
         if vendorId != 0 {

@@ -636,7 +636,7 @@ final class DaemonServer {
             }
             if completion.hasSuffix(" ") {
                 // The command row itself ("voices ") — enter the picker
-                speech.announce("voices")
+                announceVoicesPicker()
                 keyboardMonitor?.replaceCommandBuffer(completion)
             } else if completion.hasPrefix("voices ") {
                 keyboardMonitor?.endCommandMode()
@@ -1049,6 +1049,21 @@ final class DaemonServer {
         speech.speak("Options: " + displays.joined(separator: ", ") + ".")
     }
 
+    /// Entering the ":voices" picker. When no premium English voice is
+    /// installed, teach the one-time download path — there is no API to
+    /// fetch Apple's premium voices on the user's behalf. (Pane name per
+    /// current macOS: "Read and Speak Content".)
+    private func announceVoicesPicker() {
+        let hasPremium = AVSpeechSynthesisVoice.speechVoices().contains {
+            $0.language.hasPrefix("en") && $0.quality == .premium
+        }
+        speech.announce(hasPremium ? "voices"
+            : "voices. For much better voices, download a premium voice like "
+            + "Ava: System Settings, Accessibility, Read and Speak Content, "
+            + "System Voice, Manage Voices. It is free, entirely on device, "
+            + "and will appear here.")
+    }
+
     /// Applies and persists the reading voice — the ":voices" picker accept.
     private func applyVoice(identifier: String) {
         guard let voice = AVSpeechSynthesisVoice(identifier: identifier) else {
@@ -1341,7 +1356,10 @@ final class DaemonServer {
                     self.handleColonCommand(command)
                 case .expand(let expanded):
                     // Speak the completed word so audio users hear the jump
-                    if let word = expanded.split(separator: " ").last {
+                    // (the voices picker gets its premium-download hint)
+                    if expanded == "voices " {
+                        self.announceVoicesPicker()
+                    } else if let word = expanded.split(separator: " ").last {
                         self.speech.announce(String(word))
                     }
                     // If the user is still typing the word we just completed

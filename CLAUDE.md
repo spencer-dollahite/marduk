@@ -32,7 +32,7 @@ No external dependencies — pure Swift Package Manager with native Apple framew
 main.swift (CLI argument parser)
   ↓
 DaemonServer (Unix socket IPC, per-user $DARWIN_USER_TEMP_DIR/marduk.sock)
-  ├── SpeechEngine (AVSpeechSynthesizer — dual voices: reading + announcement)
+  ├── SpeechEngine (AVSpeechSynthesizer — dual voices: reading + announcement; auto-select prefers premium > enhanced > compact — Apple's premium voices are user-downloaded in Settings > Accessibility > Read and Speak Content, no API can fetch them, so :voices speaks a download hint when none is installed)
   │   └── AudioDucker (probes playback state, ducks external audio during speech)
   ├── KeyboardMonitor (CGEventTap — Vim modal: NORMAL/INSERT)
   └── ModeOverlay (click-through NSWindows — opt-in mode border + pointer dot, OFF by default)

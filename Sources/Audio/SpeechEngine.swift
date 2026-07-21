@@ -81,13 +81,18 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         let voices = AVSpeechSynthesisVoice.speechVoices()
         let en = voices.filter { $0.language.hasPrefix("en") }
 
-        // Reading voice: first enhanced English voice (original default)
-        if let enhanced = en.first(where: { $0.quality == .enhanced }) {
-            voice = enhanced
-        } else {
-            voice = AVSpeechSynthesisVoice(language: "en-US")
-        }
-        fputs("[speech] Reading voice: \(voice?.name ?? "default") (\(voice?.language ?? "en"))\n", stderr)
+        // Reading voice: best installed English voice — premium (the
+        // user-downloadable neural voices, Settings > Accessibility >
+        // Spoken Content; no API can fetch them for us) beats enhanced
+        // beats compact. An explicit voiceIdentifier in config overrides
+        // this afterward.
+        voice = en.first(where: { $0.quality == .premium })
+            ?? en.first(where: { $0.quality == .enhanced })
+            ?? AVSpeechSynthesisVoice(language: "en-US")
+        let quality = voice?.quality == .premium ? "premium"
+            : voice?.quality == .enhanced ? "enhanced" : "default"
+        fputs("[speech] Reading voice: \(voice?.name ?? "default") "
+            + "(\(voice?.language ?? "en"), \(quality))\n", stderr)
 
         // Announcement voice: Daniel (en-GB) for status updates
         announcementVoice = en.first(where: { $0.name == "Daniel" && $0.language == "en-GB" })

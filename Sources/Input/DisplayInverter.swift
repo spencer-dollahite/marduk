@@ -188,7 +188,30 @@ final class DisplayInverter: @unchecked Sendable {
     private var pendingActivation: DispatchWorkItem?
     private static let activationDwell: TimeInterval = 0.8
 
+    // OUR OWN inversion changes the display configuration, which makes Qt
+    // apps tear down and rebuild windows — resigning activation for over a
+    // second and handing the front to the next app. Acting on that echo
+    // reverts, which kicks Qt again: a self-sustaining strobe (field log,
+    // twice — the dwell alone slowed it without breaking it). After every
+    // toggle, activations are IGNORED for a settle window; at its close the
+    // then-current frontmost is evaluated once, so a real switch made
+    // during the window is still honored, just late.
+    private var settleUntil = Date.distantPast
+    private static let settleWindow: TimeInterval = 2.5
+
+    private func beginSettleWindow() {
+        settleUntil = Date().addingTimeInterval(Self.settleWindow)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleWindow + 0.1) {
+            [weak self] in
+            guard let self,
+                  let app = NSWorkspace.shared.frontmostApplication,
+                  let bundleID = app.bundleIdentifier else { return }
+            self.scheduleActivation(bundleID, pid: app.processIdentifier)
+        }
+    }
+
     private func scheduleActivation(_ bundleID: String, pid: pid_t) {
+        guard Date() >= settleUntil else { return }
         pendingActivation?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self,
@@ -231,6 +254,7 @@ final class DisplayInverter: @unchecked Sendable {
         guard wanted != isInverted else { return }
         applyInversion(wanted)
         isInverted = wanted
+        beginSettleWindow()
         fputs("[display] \(wanted ? "Inverted" : "Reverted") (\(reason))\n", stderr)
         verifyInversion(wanted, retryWithChord: Self.uaSetWhiteOnBlack != nil)
     }

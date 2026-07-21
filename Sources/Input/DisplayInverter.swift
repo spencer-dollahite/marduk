@@ -31,7 +31,10 @@ import ScreenCaptureKit
 /// Everything defaults OFF/empty — visual surprises make terrible first
 /// impressions — and applies live via `:config invert` / `:config pdfdark`
 /// / `:config autoinvert`.
-final class DisplayInverter {
+// @unchecked Sendable: the codebase's standard workaround — the brightness
+// Task hops off-main; mutable state it touches is a threshold read and a
+// log-once flag, and all decisions re-enter main before acting.
+final class DisplayInverter: @unchecked Sendable {
     var invertApps: Set<String>
     var invertEnabled = true
     var previewDarkMode = false

@@ -110,13 +110,13 @@ final class DisplayInverter: @unchecked Sendable {
         ) { [weak self] notification in
             guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   let bundleID = app.bundleIdentifier else { return }
-            self?.handleAppActivated(bundleID, pid: app.processIdentifier)
+            self?.scheduleActivation(bundleID, pid: app.processIdentifier)
         }
 
         // Check current foreground app immediately (handles daemon restart)
         if let app = NSWorkspace.shared.frontmostApplication,
            let bundleID = app.bundleIdentifier {
-            handleAppActivated(bundleID, pid: app.processIdentifier)
+            scheduleActivation(bundleID, pid: app.processIdentifier)
         }
 
         // A theme flip while Preview is front should dark its PDFs at
@@ -178,6 +178,27 @@ final class DisplayInverter: @unchecked Sendable {
               app.bundleIdentifier == Self.previewBundle else { return }
         applyPreviewDarkMode(pid: app.processIdentifier)
         observePreviewWindows(pid: app.processIdentifier)
+    }
+
+    // Qt apps (Packet Tracer) bounce macOS activation to the NEXT app for
+    // a few hundred ms every time a dialog churns — field log: PT → Terminal
+    // → PT phantom cycles inverting and reverting the whole display while
+    // the user never left PT. Nothing acts until an app HOLDS the front for
+    // the dwell; a newer activation cancels the pending one.
+    private var pendingActivation: DispatchWorkItem?
+    private static let activationDwell: TimeInterval = 0.8
+
+    private func scheduleActivation(_ bundleID: String, pid: pid_t) {
+        pendingActivation?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self,
+                  NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                      == bundleID else { return }
+            self.handleAppActivated(bundleID, pid: pid)
+        }
+        pendingActivation = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.activationDwell,
+                                      execute: work)
     }
 
     private func handleAppActivated(_ bundleID: String, pid: pid_t) {

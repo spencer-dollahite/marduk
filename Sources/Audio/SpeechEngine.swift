@@ -71,8 +71,24 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     private var readText: String?
     private var readBase = 0
     private var readPosition = 0 {
-        didSet { if readPosition != oldValue { onPositionChange?(readPosition) } }
+        didSet {
+            guard readPosition != oldValue else { return }
+            onPositionChange?(readPosition)
+            // Paged reads: ANY page crossing turns the visual page —
+            // explicit jumps land here via respeak, and a read that just
+            // flows over a boundary lands here via word boundaries. One
+            // tracker, no double-fires.
+            if let paged = readPaged {
+                let page = paged.pageIndex(at: readPosition)
+                if page != followPageIndex {
+                    followPageIndex = page
+                    onPageJump?(page + 1)
+                }
+            }
+        }
     }
+    // Last page whose visual follow fired (paged reads only)
+    private var followPageIndex = -1
     // Page starts when the current read is a paged document (PDF) — pages
     // are respeak targets layered on the flat readText. Nil = not paged.
     private var readPaged: PagedText?
@@ -287,6 +303,9 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         guard readActive else { return }  // empty-after-preprocessing
         readPaged = paged
         let index = startPage - 1
+        // Preview already SHOWS the start page (the title told us) — seed
+        // the tracker so the initial jump doesn't fire a redundant gesture
+        followPageIndex = max(0, min(index, paged.pageCount - 1))
         if index > 0, paged.pageStarts.indices.contains(index) {
             jumpTo(offset: paged.pageStarts[index])
         }
@@ -320,8 +339,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         // The echo overlaps the respeak's first beat on purpose — it's the
         // distinct voice, and a pause-announce-resume dance costs latency
         echo("page \(index + 1)")
-        respeak(from: paged.pageStarts[index])
-        onPageJump?(index + 1)
+        respeak(from: paged.pageStarts[index])  // position tracker fires onPageJump
         return true
     }
 

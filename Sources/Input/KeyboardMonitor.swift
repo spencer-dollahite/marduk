@@ -1811,16 +1811,12 @@ final class KeyboardMonitor {
                 // No AX text — PDF viewers (Preview) expose almost none.
                 // Fall back to reading the FILE: the window's document
                 // path + PDFKit gives per-page text, and pages become
-                // first-class reading targets. Safari exposes no AX text
-                // either, but it IS scriptable — extract the page text
-                // via AppleScript instead (Marduk-native continuous
-                // reading, no Apple narrator needed).
+                // first-class reading targets. Browsers expose no AX text
+                // VALUE either, but their web-area trees hold the visible
+                // text — the web-page path walks it (Reader views become
+                // clean article reads).
                 if !readPDFDocument(app: app) {
-                    if app.bundleIdentifier == "com.apple.Safari" {
-                        readSafariPage()
-                    } else {
-                        noDocument("focused element has no text value")
-                    }
+                    readWebPage(app: app)
                 }
                 return
             }
@@ -1938,32 +1934,43 @@ final class KeyboardMonitor {
         return range.location
     }
 
-    /// Safari fallback for R. Two extractions, best first:
+    /// Web-page fallback for R — ANY browser (Safari, Firefox, and the
+    /// Chromium family get the same treatment):
     ///
-    /// 1. AX WALK of the VISIBLE web area — with Reader open (Shift+
-    ///    Cmd+R) the visible area IS the stripped article, so the walk
-    ///    reads exactly what Reader shows: title and body, no site
-    ///    clutter. (Reader is an overlay: AppleScript's `document` stays
-    ///    the full underlying page, which is why path 2 alone reads nav
-    ///    junk — first-user-verified.) The AXEnhancedUserInterface flag
-    ///    is set first, the same nudge screen readers use to make
-    ///    browsers populate their web AX trees.
-    /// 2. AppleScript `text of front document` — the whole page, clutter
-    ///    included — when the walk harvests too little.
+    /// 1. AX WALK of the VISIBLE web area. With a Reader view open
+    ///    (Safari Reader via Shift+Cmd+R, Firefox about:reader) the
+    ///    visible area IS the stripped article, so the walk reads exactly
+    ///    what Reader shows: title and body, no site clutter. (Reader is
+    ///    an overlay: Safari AppleScript's `document` stays the full
+    ///    underlying page — first-user-verified.) Firefox's `n` handoff
+    ///    to its own Narrate is untouched — R is the Marduk-native
+    ///    alternative with all the reading motions.
+    /// 2. Thin harvest: Safari alone has an AppleScript whole-page
+    ///    fallback (`text of front document`, clutter included; first
+    ///    use fires the one-time Safari Automation prompt). Everything
+    ///    else lands on the standard "No readable document here."
     ///
-    /// Off-main throughout; osascript first-use triggers the one-time
-    /// Safari Automation prompt (same class as the Music/Spotify grants).
-    private func readSafariPage() {
-        fputs("[keyboard] R: Safari page extraction\n", stderr)
-        let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+    /// Off-main throughout.
+    private func readWebPage(app: NSRunningApplication) {
+        let pid = app.processIdentifier
+        let isSafari = app.bundleIdentifier == "com.apple.Safari"
+        fputs("[keyboard] R: web-area extraction\n", stderr)
         DispatchQueue.global(qos: .utility).async { [self] in
-            if let pid, let article = Self.safariVisibleText(pid: pid),
+            if let article = Self.webAreaVisibleText(pid: pid),
                article.count > 200 {
-                fputs("[keyboard] R: Safari AX walk (\(article.count) chars)\n", stderr)
+                fputs("[keyboard] R: web-area walk (\(article.count) chars)\n", stderr)
                 DispatchQueue.main.async { [self] in onSpeak?(article) }
                 return
             }
-            fputs("[keyboard] R: AX walk thin — AppleScript full-page fallback\n", stderr)
+            guard isSafari else {
+                fputs("[keyboard] R: web-area walk thin, no fallback for this app\n", stderr)
+                DispatchQueue.main.async { [self] in
+                    Earcon.error()
+                    onAnnounce?("No readable document here.")
+                }
+                return
+            }
+            fputs("[keyboard] R: AX walk thin — Safari AppleScript fallback\n", stderr)
             let script = "tell application \"Safari\" to get text of front document"
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
@@ -2003,20 +2010,24 @@ final class KeyboardMonitor {
         }
     }
 
-    /// Harvest the text visible in Safari's front web area by walking its
-    /// AX tree (static text + headings, in document order). Returns nil
-    /// on a sparse tree — Safari populates web AX lazily; the enhanced-UI
-    /// nudge helps but only real hardware proves it. Budgeted: 0.25s
-    /// per-element timeouts, capped node count and depth, so a pathological
-    /// page can't wedge the walk. Runs OFF the main thread by design (a
-    /// long walk on main would stall the tap dispatch).
-    private static func safariVisibleText(pid: pid_t) -> String? {
+    /// Harvest the text visible in the app's front web area by walking
+    /// its AX tree (static text + headings, in document order). Returns
+    /// nil on a sparse tree — browsers populate web AX lazily; the
+    /// nudges below help but only real hardware proves each browser.
+    /// Budgeted: 0.25s per-element timeouts, capped node count and depth,
+    /// so a pathological page can't wedge the walk. Runs OFF the main
+    /// thread by design (a long walk on main would stall tap dispatch).
+    private static func webAreaVisibleText(pid: pid_t) -> String? {
         let axApp = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(axApp, 0.25)
-        // The screen-reader nudge: browsers keep web AX trees minimal
-        // until an assistive client announces itself
+        // The screen-reader nudges: browsers keep web AX trees minimal
+        // until an assistive client announces itself. EnhancedUserInterface
+        // is the WebKit/Gecko signal; ManualAccessibility is the
+        // Chromium/Electron one — setting both is harmless.
         AXUIElementSetAttributeValue(
             axApp, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(
+            axApp, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         Thread.sleep(forTimeInterval: 0.3) // let the tree populate
 
         var windowRef: CFTypeRef?

@@ -12,11 +12,14 @@ import ScreenCaptureKit
 ///    shortcut must be enabled in System Settings → Keyboard → Shortcuts →
 ///    Accessibility (default here: Shift+Cmd+F13, `display.invertShortcut*`
 ///    overrides).
-/// 2. PREVIEW DARK MODE for PDFs: Preview has a per-window "View in Dark
-///    Mode" menu item — pressed directly via the AX menu bar (no shortcut
-///    needed) whenever Preview comes front or opens a new window, with the
-///    menu item's checkmark consulted first so an already-dark window is
-///    never toggled back to light. English menu title only (Marduk-wide
+/// 2. PREVIEW DARK PDFs: Preview's per-window dark-appearance menu item
+///    ("Use Dark Appearance for PDF" on macOS 26) — pressed directly via
+///    the AX menu bar (no shortcut needed) whenever Preview comes front or
+///    opens a new window, checkmark consulted first so an already-dark
+///    window is never toggled back to light. `pdfdark auto` (DEFAULT)
+///    follows the system appearance — dark theme users get dark PDFs with
+///    zero setup, light theme leaves Preview alone — reacting live to
+///    theme flips; on/off override. English menu titles only (Marduk-wide
 ///    limitation).
 ///
 /// 3. AUTO-DETECTION (`:config autoinvert`, needs the Screen Recording
@@ -35,9 +38,27 @@ import ScreenCaptureKit
 // Task hops off-main; mutable state it touches is a threshold read and a
 // log-once flag, and all decisions re-enter main before acting.
 final class DisplayInverter: @unchecked Sendable {
+    enum PDFDarkStyle: String {
+        case auto, on, off
+    }
+
     var invertApps: Set<String>
     var invertEnabled = true
-    var previewDarkMode = false
+    /// auto (default) follows the system appearance: dark theme → dark
+    /// PDFs, light theme → untouched. on/off are explicit overrides.
+    var pdfDarkStyle: PDFDarkStyle = .auto
+
+    var previewDarkActive: Bool {
+        switch pdfDarkStyle {
+        case .on: return true
+        case .off: return false
+        case .auto: return Self.systemIsDark()
+        }
+    }
+
+    static func systemIsDark() -> Bool {
+        UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
+    }
     var autoInvert = false
     /// Mean-brightness threshold, 0…1 (config carries percent).
     var autoInvertThreshold = 0.70
@@ -45,6 +66,7 @@ final class DisplayInverter: @unchecked Sendable {
 
     private var isInverted = false
     private var observer: NSObjectProtocol?
+    private var themeObserver: NSObjectProtocol?
     private var previewObserver: AXObserver?
     private var previewObserverPID: pid_t = -1
 
@@ -74,14 +96,28 @@ final class DisplayInverter: @unchecked Sendable {
             handleAppActivated(bundleID, pid: app.processIdentifier)
         }
 
+        // A theme flip while Preview is front should dark its PDFs at
+        // that moment (auto style). Going light never un-darks windows —
+        // reopening them is cheap, toggling them all is presumptuous.
+        themeObserver = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.applyPreviewDarkModeIfFront()
+        }
+
         fputs("[display] tracking started (\(invertApps.count) invert app(s), "
-            + "Preview dark mode \(previewDarkMode ? "on" : "off"))\n", stderr)
+            + "PDF dark \(pdfDarkStyle.rawValue))\n", stderr)
     }
 
     func stop() {
         if let observer = observer {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
             self.observer = nil
+        }
+        if let observer = themeObserver {
+            DistributedNotificationCenter.default().removeObserver(observer)
+            themeObserver = nil
         }
         teardownPreviewObserver()
         // Revert inversion if active
@@ -111,9 +147,10 @@ final class DisplayInverter: @unchecked Sendable {
         }
     }
 
-    /// Live `:config pdfdark on` with Preview already front applies now.
+    /// Live `:config pdfdark` change (or a theme flip) with Preview
+    /// already front applies now.
     func applyPreviewDarkModeIfFront() {
-        guard previewDarkMode,
+        guard previewDarkActive,
               let app = NSWorkspace.shared.frontmostApplication,
               app.bundleIdentifier == Self.previewBundle else { return }
         applyPreviewDarkMode(pid: app.processIdentifier)
@@ -126,7 +163,7 @@ final class DisplayInverter: @unchecked Sendable {
             // the user styled black-on-white-text must not be inverted into
             // glare just because Pages is listed. The list alone (auto off)
             // stays unconditional — instant, no capture permission needed.
-            if autoInvert, bundleID != Self.previewBundle || !previewDarkMode,
+            if autoInvert, bundleID != Self.previewBundle || !previewDarkActive,
                bundleID != Bundle.main.bundleIdentifier {
                 evaluateBrightness(bundleID: bundleID, pid: pid)
             } else if invertApps.contains(bundleID) {
@@ -137,7 +174,7 @@ final class DisplayInverter: @unchecked Sendable {
         }
 
         if bundleID == Self.previewBundle {
-            if previewDarkMode {
+            if previewDarkActive {
                 applyPreviewDarkMode(pid: pid)
                 observePreviewWindows(pid: pid)
             }
@@ -316,7 +353,7 @@ final class DisplayInverter: @unchecked Sendable {
         guard AXObserverCreate(pid, { _, _, _, refcon in
             guard let refcon else { return }
             let inverter = Unmanaged<DisplayInverter>.fromOpaque(refcon).takeUnretainedValue()
-            guard inverter.previewDarkMode else { return }
+            guard inverter.previewDarkActive else { return }
             inverter.applyPreviewDarkMode(pid: inverter.previewObserverPID)
         }, &observer) == .success, let observer else { return }
 

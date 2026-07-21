@@ -206,7 +206,7 @@ enum ColonCommand: Equatable {
         ("dialogs", .choice(["all", "system", "off"])),
         ("follow", .toggle),
         ("invert", .toggle),
-        ("pdfdark", .toggle),
+        ("pdfdark", .choice(["auto", "on", "off"])),
         ("autoinvert", .toggle),
     ]
 

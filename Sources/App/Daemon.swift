@@ -205,7 +205,8 @@ final class DaemonServer {
 
         displayInverter = DisplayInverter(invertApps: config.display.invertForApps)
         displayInverter?.invertEnabled = config.display.invertEnabled ?? true
-        displayInverter?.previewDarkMode = config.display.previewDarkMode ?? false
+        displayInverter?.pdfDarkStyle = DisplayInverter.PDFDarkStyle(
+            rawValue: config.display.pdfDark ?? "") ?? .auto
         displayInverter?.autoInvert = config.display.autoInvert ?? false
         displayInverter?.autoInvertThreshold =
             Double(min(95, max(40, config.display.autoInvertThreshold ?? 70))) / 100.0
@@ -1614,16 +1615,22 @@ final class DaemonServer {
             }
 
         case "pdfdark":
-            guard let on = toggle() else { return fail("Say on or off.") }
-            displayInverter?.previewDarkMode = on
-            config.display.previewDarkMode = on
+            guard let style = DisplayInverter.PDFDarkStyle(rawValue: value) else {
+                return fail("Say auto, on, or off.")
+            }
+            displayInverter?.pdfDarkStyle = style
+            config.display.pdfDark = value
             ConfigLoader.save(config)
-            if on {
-                displayInverter?.applyPreviewDarkModeIfFront()
-                speech.announce("Preview dark mode on. PDFs switch to dark "
-                    + "view automatically.")
-            } else {
-                speech.announce("Preview dark mode off.")
+            displayInverter?.applyPreviewDarkModeIfFront()
+            switch style {
+            case .auto:
+                speech.announce("P D F dark auto: dark P D Fs whenever your "
+                    + "Mac is in dark mode.")
+            case .on:
+                speech.announce("P D F dark on. Preview documents switch to "
+                    + "dark view.")
+            case .off:
+                speech.announce("P D F dark off.")
             }
 
         case "autoinvert":
@@ -1758,7 +1765,7 @@ final class DaemonServer {
             "dialogs": dialogSentinel.level.rawValue,
             "follow": (keyboardMonitor?.followEnabled ?? true) ? "on" : "off",
             "invert": (config.display.invertEnabled ?? true) ? "on" : "off",
-            "pdfdark": (config.display.previewDarkMode ?? false) ? "on" : "off",
+            "pdfdark": config.display.pdfDark ?? "auto",
             "autoinvert": (config.display.autoInvert ?? false) ? "on" : "off",
         ]
     }

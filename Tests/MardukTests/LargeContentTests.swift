@@ -79,8 +79,9 @@ final class LargeContentTests: XCTestCase {
     func testSearchOnLargeTextFindsLateTarget() {
         var text = String(repeating: "filler words here. ", count: 3_000)
         text += "the needle sentence."
-        let target = ReadNavigator.searchTarget(in: text, query: "needle",
-                                                from: 0, direction: .forward)
+        let target = ReadNavigator.searchTarget(in: text, from: 0,
+                                                query: "needle",
+                                                direction: .forward)
         XCTAssertNotNil(target)
     }
 

@@ -1421,6 +1421,15 @@ final class DaemonServer {
             ConfigLoader.save(config)
             speech.announce("Hash abbreviation \(value).")
 
+        case "identifiers":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            var v = config.verbalizer ?? .init()
+            v.identifiers = on
+            config.verbalizer = v
+            speech.preprocessor = SpeechPreprocessor.settings(from: config.verbalizer)
+            ConfigLoader.save(config)
+            speech.announce("Identifier splitting \(value).")
+
         case "rescue":
             guard let on = toggle() else { return fail("Say on or off.") }
             keyboardMonitor?.typingRescueEnabled = on
@@ -1592,7 +1601,7 @@ final class DaemonServer {
             if matches.count > 1 {
                 fail("\(key) is ambiguous: \(matches.joined(separator: ", ")).")
             } else {
-                fail("Unknown setting \(key). Settings are rate, pitch, level, hashes, "
+                fail("Unknown setting \(key). Settings are rate, pitch, level, hashes, identifiers, "
                     + "rescue, burst, escape hold, echo, command echo, palette, "
                     + "auto update, check hours, border, pointer, thickness, "
                     + "speed keys, toggle sound, read motions, dialogs.")
@@ -1621,6 +1630,7 @@ final class DaemonServer {
             "pitch": "\(Int(speech.pitch * 100)) percent",
             "level": config.verbalizer?.level ?? "most",
             "hashes": (config.verbalizer?.hashes ?? true) ? "on" : "off",
+            "identifiers": (config.verbalizer?.identifiers ?? true) ? "on" : "off",
             "rescue": (keyboardMonitor?.typingRescueEnabled ?? true) ? "on" : "off",
             "burst": "\(Int((keyboardMonitor?.typingBurstThreshold ?? 0.3) * 1000)) ms",
             "escapehold": "\(Int((keyboardMonitor?.escapeHoldThreshold ?? 0.4) * 1000)) ms",

@@ -54,6 +54,7 @@ struct MardukConfig: Codable {
         var level: String? = "most"     // none | some | most | all
         var symbols: [String: String]?  // overrides, e.g. {"*": "asterisk", "->": "maps to", "%": ""}
         var hashes: Bool? = true        // abbreviate hex digests: "md5 ending in 2 7 e"
+        var identifiers: Bool? = true   // split camelCase / snake_case into words
     }
 
     struct DuckingConfig: Codable {

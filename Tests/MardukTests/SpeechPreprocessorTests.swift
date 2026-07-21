@@ -269,5 +269,69 @@ final class SpeechPreprocessorTests: XCTestCase {
         let config = try JSONDecoder().decode(MardukConfig.self, from: Data(json.utf8))
         XCTAssertNil(config.verbalizer)
         XCTAssertEqual(SpeechPreprocessor.settings(from: config.verbalizer).verbosity, .most)
+        XCTAssertTrue(SpeechPreprocessor.settings(from: config.verbalizer).identifiers)
+    }
+
+    // MARK: - Identifier splitting
+
+    private func split(_ text: String) -> String {
+        SpeechPreprocessor.splitIdentifiers(text)
+    }
+
+    func testCamelCaseSplits() {
+        XCTAssertEqual(split("readDocumentFromCaret"), "read Document From Caret")
+        XCTAssertEqual(split("fooBar and bazQux"), "foo Bar and baz Qux")
+        XCTAssertEqual(split("iPhone"), "i Phone")
+    }
+
+    func testAcronymBoundarySplitsBeforeFollowingWord() {
+        XCTAssertEqual(split("XMLHttpRequest"), "XML Http Request")
+        XCTAssertEqual(split("parseHTMLBody"), "parse HTML Body")
+    }
+
+    func testSnakeCaseSplits() {
+        XCTAssertEqual(split("user_id_count"), "user id count")
+        XCTAssertEqual(split("MAX_RETRY_COUNT"), "MAX RETRY COUNT")
+    }
+
+    func testDigitTransitionsSplitInsideIdentifiers() {
+        XCTAssertEqual(split("utf16Offset"), "utf 16 Offset")
+        XCTAssertEqual(split("parseHTMLBody_v2"), "parse HTML Body v 2")
+    }
+
+    func testNonIdentifiersUntouched() {
+        XCTAssertEqual(split("Hello there, plain words."), "Hello there, plain words.")
+        XCTAssertEqual(split("APT"), "APT")          // ALLCAPS acronym
+        XCTAssertEqual(split("UTF16"), "UTF16")      // acronym + digits, no lowercase
+        XCTAssertEqual(split("sha256"), "sha256")    // no hump, no snake
+        XCTAssertEqual(split("Page2"), "Page2")      // capitalized word + digit
+    }
+
+    func testEdgeUnderscoresLeftForSymbolStage() {
+        XCTAssertEqual(split("__init__"), "__init__")
+        XCTAssertEqual(split("_privateVar"), "_private Var")
+        XCTAssertEqual(split("a__b"), "a__b")        // doubled = not internal
+    }
+
+    func testIdentifiersToggleOffPassesThrough() {
+        let settings = SpeechPreprocessor.Settings(verbosity: .most, overrides: [:],
+                                                   identifiers: false)
+        let out = SpeechPreprocessor.process("readDocumentFromCaret user_id", settings: settings)
+        XCTAssertTrue(out.contains("readDocumentFromCaret"))
+        XCTAssertTrue(out.contains("user underscore id"))
+    }
+
+    func testIdentifierSplitRunsInFullPipeline() {
+        let out = SpeechPreprocessor.process("call readDocumentFromCaret on user_id_count",
+                                             settings: .default)
+        XCTAssertEqual(out, "call read Document From Caret on user id count")
+    }
+
+    func testHashAbbreviationWinsOverSplitting() {
+        // A digest is collapsed by the hash stage before the splitter runs —
+        // mixed-case hex like DeadBeef… must not come out camel-split
+        let digest = String(repeating: "D3adBeef", count: 4)  // 32 hex chars
+        let out = SpeechPreprocessor.process(digest, settings: .default)
+        XCTAssertTrue(out.hasPrefix("md5 ending in"), out)
     }
 }

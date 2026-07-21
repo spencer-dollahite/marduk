@@ -25,12 +25,18 @@ enum SpeechPreprocessor {
         /// Abbreviate hex digests ("md5 ending in 2 7 e"). Independent of
         /// verbosity — it rewrites content, not symbols.
         let hashes: Bool
+        /// Split camelCase / snake_case identifiers into natural words
+        /// ("readDocumentFromCaret" → "read Document From Caret"). Content
+        /// rewriting like hashes: own toggle, runs at every level.
+        let identifiers: Bool
 
         static let `default` = Settings(verbosity: .most, overrides: [:])
 
-        init(verbosity: Verbosity, overrides: [String: String], hashes: Bool = true) {
+        init(verbosity: Verbosity, overrides: [String: String], hashes: Bool = true,
+             identifiers: Bool = true) {
             self.verbosity = verbosity
             self.hashes = hashes
+            self.identifiers = identifiers
 
             var single: [Character: String] = [:]
             var multi: [(key: String, name: String)] = []
@@ -96,7 +102,8 @@ enum SpeechPreprocessor {
             verbosity = .most
         }
         return Settings(verbosity: verbosity, overrides: block?.symbols ?? [:],
-                        hashes: block?.hashes ?? true)
+                        hashes: block?.hashes ?? true,
+                        identifiers: block?.identifiers ?? true)
     }
 
     /// Full pipeline. Returns "" when nothing speakable remains.
@@ -104,6 +111,9 @@ enum SpeechPreprocessor {
         var result = sanitize(text)
         if settings.hashes {
             result = abbreviateHashes(result)
+        }
+        if settings.identifiers {
+            result = splitIdentifiers(result)
         }
         result = normalizeWhitespace(verbalize(result, settings: settings))
         if result.count > maxSpokenLength {
@@ -219,6 +229,83 @@ enum SpeechPreprocessor {
                 out += String(run)
             }
             i = j
+        }
+        return out
+    }
+
+    // MARK: - Stage 2.5: identifier splitting
+
+    /// Splits code identifiers into natural words: camel humps and internal
+    /// underscores become spaces ("parseHTMLBody_v2" → "parse HTML Body v 2").
+    /// A token only qualifies when it carries identifier evidence — an
+    /// underscore with alphanumerics on both sides, a lower→upper hump, or a
+    /// digit→upper hump in a token that also has lowercase — so ordinary
+    /// words, ALLCAPS acronyms ("APT"), and digit-suffixed acronyms
+    /// ("UTF16") pass through untouched, and hex runs were already collapsed
+    /// by the hash stage. Leading/trailing/doubled underscores ("__init__")
+    /// are left for the symbol stage. Runs after hashes, before verbalize;
+    /// whitespace normalization later collapses any doubling.
+    static func splitIdentifiers(_ text: String) -> String {
+        let chars = Array(text)
+        var out = ""
+        out.reserveCapacity(chars.count + 16)
+
+        func isWordChar(_ c: Character) -> Bool { c.isLetter || c.isNumber || c == "_" }
+        func isAlnum(_ c: Character) -> Bool { c.isLetter || c.isNumber }
+
+        var i = 0
+        while i < chars.count {
+            guard isWordChar(chars[i]) else {
+                out.append(chars[i])
+                i += 1
+                continue
+            }
+            var j = i + 1
+            while j < chars.count && isWordChar(chars[j]) { j += 1 }
+            let token = Array(chars[i..<j])
+            i = j
+
+            var hasSnake = false
+            var hasHump = false
+            var hasLower = false
+            for k in token.indices {
+                let c = token[k]
+                if c.isLowercase { hasLower = true }
+                if k > 0 {
+                    let p = token[k - 1]
+                    if c == "_", k + 1 < token.count,
+                       isAlnum(p), isAlnum(token[k + 1]) { hasSnake = true }
+                    if c.isUppercase && p.isLowercase { hasHump = true }
+                    if c.isUppercase && p.isNumber { hasHump = true }
+                }
+            }
+            guard hasSnake || (hasHump && hasLower) else {
+                out += String(token)
+                continue
+            }
+
+            for k in token.indices {
+                let c = token[k]
+                if c == "_" {
+                    let internalUnderscore = k > 0 && k + 1 < token.count
+                        && isAlnum(token[k - 1]) && isAlnum(token[k + 1])
+                    out.append(internalUnderscore ? " " : "_")
+                    continue
+                }
+                if k > 0 {
+                    let p = token[k - 1]
+                    let boundary =
+                        (c.isUppercase && (p.isLowercase || p.isNumber))
+                        // Acronym → word: split before the last capital of a
+                        // run when a lowercase follows ("XMLHttp" → XML Http)
+                        || (c.isUppercase && p.isUppercase
+                            && k + 1 < token.count && token[k + 1].isLowercase)
+                        || (c.isNumber && p.isLetter)
+                        || (c.isLetter && p.isNumber)
+                    if boundary { out.append(" ") }
+                }
+                out.append(c)
+            }
         }
         return out
     }

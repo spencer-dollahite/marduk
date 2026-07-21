@@ -186,6 +186,7 @@ enum ColonCommand: Equatable {
         ("pitch", .number(min: 50, max: 200, unit: "percent")),
         ("level", .choice(["none", "some", "most", "all"])),
         ("hashes", .toggle),
+        ("identifiers", .toggle),
         ("rescue", .toggle),
         ("burst", .number(min: 50, max: 2000, unit: "milliseconds")),
         ("escapehold", .number(min: 100, max: 2000, unit: "milliseconds")),

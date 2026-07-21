@@ -101,6 +101,16 @@ final class DisplayInverter: @unchecked Sendable {
         }
     }
 
+    /// Force TCC registration: a capture attempt makes Marduk appear in
+    /// the Screen Recording privacy pane even when macOS shows no dialog
+    /// (modern macOS often registers silently instead of prompting).
+    func primeCapturePermission() {
+        Task {
+            _ = try? await SCShareableContent
+                .excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        }
+    }
+
     /// Live `:config pdfdark on` with Preview already front applies now.
     func applyPreviewDarkModeIfFront() {
         guard previewDarkMode,

@@ -1633,11 +1633,22 @@ final class DaemonServer {
             ConfigLoader.save(config)
             if on {
                 if !CGPreflightScreenCaptureAccess() {
+                    // Modern macOS often registers the app in the pane
+                    // SILENTLY instead of showing a dialog — prime the
+                    // registration, open the pane, and narrate the toggle
                     CGRequestScreenCaptureAccess()
-                    speech.announce("Auto invert on. It measures each app's "
-                        + "brightness with a tiny screenshot, so macOS will ask "
-                        + "for Screen Recording permission — grant it to Marduk "
-                        + "in the dialog or in Privacy settings.")
+                    displayInverter?.primeCapturePermission()
+                    let opener = Process()
+                    opener.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                    opener.arguments = ["x-apple.systempreferences:"
+                        + "com.apple.preference.security?Privacy_ScreenCapture"]
+                    try? opener.run()
+                    speech.announce("Auto invert on, but Marduk needs the Screen "
+                        + "Recording permission first. I opened that Settings "
+                        + "pane: find Marduk in the list, turn it on, and choose "
+                        + "quit and reopen when macOS offers — Marduk restarts "
+                        + "itself. If Marduk is not listed yet, switch apps once "
+                        + "and it will appear.")
                 } else {
                     speech.announce("Auto invert on. Bright apps invert, dark "
                         + "apps revert, measured as you switch.")

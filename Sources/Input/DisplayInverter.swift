@@ -542,12 +542,19 @@ final class DisplayInverter: @unchecked Sendable {
         let mods = shortcut?.modifiers.isEmpty == false
             ? shortcut!.modifiers : ["shift", "command"]
         let using = mods.map { "\($0) down" }.joined(separator: ", ")
-        let script = "tell application \"System Events\" to key code \(keyCode) "
-            + "using {\(using)}"
+        // The gesture ALWAYS sweeps its own modifiers up afterward — key up
+        // on an unpressed modifier is a no-op, and System Events can strand
+        // one even when the script completes (field: keys arriving
+        // pre-chorded, Cmd+Q dead, apps seemingly frozen). The watchdog
+        // cleanup below stays for the killed-mid-gesture case.
         scriptQueue.async {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            process.arguments = ["-e", script]
+            process.arguments = ["-e", "tell application \"System Events\"",
+                                 "-e", "key code \(keyCode) using {\(using)}",
+                                 "-e", "key up shift", "-e", "key up command",
+                                 "-e", "key up option", "-e", "key up control",
+                                 "-e", "end tell"]
             guard (try? process.run()) != nil else {
                 fputs("[display] osascript launch failed\n", stderr)
                 return

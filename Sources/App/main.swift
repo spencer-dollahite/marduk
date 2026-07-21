@@ -450,7 +450,9 @@ case "update":
     }
 
     fputs("[update] Starting new daemon...\n", stderr)
-    LaunchAgent.truncateLog() // fresh log per build; failures above never truncate
+    // Fresh log per build; failures above never truncate. The breadcrumb
+    // is the new log's first line — the restart must explain itself.
+    LaunchAgent.truncateLog(breadcrumb: "log reset — restarting after CLI update")
     if LaunchAgent.isInstalled {
         if LaunchAgent.installedProgramPath() != updateBundleExec {
             // Migration: the plist still points at the old bare binary.

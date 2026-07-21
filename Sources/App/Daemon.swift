@@ -1960,7 +1960,9 @@ final class DaemonServer {
         let installed = LaunchAgent.isInstalled
         let restart = { [self] in
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.5) { [self] in
-                LaunchAgent.truncateLog()
+                LaunchAgent.truncateLog(breadcrumb:
+                    "log reset — restarting after release update to \(tag)"
+                    + (silent ? " (silent auto-update)" : ""))
                 if installed {
                     DispatchQueue.main.async { [self] in
                         pendingExitCode = 75  // launchd relaunches the new bytes
@@ -2057,7 +2059,9 @@ final class DaemonServer {
                 DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.5) { [self] in
                     // Fresh log per build (failures above never truncate,
                     // so update-failure diagnostics survive)
-                    LaunchAgent.truncateLog()
+                    LaunchAgent.truncateLog(breadcrumb:
+                        "log reset — restarting after source update"
+                        + (silent ? " (silent auto-update)" : ""))
                     if migration {
                         if LaunchAgent.writePlist(binaryPath: bundleExec) {
                             LaunchAgent.relaunchDetached()

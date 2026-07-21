@@ -185,9 +185,16 @@ enum LaunchAgent {
     /// may have logged that current policy wouldn't (log privacy: content
     /// redaction arrived in 0.3.7). launchd's descriptor is O_APPEND, so
     /// truncating under it is safe — same trick as truncateLogIfHuge.
-    static func truncateLog() {
+    /// `breadcrumb` becomes the fresh log's FIRST line — truncation
+    /// otherwise destroys the evidence of why the restart happened (field:
+    /// a silent auto-update looked like an unexplained outage, and the log
+    /// had shredded its own confession).
+    static func truncateLog(breadcrumb: String? = nil) {
         guard let handle = FileHandle(forWritingAtPath: logPath) else { return }
         try? handle.truncate(atOffset: 0)
+        if let breadcrumb, let data = "[update] \(breadcrumb)\n".data(using: .utf8) {
+            try? handle.write(contentsOf: data)
+        }
         try? handle.close()
     }
 

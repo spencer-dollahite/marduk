@@ -1932,14 +1932,30 @@ final class KeyboardMonitor {
             // Falls back to the caret / selection start, then the top.
             // Snapped to the word start, same landing rule as char-find.
             var start = 0
-            // The pointer is by definition ON SCREEN — an offset outside
-            // the visible character range is provably garbage (field:
-            // Terminal with a 9M-char scrollback answered RangeForPosition
-            // with ~2k, the top of the buffer, while the user pointed at
-            // the visible bottom). Reject it and let the row estimate —
-            // built FROM the visible range — take over.
+            // Start priority: an EXPLICIT selection outranks everything —
+            // Cmd+A then R means "read it all from the top", a selected
+            // word means "start here"; the user just said what they want
+            // (user-requested). A collapsed cursor (length 0) claims
+            // nothing and falls through to the pointer chain. The pointer
+            // is by definition ON SCREEN — an offset outside the visible
+            // character range is provably garbage (field: Terminal with a
+            // 9M-char scrollback answered RangeForPosition with ~2k, the
+            // top of the buffer, while the user pointed at the visible
+            // bottom). Reject it and let the row estimate — built FROM the
+            // visible range — take over. Then the caret, then the top.
+            var selection = CFRange(location: 0, length: 0)
+            var rangeRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(
+                   element, kAXSelectedTextRangeAttribute as CFString, &rangeRef
+               ) == .success,
+               let rr = rangeRef, CFGetTypeID(rr) == AXValueGetTypeID() {
+                _ = AXValueGetValue(rr as! AXValue, .cfRange, &selection)
+            }
             let visibleRange = Self.visibleCharacterRange(of: element)
-            if let pointerOffset = Self.textOffsetAtPointer(in: element),
+            if selection.length > 0 {
+                start = max(0, selection.location)
+                fputs("[keyboard] R: starting at selection\n", stderr)
+            } else if let pointerOffset = Self.textOffsetAtPointer(in: element),
                Self.validatedPointerOffset(pointerOffset,
                                            visible: visibleRange) != nil {
                 start = pointerOffset
@@ -1949,16 +1965,7 @@ final class KeyboardMonitor {
                 start = estimate
                 fputs("[keyboard] R: starting at pointer (row estimate)\n", stderr)
             } else {
-                var rangeRef: CFTypeRef?
-                if AXUIElementCopyAttributeValue(
-                       element, kAXSelectedTextRangeAttribute as CFString, &rangeRef
-                   ) == .success,
-                   let rr = rangeRef, CFGetTypeID(rr) == AXValueGetTypeID() {
-                    var range = CFRange(location: 0, length: 0)
-                    if AXValueGetValue(rr as! AXValue, .cfRange, &range) {
-                        start = max(0, range.location)
-                    }
-                }
+                start = max(0, selection.location)  // caret position
             }
             start = ReadNavigator.wordStart(in: text, at: start)
 

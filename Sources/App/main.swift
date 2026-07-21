@@ -442,6 +442,7 @@ case "update":
     }
 
     fputs("[update] Starting new daemon...\n", stderr)
+    LaunchAgent.truncateLog() // fresh log per build; failures above never truncate
     if LaunchAgent.isInstalled {
         if LaunchAgent.installedProgramPath() != updateBundleExec {
             // Migration: the plist still points at the old bare binary.

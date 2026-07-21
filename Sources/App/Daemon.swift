@@ -1415,6 +1415,9 @@ final class DaemonServer {
             let restart = { [self] in
                 // Give unduck time to complete before restarting
                 DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.5) { [self] in
+                    // Fresh log per build (failures above never truncate,
+                    // so update-failure diagnostics survive)
+                    LaunchAgent.truncateLog()
                     if migration {
                         if LaunchAgent.writePlist(binaryPath: bundleExec) {
                             LaunchAgent.relaunchDetached()

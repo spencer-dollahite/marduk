@@ -179,6 +179,18 @@ enum LaunchAgent {
         return parts.isEmpty ? "loaded" : parts.joined(separator: ", ")
     }
 
+    /// Start the log fresh — called on every successful update, right
+    /// before the restart. Pre-update lines describe a build that no
+    /// longer runs, and wiping them also ages out anything an older build
+    /// may have logged that current policy wouldn't (log privacy: content
+    /// redaction arrived in 0.3.7). launchd's descriptor is O_APPEND, so
+    /// truncating under it is safe — same trick as truncateLogIfHuge.
+    static func truncateLog() {
+        guard let handle = FileHandle(forWritingAtPath: logPath) else { return }
+        try? handle.truncate(atOffset: 0)
+        try? handle.close()
+    }
+
     /// launchd appends to the log forever; cheap unbounded-growth guard
     /// (real rotation is out of scope).
     private static func truncateLogIfHuge() {

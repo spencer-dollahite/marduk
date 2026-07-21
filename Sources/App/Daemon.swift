@@ -172,6 +172,11 @@ final class DaemonServer {
     // The periodic timer announces once per new remote head (or installs,
     // with autoupdate on).
     private var updateArmedUntil: Date?
+    // True whenever ANY check (periodic or manual) has seen updates and no
+    // install has run since — the express uu consults this: a deliberate
+    // uu after "updates exist" installs immediately, a stray uu on an
+    // up-to-date system can only trigger a harmless check.
+    private var updatesKnownAvailable = false
     private var lastAnnouncedRemote = ""
     private var lastAnnouncedRelease = ""  // release-channel dedup (tag, not sha)
     private var lastVerifyFailTag = ""     // failed-verification announce, once per tag
@@ -384,7 +389,7 @@ final class DaemonServer {
                 tutorial.handle(.announced(text))
                 speech.announce(text)
             },
-            onUpdate: { [self] in performUpdate() },
+            onUpdate: { [self] in handleFastUpdateKey() },
             isSpeaking: { [self] in speech.isSpeaking },
             isReadActive: { [self] in speech.readActive },
             isReadPaused: { [self] in speech.isPaused },
@@ -949,7 +954,6 @@ final class DaemonServer {
     private enum UpdateCheckOrigin { case manual, periodic }
 
     /// Single `u`: install if a check is armed, else check + speak notes.
-    /// (Fast `uu` bypasses this — the burst layer calls performUpdate directly.)
     private func handleUpdateKey() {
         if let until = updateArmedUntil, Date() < until {
             updateArmedUntil = nil
@@ -958,6 +962,23 @@ final class DaemonServer {
             return
         }
         checkForUpdates(origin: .manual)
+    }
+
+    /// Fast `uu`: the EXPRESS lane — installs immediately, skipping the
+    /// notes, whenever an armed window OR any prior check already knows
+    /// updates exist (the periodic check runs at boot and daily, so a
+    /// deliberate uu almost always qualifies). With nothing known
+    /// available it degrades to a harmless check — a stray double-u on an
+    /// up-to-date system can never install anything.
+    private func handleFastUpdateKey() {
+        let armed = updateArmedUntil.map { Date() < $0 } ?? false
+        if armed || updatesKnownAvailable {
+            updateArmedUntil = nil
+            speech.announce("Update initiated")
+            performUpdate()
+        } else {
+            checkForUpdates(origin: .manual)
+        }
     }
 
     /// How this copy got onto the machine — decides both the update
@@ -1042,14 +1063,17 @@ final class DaemonServer {
                     return
                 }
                 if release.tag == Marduk.version {
+                    updatesKnownAvailable = false
                     if origin == .manual { speech.announce("Marduk is up to date.") }
                 } else if origin == .manual {
+                    updatesKnownAvailable = true
                     updateArmedUntil = Date(timeIntervalSinceNow: 60)
                     let notes = release.notes.isEmpty ? ""
                         : " " + release.notes.prefix(8).joined(separator: ". ") + "."
                     speech.announce("Marduk \(release.tag) is available.\(notes) "
                         + "Press u again to install.")
                 } else if autoUpdate {
+                    updatesKnownAvailable = true
                     if speech.isSpeaking {
                         // Same courtesy as the source channel: never
                         // restart mid-read; try again later
@@ -1107,9 +1131,11 @@ final class DaemonServer {
     private func handleCheckResult(subjects: [String], remote: String,
                                    checks: CheckStatus, origin: UpdateCheckOrigin) {
         guard !subjects.isEmpty else {
+            updatesKnownAvailable = false
             if origin == .manual { speech.announce("Marduk is up to date.") }
             return
         }
+        updatesKnownAvailable = true
         fputs("[update] \(subjects.count) update(s) available, checks: \(checks)\n", stderr)
         switch origin {
         case .manual:
@@ -2078,6 +2104,7 @@ final class DaemonServer {
 
     /// (failures log only; success restarts without a word).
     private func performUpdate(silent: Bool = false) {
+        updatesKnownAvailable = false
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             func failed() {
                 guard !silent else { return }

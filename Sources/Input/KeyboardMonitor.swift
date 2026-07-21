@@ -1598,16 +1598,13 @@ final class KeyboardMonitor {
                     if redispatch(ev) != nil { enqueueReplay(ev) }
                 }
                 DispatchQueue.main.async { [self] in
-                    // Routes through the CHECK handler on purpose: install
-                    // only fires when a recent lone u armed the window. A
-                    // stray double-u typed into NORMAL mode (typing-rescue
-                    // burst, both command letters) once installed an update
-                    // and restarted the daemon mid-use — a typo must never
-                    // update software. Deliberate flow stays two presses:
-                    // u (hear what's new, arms) then u (installs).
-                    fputs("[keyboard] uu → update check (installs only when armed)\n",
-                          stderr)
-                    onUpdateCheck?()
+                    // EXPRESS lane: the daemon installs immediately when any
+                    // prior check knows updates exist, and degrades to a
+                    // harmless check otherwise — so deliberate uu skips the
+                    // notes, while a stray double-u on an up-to-date system
+                    // (the field incident) can never install anything.
+                    fputs("[keyboard] uu → express update\n", stderr)
+                    onUpdate?()
                 }
                 return .swallow
             }

@@ -985,7 +985,7 @@ final class DaemonServer {
 
     // MARK: - Update Checks
 
-    private enum UpdateCheckOrigin { case manual, periodic }
+    private enum UpdateCheckOrigin { case manual, periodic, express }
 
     /// Single `u`: install if a check is armed, else check + speak notes.
     private func handleUpdateKey() {
@@ -998,12 +998,11 @@ final class DaemonServer {
         checkForUpdates(origin: .manual)
     }
 
-    /// Fast `uu`: the EXPRESS lane — installs immediately, skipping the
-    /// notes, whenever an armed window OR any prior check already knows
-    /// updates exist (the periodic check runs at boot and daily, so a
-    /// deliberate uu almost always qualifies). With nothing known
-    /// available it degrades to a harmless check — a stray double-u on an
-    /// up-to-date system can never install anything.
+    /// Fast `uu`: JUST INSTALL (user-final semantics — twice insisted).
+    /// Never reads the notes: already-known updates install immediately;
+    /// otherwise a quiet check runs and installs whatever it finds,
+    /// announcing only the count. An up-to-date system says so and does
+    /// nothing — the only typo protection that survives, by user choice.
     private func handleFastUpdateKey() {
         let armed = updateArmedUntil.map { Date() < $0 } ?? false
         if armed || updatesKnownAvailable {
@@ -1011,7 +1010,7 @@ final class DaemonServer {
             speech.announce("Update initiated")
             performUpdate()
         } else {
-            checkForUpdates(origin: .manual)
+            checkForUpdates(origin: .express)
         }
     }
 
@@ -1090,7 +1089,7 @@ final class DaemonServer {
                 ? ReleaseCheck.parseLatestRelease(result.output) : nil
             DispatchQueue.main.async { [self] in
                 guard let release else {
-                    if origin == .manual {
+                    if origin != .periodic {
                         speech.announce("This copy of Marduk was installed from a "
                             + "release. " + releaseUpdateHint)
                     }
@@ -1098,7 +1097,11 @@ final class DaemonServer {
                 }
                 if release.tag == Marduk.version {
                     updatesKnownAvailable = false
-                    if origin == .manual { speech.announce("Marduk is up to date.") }
+                    if origin != .periodic { speech.announce("Marduk is up to date.") }
+                } else if origin == .express {
+                    updatesKnownAvailable = true
+                    speech.announce("Installing Marduk \(release.tag).")
+                    performReleaseUpdate(silent: false)
                 } else if origin == .manual {
                     updatesKnownAvailable = true
                     updateArmedUntil = Date(timeIntervalSinceNow: 60)
@@ -1166,12 +1169,17 @@ final class DaemonServer {
                                    checks: CheckStatus, origin: UpdateCheckOrigin) {
         guard !subjects.isEmpty else {
             updatesKnownAvailable = false
-            if origin == .manual { speech.announce("Marduk is up to date.") }
+            if origin != .periodic { speech.announce("Marduk is up to date.") }
             return
         }
         updatesKnownAvailable = true
         fputs("[update] \(subjects.count) update(s) available, checks: \(checks)\n", stderr)
         switch origin {
+        case .express:
+            speech.announce(subjects.count == 1
+                ? "Installing one update."
+                : "Installing \(subjects.count) updates.")
+            performUpdate()
         case .manual:
             // Release notes = commit subjects since the running build.
             // Arm BEFORE speaking so a quick second u installs immediately.

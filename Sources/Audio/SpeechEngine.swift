@@ -659,6 +659,7 @@ extension SpeechEngine: AVSpeechSynthesizerDelegate {
             readText = nil
             readPaged = nil
             pagedFull = nil
+            readIPAEntries = []
         }
         if let completion = completions.removeValue(forKey: ObjectIdentifier(utterance)) {
             completion()

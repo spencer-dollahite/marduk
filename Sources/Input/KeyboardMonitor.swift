@@ -1459,7 +1459,12 @@ final class KeyboardMonitor {
             // trailing keyUp passes as an orphan, which apps ignore
             pendingReadingEscape?.cancel()
             pendingReadingEscape = nil
+            // Hundreds of AXUIElement refs into a browser process must die
+            // with the read, not linger until the next one
+            clearWebReadAnchors()
             fputs("[keyboard] read ended → \(mode)\n", stderr)
+        } else {
+            clearWebReadAnchors()  // reads without capture (motions off) too
         }
     }
 

@@ -6,6 +6,11 @@ import Darwin  // proc_pidpath / MAXPATHLEN for PID -> executable path resolutio
 /// Controls external app audio volume for ducking during speech.
 /// Priority: Firefox/browser (system volume) > Apple Music > Spotify > system-wide fallback.
 final class AudioDucker {
+    // Skip-log dedupe (ducker-queue confined): the same unclaimed audio
+    // set re-logs at most once a minute
+    private var lastSkipLogKey = ""
+    private var lastSkipLogAt = Date.distantPast
+
     struct Config {
         var duckLevel: Int = 5           // 0-100, target volume while ducked
         var rampSteps: Int = 15          // number of steps in the ramp
@@ -293,7 +298,16 @@ final class AudioDucker {
         }
         if !unclaimed.isEmpty {
             // Unconditional (not debug-gated): this is THE diagnostic when
-            // "media stopped pausing" — names are app identity, log-safe
+            // "media stopped pausing" — names are app identity, log-safe.
+            // Deduped: the same unclaimed set re-logs at most once a minute
+            // (field: five identical lines in one speech burst).
+            let key = unclaimed.sorted().joined(separator: ",")
+            if key == lastSkipLogKey,
+               Date().timeIntervalSince(lastSkipLogAt) < 60 {
+                return false
+            }
+            lastSkipLogKey = key
+            lastSkipLogAt = Date()
             fputs("[ducker] audio playing but no media-key client "
                 + "(\(unclaimed.joined(separator: ", "))) — not pausing\n", stderr)
         }

@@ -1916,16 +1916,32 @@ final class KeyboardMonitor {
         return range.location
     }
 
-    /// Safari fallback for R: web areas expose no AX text value, but
-    /// Safari is scriptable — `text of front document` returns the
-    /// page's readable text (Reader view via Shift+Cmd+R first gives a
-    /// cleaner extraction; raw pages include nav clutter). Runs off-main
-    /// (osascript is slow); first use triggers macOS's one-time
-    /// Automation prompt for Safari, same as the Music/Spotify grants.
-    /// Whole-page read from the top — a web page has no caret.
+    /// Safari fallback for R. Two extractions, best first:
+    ///
+    /// 1. AX WALK of the VISIBLE web area — with Reader open (Shift+
+    ///    Cmd+R) the visible area IS the stripped article, so the walk
+    ///    reads exactly what Reader shows: title and body, no site
+    ///    clutter. (Reader is an overlay: AppleScript's `document` stays
+    ///    the full underlying page, which is why path 2 alone reads nav
+    ///    junk — first-user-verified.) The AXEnhancedUserInterface flag
+    ///    is set first, the same nudge screen readers use to make
+    ///    browsers populate their web AX trees.
+    /// 2. AppleScript `text of front document` — the whole page, clutter
+    ///    included — when the walk harvests too little.
+    ///
+    /// Off-main throughout; osascript first-use triggers the one-time
+    /// Safari Automation prompt (same class as the Music/Spotify grants).
     private func readSafariPage() {
         fputs("[keyboard] R: Safari page extraction\n", stderr)
+        let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
         DispatchQueue.global(qos: .utility).async { [self] in
+            if let pid, let article = Self.safariVisibleText(pid: pid),
+               article.count > 200 {
+                fputs("[keyboard] R: Safari AX walk (\(article.count) chars)\n", stderr)
+                DispatchQueue.main.async { [self] in onSpeak?(article) }
+                return
+            }
+            fputs("[keyboard] R: AX walk thin — AppleScript full-page fallback\n", stderr)
             let script = "tell application \"Safari\" to get text of front document"
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
@@ -1962,6 +1978,96 @@ final class KeyboardMonitor {
                 fputs("[keyboard] R: Safari page (\(text.count) chars)\n", stderr)
                 onSpeak?(text)
             }
+        }
+    }
+
+    /// Harvest the text visible in Safari's front web area by walking its
+    /// AX tree (static text + headings, in document order). Returns nil
+    /// on a sparse tree — Safari populates web AX lazily; the enhanced-UI
+    /// nudge helps but only real hardware proves it. Budgeted: 0.25s
+    /// per-element timeouts, capped node count and depth, so a pathological
+    /// page can't wedge the walk. Runs OFF the main thread by design (a
+    /// long walk on main would stall the tap dispatch).
+    private static func safariVisibleText(pid: pid_t) -> String? {
+        let axApp = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(axApp, 0.25)
+        // The screen-reader nudge: browsers keep web AX trees minimal
+        // until an assistive client announces itself
+        AXUIElementSetAttributeValue(
+            axApp, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        Thread.sleep(forTimeInterval: 0.3) // let the tree populate
+
+        var windowRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  axApp, kAXFocusedWindowAttribute as CFString, &windowRef
+              ) == .success,
+              let rawWindow = windowRef,
+              CFGetTypeID(rawWindow) == AXUIElementGetTypeID() else { return nil }
+
+        // Find the web area, then collect text below it
+        guard let webArea = findDescendant(
+            of: rawWindow as! AXUIElement, role: "AXWebArea", depthBudget: 12
+        ) else { return nil }
+
+        var parts: [String] = []
+        var nodeBudget = 3000
+        collectText(from: webArea, into: &parts, nodeBudget: &nodeBudget, depth: 40)
+        let joined = parts.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? nil : joined
+    }
+
+    private static func findDescendant(
+        of element: AXUIElement, role: String, depthBudget: Int
+    ) -> AXUIElement? {
+        guard depthBudget > 0 else { return nil }
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        var roleRef: CFTypeRef?
+        _ = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+        if roleRef as? String == role { return element }
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  element, kAXChildrenAttribute as CFString, &childrenRef
+              ) == .success,
+              let children = childrenRef as? [AXUIElement] else { return nil }
+        for child in children {
+            if let found = findDescendant(of: child, role: role,
+                                          depthBudget: depthBudget - 1) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    private static func collectText(
+        from element: AXUIElement, into parts: inout [String],
+        nodeBudget: inout Int, depth: Int
+    ) {
+        guard depth > 0, nodeBudget > 0 else { return }
+        nodeBudget -= 1
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        var roleRef: CFTypeRef?
+        _ = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+        if let role = roleRef as? String,
+           role == "AXStaticText" || role == "AXHeading" {
+            var valueRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(
+                   element, kAXValueAttribute as CFString, &valueRef
+               ) == .success,
+               let text = valueRef as? String,
+               !text.trimmingCharacters(in: .whitespaces).isEmpty {
+                parts.append(text)
+            }
+            if role == "AXStaticText" { return } // leaves have no useful children
+        }
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  element, kAXChildrenAttribute as CFString, &childrenRef
+              ) == .success,
+              let children = childrenRef as? [AXUIElement] else { return }
+        for child in children {
+            guard nodeBudget > 0 else { return }
+            collectText(from: child, into: &parts, nodeBudget: &nodeBudget, depth: depth - 1)
         }
     }
 

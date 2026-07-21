@@ -297,7 +297,7 @@ final class ColonCommandTests: XCTestCase {
     func testConfigKeyPrefixFilters() {
         XCTAssertEqual(completions("config e"), ["escapehold", "echo"])
         XCTAssertEqual(completions("set r", values: ["rate": "180"]),
-                       ["rate — 180", "rescue"])
+                       ["rate — 180", "rescue", "readmotions"])
     }
 
     func testToggleValueStage() {

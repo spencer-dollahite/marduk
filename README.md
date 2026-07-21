@@ -155,6 +155,15 @@ These are deliberate trade-offs of the typing-rescue system, not bugs:
 - Hand-edits to config.json need a daemon restart — use `:config` from inside Marduk (or `marduk config rate`) for live changes.
 - **Upgrading from a pre-bundle install:** the first update converts Marduk into `Marduk.app` and announces it aloud. If keyboard commands stop afterwards, re-grant Accessibility to `Marduk.app`; the Automation prompt also re-asks once (now explaining why Marduk wants media control).
 
+### Emergency stop
+
+Marduk is a background daemon — it has no Dock icon and macOS excludes it from the Force Quit window (and force-killing wouldn't help: the launch agent restarts it in seconds, by design). The stops that work, gentlest first:
+
+1. **`Ctrl+Option+M`** — instant off. Keys pass through untouched, your Karabiner profile comes back. Same chord turns it back on.
+2. **`:quit`** — stops the daemon cleanly; it stays stopped until next login or `marduk start`.
+3. **`marduk stop`** in Terminal — same as `:quit`, from outside.
+4. **Activity Monitor → marduk → Force Quit** — works as a last resort, but expect the automatic relaunch; follow with `marduk stop` if you want it to stay down.
+
 ## Known limitations
 
 - **US (ANSI) keyboard layout is assumed.** Commands are matched by physical key position, so on AZERTY, QWERTZ, or Dvorak layouts the command letters land in the wrong places. A [Karabiner-Elements](https://karabiner-elements.pqrs.org/) remap is a workaround today; proper layout awareness is planned.

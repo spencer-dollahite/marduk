@@ -147,6 +147,7 @@ enum HelpText {
         "Working dark? Marduk notices: with your Mac in dark mode, every PDF you open in Preview switches to dark view by itself. Colon config p d f dark off if you want your PDFs paper-white. Colon config auto invert on goes further: it measures each app's real brightness and inverts the display only when the content is actually blinding — a black slide deck in Keynote stays exactly as you styled it.",
         "The view follows the voice: jump a PDF read to page three and Preview turns to page three, read a Reader article and it scrolls along like a teleprompter. Colon config follow off keeps the view still.",
         "Code names read as natural words: read Document From Caret, not one long mumble, and user id count without hearing underscore twice. Colon config identifiers off brings back the raw forms.",
+        "If Marduk ever misbehaves, Control Option M turns it off instantly — keys pass through untouched and your Karabiner setup comes back. Colon quit stops the daemon entirely, and marduk stop in Terminal does the same from outside. Force quitting doesn't stick: the launch agent restarts it on purpose.",
         "Marduk mispronouncing a name? Colon pronunciation opens the system pronunciation editor. Add the word there, typed or spoken, and Marduk says it your way from the very next read — including entries you scope to a single app.",
     ]
 

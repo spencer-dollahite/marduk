@@ -2122,9 +2122,17 @@ final class KeyboardMonitor {
     ///    else lands on the standard "No readable document here."
     ///
     /// Off-main throughout.
+    /// Scripted whole-page text fallbacks for THIN AX harvests, per
+    /// bundle — a table so new rows are data, but honestly narrow: Safari
+    /// is the only browser whose AppleScript exposes the page text.
+    static let scriptedTextFallbacks: [String: String] = [
+        "com.apple.Safari": "tell application \"Safari\" to get text of front document",
+    ]
+
     private func readWebPage(app: NSRunningApplication) {
         let pid = app.processIdentifier
-        let isSafari = app.bundleIdentifier == "com.apple.Safari"
+        let fallbackScript = app.bundleIdentifier
+            .flatMap { Self.scriptedTextFallbacks[$0] }
         fputs("[keyboard] R: web-area extraction\n", stderr)
         DispatchQueue.global(qos: .utility).async { [self] in
             if let harvest = Self.webAreaVisibleText(pid: pid),
@@ -2139,7 +2147,7 @@ final class KeyboardMonitor {
                 }
                 return
             }
-            guard isSafari else {
+            guard let script = fallbackScript else {
                 fputs("[keyboard] R: web-area walk thin, no fallback for this app\n", stderr)
                 DispatchQueue.main.async { [self] in
                     Earcon.error()
@@ -2147,8 +2155,7 @@ final class KeyboardMonitor {
                 }
                 return
             }
-            fputs("[keyboard] R: AX walk thin — Safari AppleScript fallback\n", stderr)
-            let script = "tell application \"Safari\" to get text of front document"
+            fputs("[keyboard] R: AX walk thin — scripted fallback\n", stderr)
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
             process.arguments = ["-e", script]
@@ -2168,7 +2175,7 @@ final class KeyboardMonitor {
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                 } else {
                     let msg = String(data: err, encoding: .utf8) ?? ""
-                    fputs("[keyboard] Safari extraction failed (status "
+                    fputs("[keyboard] scripted extraction failed (status "
                         + "\(process.terminationStatus)): "
                         + "\(msg.trimmingCharacters(in: .whitespacesAndNewlines))\n", stderr)
                 }

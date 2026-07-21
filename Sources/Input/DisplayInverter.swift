@@ -193,13 +193,28 @@ final class DisplayInverter: @unchecked Sendable {
             forName: NSWorkspace.didTerminateApplicationNotification,
             object: nil, queue: .main
         ) { [weak self] notification in
-            guard let self, self.isInverted,
+            guard let self,
                   let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
                       as? NSRunningApplication,
-                  let bundleID = app.bundleIdentifier,
-                  bundleID == self.invertHolder else { return }
-            self.fastConfirmGeneration += 1
-            self.ensureInverted(false, holder: nil, reason: "\(bundleID) quit")
+                  let bundleID = app.bundleIdentifier else { return }
+            if bundleID == Self.previewBundle {
+                // Preview's death is the once-per-document boundary: the
+                // manual flips lived in its windows and died with them —
+                // a relaunch gets a fresh first-contact pass on every doc
+                self.previewDocsLock.lock()
+                let count = self.previewTreatedDocs.count
+                self.previewTreatedDocs.removeAll()
+                self.previewDocsLock.unlock()
+                self.teardownPreviewObserver()
+                if count > 0 {
+                    fputs("[display] Preview quit — cleared \(count) treated "
+                        + "document(s)\n", stderr)
+                }
+            }
+            if self.isInverted, bundleID == self.invertHolder {
+                self.fastConfirmGeneration += 1
+                self.ensureInverted(false, holder: nil, reason: "\(bundleID) quit")
+            }
         }
 
         // A theme flip while Preview is front should dark its PDFs at

@@ -73,6 +73,25 @@ final class DisplayInverter: @unchecked Sendable {
     // Same marker used by KeyboardMonitor so the event tap passes these through
     private static let syntheticMarker: Int64 = 0x4D52444B // "MRDK"
 
+    // The direct road: the same UniversalAccess function Settings itself
+    // calls. Private framework — Apple-signed, loadable by a Developer ID
+    // binary — resolved once, nil when a macOS release drops the symbol
+    // (the keystroke fallback and the whiteOnBlack verification take over).
+    // Field history forced this: the Invert Colors symbolic hotkey ignored
+    // every synthetic chord shape we posted, real modifiers included.
+    private typealias UASetEnabled = @convention(c) (Bool) -> Void
+    private static let uaSetWhiteOnBlack: UASetEnabled? = {
+        guard let handle = dlopen(
+            "/System/Library/PrivateFrameworks/UniversalAccess.framework/UniversalAccess",
+            RTLD_LAZY),
+              let symbol = dlsym(handle, "UAWhiteOnBlackSetEnabled") else {
+            fputs("[display] UniversalAccess setter unavailable — keystroke fallback\n",
+                  stderr)
+            return nil
+        }
+        return unsafeBitCast(symbol, to: UASetEnabled.self)
+    }()
+
     static let previewBundle = "com.apple.Preview"
 
     init(invertApps: [String]) {
@@ -126,7 +145,7 @@ final class DisplayInverter: @unchecked Sendable {
         teardownPreviewObserver()
         // Revert inversion if active
         if isInverted {
-            toggleInversion()
+            applyInversion(false)
             isInverted = false
             fputs("[display] Reverted inversion on stop\n", stderr)
         }
@@ -135,7 +154,7 @@ final class DisplayInverter: @unchecked Sendable {
     /// Live `:config invert off` mid-invert must hand the display back.
     func revertIfInverted() {
         if isInverted {
-            toggleInversion()
+            applyInversion(false)
             isInverted = false
             fputs("[display] Reverted inversion (invert off)\n", stderr)
         }
@@ -189,19 +208,37 @@ final class DisplayInverter: @unchecked Sendable {
 
     private func ensureInverted(_ wanted: Bool, reason: String) {
         guard wanted != isInverted else { return }
-        toggleInversion()
+        applyInversion(wanted)
         isInverted = wanted
         fputs("[display] \(wanted ? "Inverted" : "Reverted") (\(reason))\n", stderr)
-        // Verify against the system's own record and resync — a disabled
-        // shortcut otherwise leaves the bookkeeping lying forever
+        verifyInversion(wanted, retryWithChord: Self.uaSetWhiteOnBlack != nil)
+    }
+
+    private func applyInversion(_ wanted: Bool) {
+        if let setter = Self.uaSetWhiteOnBlack {
+            setter(wanted)
+        } else {
+            toggleInversion()
+        }
+    }
+
+    /// Verify against the system's own record and resync — a dead setter
+    /// or disabled shortcut must not leave the bookkeeping lying forever.
+    /// One escalation: setter missed → try the keystroke once, re-verify.
+    private func verifyInversion(_ wanted: Bool, retryWithChord: Bool) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            guard let self else { return }
+            guard let self, self.isInverted == wanted else { return }
             let actual = Self.displayIsInverted()
-            if actual != self.isInverted {
+            guard actual != wanted else { return }
+            if retryWithChord {
+                fputs("[display] setter had no effect — trying the keystroke\n", stderr)
+                self.toggleInversion()
+                self.verifyInversion(wanted, retryWithChord: false)
+            } else {
                 self.isInverted = actual
-                fputs("[display] invert chord had no effect — enable the "
-                    + "Invert Colors shortcut in Settings, Keyboard, "
-                    + "Keyboard Shortcuts, Accessibility\n", stderr)
+                fputs("[display] inversion failed — enable the Invert Colors "
+                    + "shortcut in Settings, Keyboard, Keyboard Shortcuts, "
+                    + "Accessibility\n", stderr)
             }
         }
     }

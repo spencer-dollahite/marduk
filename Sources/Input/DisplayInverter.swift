@@ -136,6 +136,17 @@ final class DisplayInverter: @unchecked Sendable {
             guard let self,
                   let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   let bundleID = app.bundleIdentifier else { return }
+            // FAST PATH: listed apps invert on the raw event — eager
+            // inversion is always safe (reverting is the heartbeat's, and
+            // an extra invert of a listed app is simply correct). Preview
+            // dark-PDF likewise. Only auto-measurement rides the dwell.
+            if self.isListed(bundleID) {
+                self.lastHolderSeen = Date()
+                self.ensureInverted(true, holder: bundleID, reason: bundleID)
+            } else if bundleID == Self.previewBundle, self.previewDarkActive {
+                self.applyPreviewDarkMode(pid: app.processIdentifier)
+                self.observePreviewWindows(pid: app.processIdentifier)
+            }
             self.scheduleActivation(bundleID, pid: app.processIdentifier)
         }
 
@@ -165,7 +176,7 @@ final class DisplayInverter: @unchecked Sendable {
 
         fputs("[display] tracking started (\(invertApps.count) listed + "
             + "\(Self.builtInInvertPrefixes.count) built-in, PDF dark "
-            + "\(pdfDarkStyle.rawValue), hotkey)\n", stderr)
+            + "\(pdfDarkStyle.rawValue), hotkey-fast)\n", stderr)
     }
 
     func stop() {
@@ -225,7 +236,7 @@ final class DisplayInverter: @unchecked Sendable {
     // the user never left PT. Nothing acts until an app HOLDS the front for
     // the dwell; a newer activation cancels the pending one.
     private var pendingActivation: DispatchWorkItem?
-    private static let activationDwell: TimeInterval = 0.8
+    private static let activationDwell: TimeInterval = 0.4
 
     /// The app that owns the topmost normal-layer window — what the user's
     /// EYES consider front. NSWorkspace activation turned out to be
@@ -262,7 +273,7 @@ final class DisplayInverter: @unchecked Sendable {
     // then-current frontmost is evaluated once, so a real switch made
     // during the window is still honored, just late.
     private var settleUntil = Date.distantPast
-    private static let settleWindow: TimeInterval = 2.5
+    private static let settleWindow: TimeInterval = 0.6
 
     private func beginSettleWindow() {
         settleUntil = Date().addingTimeInterval(Self.settleWindow)
@@ -271,6 +282,17 @@ final class DisplayInverter: @unchecked Sendable {
             guard let self,
                   let app = NSWorkspace.shared.frontmostApplication,
                   let bundleID = app.bundleIdentifier else { return }
+            // FAST PATH: listed apps invert on the raw event — eager
+            // inversion is always safe (reverting is the heartbeat's, and
+            // an extra invert of a listed app is simply correct). Preview
+            // dark-PDF likewise. Only auto-measurement rides the dwell.
+            if self.isListed(bundleID) {
+                self.lastHolderSeen = Date()
+                self.ensureInverted(true, holder: bundleID, reason: bundleID)
+            } else if bundleID == Self.previewBundle, self.previewDarkActive {
+                self.applyPreviewDarkMode(pid: app.processIdentifier)
+                self.observePreviewWindows(pid: app.processIdentifier)
+            }
             self.scheduleActivation(bundleID, pid: app.processIdentifier)
         }
     }
@@ -332,20 +354,19 @@ final class DisplayInverter: @unchecked Sendable {
         }
     }
 
-    // THE HEARTBEAT — the only authority allowed to revert. Every
-    // event-shaped scheme of the field campaign (immediate, dwell, settle,
-    // window stack, two-strike, lease) eventually reverted falsely: events
-    // sample instants, and instants lie on this system. The poll reasons
-    // about the ENVELOPE: whoever earned the inversion (the holder) merely
-    // has to be SEEN in front once every revertAfter seconds to keep it.
-    // Sitting still in a listed app renews every beat — flicker is
-    // structurally impossible. A real departure stops the sightings and
-    // reverts once, ~6-8s later.
+    // THE HEARTBEAT — the only authority allowed to revert (events only
+    // invert). The poll reasons about the ENVELOPE: whoever earned the
+    // inversion (the holder) merely has to be SEEN in front once every
+    // revertAfter seconds to keep it; sitting still renews every beat.
+    // revertAfter must outlast PT's post-inversion rebuild flap (~1-2s of
+    // activation churn caused by the display change itself) — that floor
+    // is physics, not paranoia; everything else was shrunk to human speed
+    // once the hotkey mechanism proved to stick.
     private var pollTimer: Timer?
     private var invertHolder: String?
     private var lastHolderSeen = Date.distantPast
-    private static let pollInterval: TimeInterval = 2.0
-    private static let revertAfter: TimeInterval = 6.0
+    private static let pollInterval: TimeInterval = 1.0
+    private static let revertAfter: TimeInterval = 3.0
 
     private func poll() {
         guard invertEnabled,
@@ -372,7 +393,7 @@ final class DisplayInverter: @unchecked Sendable {
     // Both are deleted. Anything deferred by the lockout converges via the
     // heartbeat, which re-ensures every beat.
     private var lastToggleAt = Date.distantPast
-    private static let toggleLockout: TimeInterval = 10.0
+    private static let toggleLockout: TimeInterval = 1.5
 
     private func ensureInverted(_ wanted: Bool, holder: String?, reason: String) {
         if wanted { invertHolder = holder }
@@ -534,7 +555,7 @@ final class DisplayInverter: @unchecked Sendable {
     /// window isn't already dark (AXMenuItemMarkChar carries the checkmark).
     /// Off-main: menu walks are synchronous AX IPC.
     private func applyPreviewDarkMode(pid: pid_t) {
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.35) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.15) {
             let app = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(app, 0.3)
 

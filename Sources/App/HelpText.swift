@@ -7,9 +7,10 @@ enum HelpText {
     static let help = """
         Marduk help. You are usually in NORMAL mode, where letters are commands, \
         not typing. Press i to type. That is INSERT mode. To get back to NORMAL, \
-        hold Escape for half a second. In NORMAL mode: r selects the paragraph \
-        under the cursor, like a triple click, and reads it. Capital R reads \
-        the whole document from the mouse pointer to the end. \
+        hold Escape for half a second. In NORMAL mode: lowercase r selects the \
+        paragraph under the cursor, like a triple click, and reads it. \
+        Uppercase R reads the whole document from the mouse pointer to the \
+        end. \
         v starts a visual selection. t speaks the time. Escape stops speech. \
         Space pauses and resumes a read. When you press colon, a panel lists \
         everything you can type. Type colon commands for the full list. \
@@ -18,12 +19,12 @@ enum HelpText {
         """
 
     static let commands = """
-        Marduk commands. NORMAL mode: i, enter INSERT mode. r, select the \
-        paragraph under the cursor, like a triple click, and read it. \
-        Capital R, read the whole document to the end, starting from the \
+        Marduk commands. NORMAL mode: i, enter INSERT mode. lowercase r, select \
+        the paragraph under the cursor, like a triple click, and read it. \
+        Uppercase R, read the whole document to the end, starting from the \
         mouse pointer when it is over text, or from the text cursor \
         otherwise, in apps that share their text, like Notes and Terminal. On \
-        a PDF, capital R reads the file itself, page aware: control F \
+        a PDF, uppercase R reads the file itself, page aware: control F \
         and control B turn pages, a number then capital G jumps to that \
         page, g g goes to page one, capital G to the last page. \
         v, visual selection. Capital V, select whole lines. t, speak the \
@@ -47,14 +48,15 @@ enum HelpText {
         character jumps forward to it, capital F searches backward, and \
         period repeats the hop. z spells \
         the current word letter by letter, z again spells it phonetically, \
-        capital Z spells the whole sentence. r drops the \
+        capital Z spells the whole sentence. Lowercase r drops the \
         current read and reads the paragraph under the pointer instead. \
         A tap of Escape pauses and resumes, like Space. Only two keys leave a \
         read: holding Escape stops it and returns to NORMAL, i stops it \
         and drops to INSERT for typing. Other letters buzz. \
         VISUAL mode: h j k l extend the selection. Numbers repeat a motion, \
-        like 3 j. r reads the selection. Escape cancels. \
-        INSERT mode: hold Escape half a second to return to NORMAL. \
+        like 3 j. Lowercase r reads the selection. Escape cancels. \
+        INSERT mode: a quick tap of Escape goes to the app, so vim keeps its \
+        Escape. Hold Escape half a second to return to NORMAL. \
         Anywhere: Option Escape speaks the selection, or stops speech. \
         Control Option M turns Marduk on or off. \
         Colon commands: help. commands. tutorial. tip, one random feature \
@@ -107,7 +109,7 @@ enum HelpText {
     /// Each explains a feature that isn't obvious from the key list alone.
     static let tips = [
         "Press t twice quickly for the time and the date. A single t is just the time.",
-        "Space pauses a read mid-sentence and resumes it exactly where it stopped. Escape abandons it instead.",
+        "Space pauses a read mid-sentence and resumes it exactly where it stopped, and so does a quick tap of Escape. Holding Escape abandons the read instead.",
         "In INSERT mode, a quick tap of Escape goes to the app, so vim keeps working. Only holding Escape returns to NORMAL.",
         "In visual mode, numbers repeat motions: v 3 j selects three lines down before you press r to read them.",
         "Capital V selects whole lines at a time. Lowercase v selects character by character.",
@@ -121,7 +123,7 @@ enum HelpText {
         "Long hex strings are shortened when read: an m d 5 hash becomes m d 5 ending in its last three characters. Turn that off with colon config hashes off.",
         "The s command speaks whatever is under your mouse pointer as it moves, in your own reading voice at your rate and pitch. No setup, and it never interrupts a read. Press s again to stop.",
         "Press u in NORMAL mode to hear what updates are available. Press u twice, or u again within a minute, to install them.",
-        "The r command selects the whole paragraph under the mouse cursor, like a triple click, then reads the selection.",
+        "The lowercase r command selects the whole paragraph under the mouse cursor, like a triple click, then reads the selection.",
         "Media pauses during reads and resumes after, only if it was actually playing. Music apps get volume-ducked instead of paused.",
         "If you can see some of the screen, colon config border on frames it in the mode color: red for NORMAL, green for INSERT, blue for VISUAL. Colon config pointer on adds a dot at the mouse that stays visible while zoomed in.",
         "Colon voices opens a voice picker. Arrow through the list and each voice introduces itself in its own sound; Return keeps the one you are hearing.",
@@ -129,11 +131,11 @@ enum HelpText {
         "In Firefox reader mode, n hands the reading to Firefox's own narrator: your music pauses, Marduk goes quiet, and Firefox reads the page. Press n again or Escape to bring the music back.",
         "On any article in Firefox, 8 does the whole ritual at once: opens reader mode, pauses your music, and starts Firefox narrating. 8 again closes it all back down.",
         "Vim keys work inside a read: open paren replays the sentence you just missed, b and w step by word, j and k by line, braces by paragraph, and slash searches the text. Wait, what did it just say? Open paren.",
-        "Capital R turns a Notes page or a Terminal window into an audiobook: point the mouse where you want to start and it reads from there to the end, with every reading motion live. Press it mid-read to switch documents.",
-        "Capital R reads web pages in Safari and Firefox with every reading motion live. Open the Reader view first — shift command R in Safari, the reader icon in Firefox — and the read is just the title and article, no site clutter.",
+        "Uppercase R turns a Notes page or a Terminal window into an audiobook: point the mouse where you want to start and it reads from there to the end, with every reading motion live. Press it mid-read to switch documents.",
+        "Uppercase R reads web pages in Safari and Firefox with every reading motion live. Open the Reader view first — shift command R in Safari, the reader icon in Firefox — and the read is just the title and article, no site clutter.",
         "Was that m or n? During a read, z spells the current word letter by letter, and a second z spells it phonetically: Mike versus November. Capital Z spells the whole sentence.",
         "During a read, f plus any character hops forward to it, like vim: f q jumps to the next q. Capital F hunts backward, and period repeats the hop.",
-        "Open a PDF in Preview and press capital R: Marduk reads the file itself, starting at the page you are looking at. Control F turns the page, twelve then capital G jumps to page twelve.",
+        "Open a PDF in Preview and press uppercase R: Marduk reads the file itself, starting at the page you are looking at. Control F turns the page, twelve then capital G jumps to page twelve.",
         "With Karabiner installed, Marduk runs its own Karabiner profile while active and hands yours back the moment it stops, even on a crash. Your read button reaches Marduk while it is up, and falls back to macOS Speak Selection whenever it is down. Nothing to switch by hand.",
         "When a password prompt, permission dialog, or sheet appears — even outside your zoomed view — Marduk announces it, with the dialog's title when it has one. Colon config dialogs system limits this to the central OS prompts; off silences it.",
         "Apple's premium voices sound more natural and run entirely on your Mac, free, no account. Download one like Ava in System Settings, Accessibility, Read and Speak Content, System Voice, Manage Voices — then audition it with colon voices. Fair warning: at fast speaking rates, the classic enhanced voices often stay clearer.",
@@ -147,7 +149,7 @@ enum HelpText {
     static let welcome = """
         Welcome to Marduk. You are in NORMAL mode. Letters are commands, not \
         typing. Press i to type. Hold Escape for half a second to come back to \
-        NORMAL. Press r to hear the paragraph under the cursor. Press Escape \
+        NORMAL. Press lowercase r to hear the paragraph under the cursor. Press Escape \
         to stop speech. \
         The most important key is colon, that is shift semicolon: it opens \
         the command panel, which shows and speaks everything Marduk can do. \

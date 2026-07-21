@@ -93,13 +93,13 @@ final class Tutorial {
                  success: "Good. The rising tones always mean NORMAL mode."),
 
             Step(instruction: "Lesson three. Click on some text, then press "
-                    + "r. It selects the paragraph under the cursor, like a "
+                    + "lowercase r. It selects the paragraph under the cursor, like a "
                     + "triple click, and reads it.",
                  isComplete: { $0 == .readFinished },
                  success: "That is the read command."),
 
             Step(instruction: "Lesson four. Press v for visual mode, then j "
-                    + "to extend the selection down, then r to read the "
+                    + "to extend the selection down, then lowercase r to read the "
                     + "selection.",
                  isComplete: { event in
                      if event == .mode(.visual) || event == .mode(.visualLine) {
@@ -109,7 +109,7 @@ final class Tutorial {
                  },
                  success: "Nice. Select, then read."),
 
-            Step(instruction: "Lesson five. Press r to start a read. While it "
+            Step(instruction: "Lesson five. Press lowercase r to start a read. While it "
                     + "is speaking, tap Space to pause. Tap Space again to "
                     + "resume, and let it finish.",
                  isComplete: { event in
@@ -138,7 +138,7 @@ final class Tutorial {
                  success: "That panel is how you find everything else: "
                     + "commands, settings, and their current values."),
 
-            Step(instruction: "Lesson eight. Reading mode. Press r to start "
+            Step(instruction: "Lesson eight. Reading mode. Press lowercase r to start "
                     + "a read, then press open paren, that is shift nine, "
                     + "to hear the sentence again. b steps back a word, "
                     + "braces step paragraphs.",
@@ -158,11 +158,11 @@ final class Tutorial {
                  success: "And that is reading mode."),
 
             Step(instruction: "Lesson eleven. Point the mouse anywhere in "
-                    + "your document and press capital R. It reads from the "
+                    + "your document and press uppercase R. It reads from the "
                     + "pointer to the very end, with every reading motion "
                     + "live. Listen for a moment, then hold Escape to stop.",
                  isComplete: { $0 == .readFinished },
-                 success: "Capital R works on documents, terminals, "
+                 success: "Uppercase R works on documents, terminals, "
                     + "P D Fs, and web pages."),
         ]
     }

@@ -20,8 +20,17 @@ import ApplicationServices
 /// source both land on main). All logs `[sentinel]`; titles are spoken,
 /// never logged (log privacy: titles can carry document names).
 final class DialogSentinel {
+    /// What announces: .all = system agents AND in-app sheets/dialogs (the
+    /// founding behavior, default); .system = only the dedicated system
+    /// agents — the central password/permission/alert prompts — for users
+    /// who trigger app sheets deliberately and don't need them narrated;
+    /// .off = silent.
+    enum Level: String {
+        case all, system, off
+    }
+
     var announce: ((String) -> Void)?
-    var enabled = true
+    var level: Level = .all
 
     private var workspaceObserver: NSObjectProtocol?
     private var axObserver: AXObserver?
@@ -42,7 +51,7 @@ final class DialogSentinel {
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil, queue: .main
         ) { [weak self] note in
-            guard let self, self.enabled,
+            guard let self, self.level != .off,
                   let app = note.userInfo?[NSWorkspace.applicationUserInfoKey]
                       as? NSRunningApplication else { return }
             if let bundle = app.bundleIdentifier,
@@ -104,7 +113,7 @@ final class DialogSentinel {
     }
 
     private func handleAXNotification(element: AXUIElement, notification: String) {
-        guard enabled else { return }
+        guard level == .all else { return }  // .system keeps app sheets silent
         var subroleRef: CFTypeRef?
         _ = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString,
                                           &subroleRef)

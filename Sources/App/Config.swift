@@ -31,7 +31,8 @@ struct MardukConfig: Codable {
         var readMotions: Bool? = true    // vim motions inside a read: b/w hjkl ( ) { } 0 gg G . / ?
         var karabinerReadKey: String? = "equal_sign" // Karabiner key_code the read button sends
                                                      // (Naga side button 12 = the = key)
-        var dialogAlerts: Bool? = true   // announce sheets/dialogs/system prompts aloud
+        var dialogAlerts: Bool? = true   // LEGACY toggle — dialogLevel wins when present
+        var dialogLevel: String? = "all" // all | system | off (system = only central OS prompts)
     }
 
     struct OverlayConfig: Codable {

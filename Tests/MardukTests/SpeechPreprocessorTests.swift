@@ -56,7 +56,11 @@ final class SpeechPreprocessorTests: XCTestCase {
     // MARK: - Verbalize levels
 
     func testMostSpeaksCodeSymbols() {
-        XCTAssertEqual(SpeechPreprocessor.process("foo_bar", settings: most), "foo underscore bar")
+        // identifiers: false — the splitter (its own tests below) would
+        // otherwise turn foo_bar into "foo bar" before the symbol stage
+        let raw = SpeechPreprocessor.Settings(verbosity: .most, overrides: [:],
+                                              identifiers: false)
+        XCTAssertEqual(SpeechPreprocessor.process("foo_bar", settings: raw), "foo underscore bar")
         XCTAssertEqual(SpeechPreprocessor.process("{x}", settings: most), "open brace x close brace")
         XCTAssertEqual(SpeechPreprocessor.process("`code`", settings: most), "backtick code backtick")
     }

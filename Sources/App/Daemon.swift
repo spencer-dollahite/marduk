@@ -290,7 +290,10 @@ final class DaemonServer {
         // in-app sheets are invisible to a zoomed-in user — announce
         // them (interrupting reads on purpose; a dialog IS urgent)
         dialogSentinel.announce = { [self] text in speech.announce(text) }
-        dialogSentinel.enabled = config.keyboard?.dialogAlerts ?? true
+        // dialogLevel wins; legacy dialogAlerts=false maps to off
+        dialogSentinel.level = DialogSentinel.Level(
+            rawValue: config.keyboard?.dialogLevel ?? "")
+            ?? ((config.keyboard?.dialogAlerts ?? true) ? .all : .off)
         dialogSentinel.start()
 
         // Pointer hover speech — Marduk's own, in the reading voice
@@ -1540,14 +1543,24 @@ final class DaemonServer {
                                : "Speed keys off.")
 
         case "dialogs":
-            guard let on = toggle() else { return fail("Say on or off.") }
-            dialogSentinel.enabled = on
+            guard let level = DialogSentinel.Level(rawValue: value) else {
+                return fail("Say all, system, or off.")
+            }
+            dialogSentinel.level = level
             var kb = config.keyboard ?? .init()
-            kb.dialogAlerts = on
+            kb.dialogLevel = value
+            kb.dialogAlerts = level != .off  // keep the legacy key coherent
             config.keyboard = kb
             ConfigLoader.save(config)
-            speech.announce(on ? "Dialog alerts on. Sheets and system prompts are announced."
-                               : "Dialog alerts off.")
+            switch level {
+            case .all:
+                speech.announce("Dialog alerts on. Sheets and system prompts are announced.")
+            case .system:
+                speech.announce("Dialog alerts system only. "
+                    + "Password and permission prompts are announced; app sheets are not.")
+            case .off:
+                speech.announce("Dialog alerts off.")
+            }
 
         case "readmotions":
             guard let on = toggle() else { return fail("Say on or off.") }
@@ -1646,7 +1659,7 @@ final class DaemonServer {
             "speedkeys": (keyboardMonitor?.speedKeysEnabled ?? false) ? "on" : "off",
             "togglesound": (keyboardMonitor?.toggleEarconEnabled ?? false) ? "earcon" : "speech",
             "readmotions": (keyboardMonitor?.readMotionsEnabled ?? false) ? "on" : "off",
-            "dialogs": dialogSentinel.enabled ? "on" : "off",
+            "dialogs": dialogSentinel.level.rawValue,
         ]
     }
 

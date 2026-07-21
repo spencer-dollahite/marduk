@@ -9,6 +9,7 @@ enum ColonCommand: Equatable {
     case config(key: String, value: String)
     case voices
     case pronunciation
+    case typing
     case quit
     case restart
     case update
@@ -23,7 +24,7 @@ enum ColonCommand: Equatable {
     // No name may be a prefix of another — auto-accept relies on it
     // (the tap's Return handler also assumes "voices" owns that prefix)
     static let commandNames = ["help", "commands", "tutorial", "tip", "config",
-                               "voices", "pronunciation", "quit", "restart",
+                               "voices", "pronunciation", "typing", "quit", "restart",
                                "update", "uninstall", "log", "feedback", "bug",
                                "security"]
 
@@ -61,6 +62,8 @@ enum ColonCommand: Equatable {
             return .voices
         case "pronunciation":
             return .pronunciation
+        case "typing":
+            return .typing
         case "quit":
             return .quit
         case "restart":
@@ -233,6 +236,7 @@ enum CommandCompleter {
         "config": "change a setting",
         "voices": "choose the reading voice",
         "pronunciation": "open the system pronunciation editor",
+        "typing": "open the system typing feedback settings",
         "quit": "stop Marduk",
         "restart": "restart the daemon",
         "update": "install updates now",

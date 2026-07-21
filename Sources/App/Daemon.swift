@@ -806,6 +806,17 @@ final class DaemonServer {
             // Unreachable in practice — every "voices"-prefixed buffer is
             // intercepted above before parse. Compiler exhaustiveness only.
             break
+        case .typing:
+            // One-stop shop: macOS already speaks keys/words as you type,
+            // system-wide — route the seeker to the real switch instead of
+            // reinventing it, and name Marduk's own in-house echo too
+            speech.announce("Opening Read and Speak Content in System "
+                + "Settings. Turn on typing feedback there to hear characters "
+                + "and words spoken as you type, in every app. Separately, "
+                + "colon config echo on makes Marduk speak keys typed in its "
+                + "own command panel.")
+            openURL("x-apple.systempreferences:com.apple.preference.universalaccess"
+                + "?SpeakSelectedText")
         case .pronunciation:
             // Marduk reads the system dictionary on every read, so the pane
             // IS Marduk's pronunciation editor — deep-link straight to it.

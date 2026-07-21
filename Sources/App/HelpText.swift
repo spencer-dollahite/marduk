@@ -67,6 +67,8 @@ enum HelpText {
         arrows preview each voice in its own sound, Return picks it. \
         pronunciation, open the system pronunciation editor — Marduk \
         speaks every entry you add there the way you taught it. \
+        typing, open the system typing feedback settings — macOS can \
+        speak every key and word as you type, in every app. \
         quit. restart. update, install \
         updates now. uninstall, remove the launch agent. log, open the log \
         file. log copy, copy recent log lines to the clipboard. \
@@ -148,6 +150,7 @@ enum HelpText {
         "The view follows the voice: jump a PDF read to page three and Preview turns to page three, read a Reader article and it scrolls along like a teleprompter. Colon config follow off keeps the view still.",
         "Code names read as natural words: read Document From Caret, not one long mumble, and user id count without hearing underscore twice. Colon config identifiers off brings back the raw forms.",
         "If Marduk ever misbehaves, Control Option M turns it off instantly — keys pass through untouched and your Karabiner setup comes back. Colon quit stops the daemon entirely, and marduk stop in Terminal does the same from outside. Force quitting doesn't stick: the launch agent restarts it on purpose.",
+        "Want every key you type spoken, in every app? macOS already does that: colon typing opens the typing feedback settings. Marduk is happy to be your front desk for the accessibility features Apple already built.",
         "Marduk mispronouncing a name? Colon pronunciation opens the system pronunciation editor. Add the word there, typed or spoken, and Marduk says it your way from the very next read — including entries you scope to a single app.",
     ]
 

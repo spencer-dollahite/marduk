@@ -262,6 +262,7 @@ final class ColonCommandTests: XCTestCase {
         "config — change a setting",
         "voices — choose the reading voice",
         "pronunciation — open the system pronunciation editor",
+        "typing — open the system typing feedback settings",
         "quit — stop Marduk",
         "restart — restart the daemon",
         "update — install updates now",
@@ -331,5 +332,13 @@ final class ColonCommandTests: XCTestCase {
         XCTAssertEqual(ColonCommand.parse("pronunciation"), .pronunciation)
         XCTAssertEqual(ColonCommand.parse("pron"), .pronunciation)
         XCTAssertEqual(ColonCommand.autoResolve("p"), .execute("pronunciation"))
+    }
+
+    func testTypingCommand() {
+        XCTAssertEqual(ColonCommand.parse("typing"), .typing)
+        XCTAssertEqual(ColonCommand.parse("ty"), .typing)
+        XCTAssertEqual(ColonCommand.autoResolve("ty"), .execute("typing"))
+        // "t" stays ambiguous: tutorial | tip | typing
+        XCTAssertEqual(ColonCommand.autoResolve("t"), .none)
     }
 }

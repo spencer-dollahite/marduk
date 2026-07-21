@@ -325,4 +325,10 @@ final class ColonCommandTests: XCTestCase {
         XCTAssertEqual(completions("tutorial extra"), [])
         XCTAssertEqual(completions("config bogus "), [])
     }
+
+    func testPronunciationCommand() {
+        XCTAssertEqual(ColonCommand.parse("pronunciation"), .pronunciation)
+        XCTAssertEqual(ColonCommand.parse("pron"), .pronunciation)
+        XCTAssertEqual(ColonCommand.autoResolve("p"), .execute("pronunciation"))
+    }
 }

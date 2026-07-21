@@ -12,6 +12,18 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     var announcementVoice: AVSpeechSynthesisVoice?
     var preprocessor: SpeechPreprocessor.Settings = .default
 
+    /// The frontmost app's bundle ID at read start (KeyboardMonitor's cached
+    /// workspace observer) — the system pronunciation dictionary scopes
+    /// entries per app. Nil (inline CLI) keeps all-apps entries only.
+    var frontmostAppProvider: (() -> String?)?
+
+    // Voice-captured (IPA) pronunciation entries applying to the current
+    // read. Applied as utterance ATTRIBUTES over the processed text — never
+    // text mutation — so motion/search offsets are untouched and respeak
+    // substrings just re-match. Text (respelling) entries are substituted
+    // into the raw text in speak() instead.
+    private var readIPAEntries: [SystemPronunciations.Entry] = []
+
     /// Called with the character range being spoken (for word-level tracking)
     var onWordBoundary: ((NSRange) -> Void)?
 
@@ -119,7 +131,18 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     // MARK: - Public API
 
     func speak(_ text: String, completion: (() -> Void)? = nil) {
-        let processed = SpeechPreprocessor.process(text, settings: preprocessor)
+        // The user's system pronunciation dictionary, fresh each read so
+        // Settings edits apply immediately. Typed entries rewrite the text
+        // (before preprocessing — one consistent text for motions, search,
+        // and spell); voice-captured IPA entries are held for utterance
+        // attributes in makeReadUtterance.
+        let pronunciations = SystemPronunciations.relevant(
+            SystemPronunciations.fetch(),
+            voiceLanguage: voice?.language,
+            frontmostBundleID: frontmostAppProvider?())
+        readIPAEntries = pronunciations.filter { $0.ipa != nil }
+        let substituted = SystemPronunciations.applyText(pronunciations, to: text)
+        let processed = SpeechPreprocessor.process(substituted, settings: preprocessor)
         // Guard sits before stop(): invisible-junk input is a true no-op and
         // doesn't kill an in-progress read. Completion must still fire — the
         // inline CLI blocks on it.
@@ -140,7 +163,14 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     }
 
     private func makeReadUtterance(_ text: String) -> AVSpeechUtterance {
-        let utterance = AVSpeechUtterance(string: text)
+        // IPA pronunciation entries ride as attributes so the string — and
+        // every boundary offset — stays byte-identical to readText
+        let utterance: AVSpeechUtterance
+        if let attributed = SystemPronunciations.attributed(text, entries: readIPAEntries) {
+            utterance = AVSpeechUtterance(attributedString: attributed)
+        } else {
+            utterance = AVSpeechUtterance(string: text)
+        }
         utterance.rate = rate
         utterance.voice = voice
         utterance.pitchMultiplier = pitch

@@ -8,6 +8,7 @@ enum ColonCommand: Equatable {
     case tip
     case config(key: String, value: String)
     case voices
+    case pronunciation
     case quit
     case restart
     case update
@@ -22,8 +23,9 @@ enum ColonCommand: Equatable {
     // No name may be a prefix of another — auto-accept relies on it
     // (the tap's Return handler also assumes "voices" owns that prefix)
     static let commandNames = ["help", "commands", "tutorial", "tip", "config",
-                               "voices", "quit", "restart", "update",
-                               "uninstall", "log", "feedback", "bug", "security"]
+                               "voices", "pronunciation", "quit", "restart",
+                               "update", "uninstall", "log", "feedback", "bug",
+                               "security"]
 
     static func parse(_ raw: String) -> ColonCommand {
         let tokens = raw.lowercased().split(separator: " ").map(String.init)
@@ -57,6 +59,8 @@ enum ColonCommand: Equatable {
             // palette selection before ever parsing, so bare .voices is
             // only reached as a fallback.
             return .voices
+        case "pronunciation":
+            return .pronunciation
         case "quit":
             return .quit
         case "restart":
@@ -223,6 +227,7 @@ enum CommandCompleter {
         "tip": "a random feature tip",
         "config": "change a setting",
         "voices": "choose the reading voice",
+        "pronunciation": "open the system pronunciation editor",
         "quit": "stop Marduk",
         "restart": "restart the daemon",
         "update": "install updates now",

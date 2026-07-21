@@ -366,6 +366,7 @@ final class DaemonServer {
                 }
             }
         }
+        speech.frontmostAppProvider = { [self] in keyboardMonitor?.frontmostApp }
         keyboardMonitor?.onCommandSubmit = { [self] raw in handleColonCommand(raw) }
         keyboardMonitor?.onCommandChange = { [self] buffer, canAutoAccept in
             handleCommandChange(buffer, canAutoAccept: canAutoAccept)
@@ -736,6 +737,14 @@ final class DaemonServer {
             // Unreachable in practice — every "voices"-prefixed buffer is
             // intercepted above before parse. Compiler exhaustiveness only.
             break
+        case .pronunciation:
+            // Marduk reads the system dictionary on every read, so the pane
+            // IS Marduk's pronunciation editor — deep-link straight to it.
+            speech.announce("Opening Read and Speak Content in System Settings. "
+                + "Add pronunciations there — Marduk uses every entry, "
+                + "including per-app ones, on its next read.")
+            openURL("x-apple.systempreferences:com.apple.preference.universalaccess"
+                + "?SpeakSelectedText")
         case .quit:
             // Clean exit 0 — under launchd (SuccessfulExit=false) this stays
             // stopped until next login or `marduk start`.
@@ -807,14 +816,15 @@ final class DaemonServer {
             _ = NSPasteboard.general.clearContents()
             _ = NSPasteboard.general.setString(tail, forType: .string)
             speech.announce("Copied the last \(min(lines.count, 100)) log lines. "
-                + "They contain text Marduk has spoken — review before pasting.")
+                + "The log never contains text Marduk has read, only key codes "
+                + "and metadata — safe to paste into an issue.")
         case .feedback:
-            speech.announce("Opening GitHub issues. If you paste log lines, "
-                + "remember they contain text Marduk has spoken.")
+            speech.announce("Opening GitHub issues. Log lines are safe to "
+                + "paste — the log never contains text Marduk has read.")
             openURL("https://github.com/spencer-dollahite/marduk/issues/new/choose")
         case .bug:
-            speech.announce("Opening a bug report. If you paste log lines, "
-                + "remember they contain text Marduk has spoken.")
+            speech.announce("Opening a bug report. Log lines are safe to "
+                + "paste — the log never contains text Marduk has read.")
             // Issue forms accept per-field prefill by field id — spare the
             // reporter the eyes-free hunt for version and install channel
             let channel: String

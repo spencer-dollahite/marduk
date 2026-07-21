@@ -58,6 +58,8 @@ enum HelpText {
         Colon commands: help. commands. tutorial. tip, one random feature \
         tip. config, change a setting. voices, choose the reading voice — \
         arrows preview each voice in its own sound, Return picks it. \
+        pronunciation, open the system pronunciation editor — Marduk \
+        speaks every entry you add there the way you taught it. \
         quit. restart. update, install \
         updates now. uninstall, remove the launch agent. log, open the log \
         file. log copy, copy recent log lines to the clipboard. \
@@ -120,6 +122,7 @@ enum HelpText {
         "With Karabiner installed, Marduk runs its own Karabiner profile while active and hands yours back the moment it stops, even on a crash. Your read button reaches Marduk while it is up, and falls back to macOS Speak Selection whenever it is down. Nothing to switch by hand.",
         "When a password prompt, permission dialog, or sheet appears — even outside your zoomed view — Marduk announces it, with the dialog's title when it has one. Colon config dialogs off silences this.",
         "Apple's premium voices sound more natural and run entirely on your Mac, free, no account. Download one like Ava in System Settings, Accessibility, Read and Speak Content, System Voice, Manage Voices — then audition it with colon voices. Fair warning: at fast speaking rates, the classic enhanced voices often stay clearer.",
+        "Marduk mispronouncing a name? Colon pronunciation opens the system pronunciation editor. Add the word there, typed or spoken, and Marduk says it your way from the very next read — including entries you scope to a single app.",
     ]
 
     static let welcome = """

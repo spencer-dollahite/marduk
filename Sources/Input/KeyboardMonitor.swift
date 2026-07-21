@@ -136,6 +136,9 @@ final class KeyboardMonitor {
     // command on the frontmost app without querying anything in-callback
     private var frontmostBundleID =
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+    /// The cached frontmost bundle ID for consumers outside the tap (the
+    /// speech engine scopes system pronunciation entries per app).
+    var frontmostApp: String? { frontmostBundleID.isEmpty ? nil : frontmostBundleID }
     private var workspaceObserver: NSObjectProtocol?
     private var isFirefoxFrontmost: Bool { frontmostBundleID == "org.mozilla.firefox" }
     private var commandBuffer = ""

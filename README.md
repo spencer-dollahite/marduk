@@ -138,19 +138,11 @@ These are deliberate trade-offs of the typing-rescue system, not bugs:
 - **Reading a selection can overwrite your clipboard** in apps whose accessibility tree won't hand over the selected text (Firefox text boxes, iMessage) or when the selection is huge (Cmd+A on a long document): Marduk falls back to a synthetic Cmd+C and reads the pasteboard, so the clipboard ends up holding the text it just read.
 - **Selection reads sound doubled or use the wrong voice?** macOS's own *Speak Selection* feature defaults to the same Option+Escape shortcut, and its hotkey fires alongside Marduk's. Two fixes:
   - *Simple:* turn it off (or rebind it) in System Settings → Accessibility → Read and Speak Content — Marduk owns the key.
-  - *Keep macOS as a fallback for when Marduk is down:* Marduk publishes a Karabiner variable `marduk_up` (1 while running and enabled, 0 on stop/disable), and its read command also answers **Ctrl+Option+Escape**. Route your read button conditionally:
-
-    ```json
-    { "description": "Read button: Marduk when up, macOS Speak Selection when down",
-      "manipulators": [
-        { "type": "basic",
-          "from": { "key_code": "escape", "modifiers": { "mandatory": ["option"] } },
-          "conditions": [ { "type": "variable_if", "name": "marduk_up", "value": 1 } ],
-          "to": [ { "key_code": "escape", "modifiers": ["left_control", "left_option"] } ] }
-      ] }
-    ```
-
-    (Adapt `from` to whatever your read button sends. With `marduk_up` at 0 the rule doesn't fire, the plain Option+Escape goes through, and macOS speaks.) A hard crash can't clear the variable, so the fallback has a gap of a few seconds until launchd relaunches Marduk.
+  - *Keep macOS as an automatic fallback for when Marduk is down:* Marduk publishes a Karabiner variable `marduk_up` (1 while running and enabled, 0 on stop/disable), and its read command also answers **Ctrl+Option+Escape**. A ready-made rule routes a read button to Marduk while up and to macOS otherwise — [one-click import into Karabiner](karabiner://karabiner/assets/complex_modifications/import?url=https://raw.githubusercontent.com/spencer-dollahite/marduk/main/assets/karabiner/marduk-read-button.json) (source: [`assets/karabiner/marduk-read-button.json`](assets/karabiner/marduk-read-button.json)), then enable it under Karabiner → Complex Modifications. Notes:
+    - The rule assumes the button sends `equal_sign` (a Razer Naga's side button 12 by default). If yours differs, check the real key in Karabiner-EventViewer and edit `from` in both manipulators.
+    - Remove any existing rule that maps the same button to Option+Escape — the first matching rule wins and the old one would shadow this.
+    - If the rule doesn't take effect, Karabiner's auto-reload sometimes fails silently: `killall karabiner_console_user_server` forces it.
+    - A hard crash can't clear `marduk_up`, so the fallback has a gap of a few seconds until launchd relaunches Marduk.
 - Hand-edits to config.json need a daemon restart — use `:config` from inside Marduk (or `marduk config rate`) for live changes.
 - **Upgrading from a pre-bundle install:** the first update converts Marduk into `Marduk.app` and announces it aloud. If keyboard commands stop afterwards, re-grant Accessibility to `Marduk.app`; the Automation prompt also re-asks once (now explaining why Marduk wants media control).
 

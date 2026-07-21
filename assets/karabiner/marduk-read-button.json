@@ -1,0 +1,39 @@
+{
+  "title": "Marduk read button",
+  "rules": [
+    {
+      "description": "Read button: Marduk (Ctrl+Option+Escape) while marduk_up is 1, macOS Speak Selection (Option+Escape) otherwise. Default 'from' is equal_sign — Razer Naga side button 12. First matching manipulator wins, which implements the fallback.",
+      "manipulators": [
+        {
+          "type": "basic",
+          "from": {
+            "key_code": "equal_sign",
+            "modifiers": { "optional": ["any"] }
+          },
+          "conditions": [
+            { "type": "variable_if", "name": "marduk_up", "value": 1 }
+          ],
+          "to": [
+            {
+              "key_code": "escape",
+              "modifiers": ["left_control", "left_option"]
+            }
+          ]
+        },
+        {
+          "type": "basic",
+          "from": {
+            "key_code": "equal_sign",
+            "modifiers": { "optional": ["any"] }
+          },
+          "to": [
+            {
+              "key_code": "escape",
+              "modifiers": ["left_option"]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -93,6 +93,28 @@ enum ReadNavigator {
         unitStarts(in: text, unit: .paragraph).last ?? 0
     }
 
+    /// The text of the word/sentence containing `position` (spell-out).
+    /// A position in the gap between units belongs to the preceding one,
+    /// same as the motions. Only word/sentence — the tokenized units.
+    static func unitText(in text: String, at position: Int, unit: ReadUnit) -> String? {
+        guard unit == .word || unit == .sentence else { return nil }
+        let ns = text as NSString
+        let position = max(0, min(position, ns.length))
+        let tokenizer = NLTokenizer(unit: unit == .word ? .word : .sentence)
+        tokenizer.string = text
+        var containing: NSRange?
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            let r = NSRange(range, in: text)
+            if r.location <= position {
+                containing = r
+                return true
+            }
+            return false // past the position — stop walking
+        }
+        guard let r = containing else { return nil }
+        return ns.substring(with: r)
+    }
+
     /// Vim 0: the start of the line containing `position` — no grace, no
     /// travel; pressing it at the line's start is the caller's no-op edge.
     static func lineStart(in text: String, at position: Int) -> Int {

@@ -173,6 +173,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// target, which doubles as feedback.
     @discardableResult
     func jump(_ unit: ReadUnit, direction: ReadDirection, count: Int = 1) -> Bool {
+        stopEcho()
         guard readActive, let text = readText else { return false }
         var position = direction == .back ? backAnchor : readPosition
         for _ in 0..<max(1, count) {
@@ -188,6 +189,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
 
     /// Absolute-offset jump (the search handler computes the target).
     func jumpTo(offset: Int) {
+        stopEcho()
         guard readActive, readText != nil else { return }
         respeak(from: offset)
     }
@@ -195,6 +197,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// gg (.back → the very beginning) / G (.forward → the last paragraph).
     @discardableResult
     func jumpToEdge(_ direction: ReadDirection) -> Bool {
+        stopEcho()
         guard readActive, let text = readText else { return false }
         let target = direction == .back ? 0 : ReadNavigator.endTarget(in: text)
         guard target != readPosition else { return false }
@@ -206,6 +209,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// nothing is navigable) — the caller buzzes.
     @discardableResult
     func jumpToLineStart() -> Bool {
+        stopEcho()
         guard readActive, let text = readText else { return false }
         let target = ReadNavigator.lineStart(in: text, at: backAnchor)
         guard target != readPosition else { return false }
@@ -245,15 +249,14 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         readActive = true
     }
 
-    /// Speak a short cue (search-entry keystroke echo) over a paused read
-    /// WITHOUT touching it — announce() would stop() the read. No ducking,
-    /// no completion, no read state; a new echo cuts off the previous one.
+    /// Speak a short cue (search-entry keystroke echo, spell-out) over a
+    /// paused read WITHOUT touching it — announce() would stop() the read.
+    /// No ducking, no completion, no read state; a new echo cuts off the
+    /// previous one.
     func echo(_ text: String) {
         let sanitized = SpeechPreprocessor.sanitize(text)
         guard !sanitized.isEmpty else { return }
-        if echoSynthesizer.isSpeaking {
-            echoSynthesizer.stopSpeaking(at: .immediate)
-        }
+        stopEcho()
         let utterance = AVSpeechUtterance(string: sanitized)
         utterance.rate = 0.55
         utterance.voice = announcementVoice ?? voice
@@ -261,6 +264,76 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         utterance.volume = 1.0
         echoSynthesizer.speak(utterance)
     }
+
+    /// A running spell-out (a sentence can take half a minute) must never
+    /// talk over navigation or a resumed read — every jump/pause entry
+    /// point cuts it.
+    private func stopEcho() {
+        if echoSynthesizer.isSpeaking {
+            echoSynthesizer.stopSpeaking(at: .immediate)
+        }
+    }
+
+    // MARK: - Spell-out (z word / Z sentence, reading capture)
+
+    private var lastSpellText = ""
+    private var lastSpellAnchor = -1
+    private var lastSpellTime = Date.distantPast
+
+    /// Spell the word/sentence containing the current position over the
+    /// (auto-paused) read, via the echo synthesizer. A second word-spell
+    /// on the same target within a few seconds goes NATO-phonetic —
+    /// "Charlie, Alpha, Tango" — the b-versus-d disambiguator. Returns
+    /// false when there's nothing to spell (caller buzzes).
+    @discardableResult
+    func spell(_ unit: ReadUnit) -> Bool {
+        guard readActive, let text = readText else { return false }
+        if synthesizer.isSpeaking, !synthesizer.isPaused {
+            synthesizer.pauseSpeaking(at: .word)
+        }
+        let anchor = backAnchor
+        guard let span = ReadNavigator.unitText(in: text, at: anchor, unit: unit),
+              !span.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        let nato = unit == .word && span == lastSpellText
+            && anchor == lastSpellAnchor
+            && Date().timeIntervalSince(lastSpellTime) < 6
+        lastSpellText = span
+        lastSpellAnchor = anchor
+        lastSpellTime = Date()
+        fputs("[speech] spell \(unit == .word ? "word" : "sentence") "
+            + "(\(span.count) chars\(nato ? ", phonetic" : ""))\n", stderr)
+        echo(Self.spellOut(span, nato: nato))
+        return true
+    }
+
+    /// "Cat" → "capital c, a, t" (phonetic: "capital Charlie, Alpha,
+    /// Tango"); spaces say "space"; digits and punctuation speak as
+    /// themselves. Pure — unit-tested.
+    static func spellOut(_ text: String, nato: Bool) -> String {
+        var parts: [String] = []
+        for ch in text {
+            if ch == " " || ch == "\n" || ch == "\t" {
+                parts.append("space")
+                continue
+            }
+            let lower = ch.lowercased()
+            let base = nato ? (Self.natoAlphabet[lower] ?? lower) : lower
+            parts.append(ch.isUppercase ? "capital \(base)" : base)
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    private static let natoAlphabet: [String: String] = [
+        "a": "Alpha", "b": "Bravo", "c": "Charlie", "d": "Delta",
+        "e": "Echo", "f": "Foxtrot", "g": "Golf", "h": "Hotel",
+        "i": "India", "j": "Juliett", "k": "Kilo", "l": "Lima",
+        "m": "Mike", "n": "November", "o": "Oscar", "p": "Papa",
+        "q": "Quebec", "r": "Romeo", "s": "Sierra", "t": "Tango",
+        "u": "Uniform", "v": "Victor", "w": "Whiskey", "x": "X-ray",
+        "y": "Yankee", "z": "Zulu",
+    ]
 
     private func startSpeaking(_ utterance: AVSpeechUtterance, completion: (() -> Void)?) {
         if let completion {
@@ -277,6 +350,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     }
 
     func stop() {
+        stopEcho() // a running spell-out dies with the read
         // Un-wedge first: a synthesizer stopped WHILE PAUSED can stay stuck
         // in the paused state, silently queueing every future utterance —
         // the whole engine goes mute until the daemon restarts.
@@ -300,6 +374,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// paused one. Media stays ducked/paused across the pause — only the
     /// read's natural end (or a stop) unducks.
     func togglePause() {
+        stopEcho() // resuming must not compete with a running spell-out
         if synthesizer.isPaused {
             fputs("[speech] resumed\n", stderr)
             synthesizer.continueSpeaking()

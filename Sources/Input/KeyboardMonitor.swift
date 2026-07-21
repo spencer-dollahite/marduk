@@ -100,6 +100,7 @@ final class KeyboardMonitor {
     private var pendingReadG = false         // first g of gg seen (no timeout — vim style)
     var onReadJumpEdge: ((ReadDirection) -> Void)?   // gg (.back) / G (.forward)
     var onReadLineStart: (() -> Void)?               // bare 0 — restart the line
+    var onReadSpell: ((ReadUnit) -> Void)?           // z word / Z sentence
     // `.` repeats the last motion (vim). Repeating a search re-hunts from
     // the new position — vim's n by another name, without the Firefox-n
     // collision. Persists across reads, like vim's dot across edits.
@@ -692,6 +693,18 @@ final class KeyboardMonitor {
                     fputs("[keyboard] READING r → new read\n", stderr)
                     readAtPointer()
                 }
+                return nil
+            }
+
+            // z / Z — spell the current word / sentence over the paused
+            // read (vim's own spell commands live under z). A second z on
+            // the same word within a few seconds spells it phonetically —
+            // Charlie, Alpha, Tango.
+            if keycode == 6 {
+                if isAutorepeat { return nil }
+                readMotionCount = 0
+                let unit: ReadUnit = hasShift ? .sentence : .word
+                DispatchQueue.main.async { [self] in onReadSpell?(unit) }
                 return nil
             }
 

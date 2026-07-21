@@ -206,4 +206,34 @@ final class ReadNavigatorTests: XCTestCase {
         XCTAssertNil(ReadNavigator.searchTarget(in: threeSentences, from: 10,
                                                 query: "", direction: .forward))
     }
+
+    // MARK: - Spell (unitText + spellOut)
+
+    func testUnitTextWord() {
+        // Mid-word, at its start, and in the following gap all yield it
+        XCTAssertEqual(ReadNavigator.unitText(in: threeSentences, at: 6,
+                                              unit: .word), "quick")
+        XCTAssertEqual(ReadNavigator.unitText(in: threeSentences, at: 4,
+                                              unit: .word), "quick")
+        XCTAssertEqual(ReadNavigator.unitText(in: threeSentences, at: 9,
+                                              unit: .word), "quick")
+    }
+
+    func testUnitTextSentence() {
+        XCTAssertEqual(ReadNavigator.unitText(in: threeSentences, at: 25,
+                                              unit: .sentence)?
+                           .hasPrefix("A second sentence"), true)
+    }
+
+    func testUnitTextEmptyAndUnsupported() {
+        XCTAssertNil(ReadNavigator.unitText(in: "", at: 0, unit: .word))
+        XCTAssertNil(ReadNavigator.unitText(in: "abc", at: 1, unit: .line))
+    }
+
+    func testSpellOutPlainAndPhonetic() {
+        XCTAssertEqual(SpeechEngine.spellOut("Cat 9", nato: false),
+                       "capital c, a, t, space, 9")
+        XCTAssertEqual(SpeechEngine.spellOut("Cab", nato: true),
+                       "capital Charlie, Alpha, Bravo")
+    }
 }

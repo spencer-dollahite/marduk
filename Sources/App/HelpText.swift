@@ -37,7 +37,9 @@ enum HelpText {
         restarts from the top, capital G jumps to the last paragraph. Slash searches forward, question mark searches \
         back: the read pauses while you type, Return jumps to the match, \
         Escape resumes where you were. Period repeats the last motion or \
-        search, so period after a search hops match to match. r drops the \
+        search, so period after a search hops match to match. z spells \
+        the current word letter by letter, z again spells it phonetically, \
+        capital Z spells the whole sentence. r drops the \
         current read and reads the paragraph under the pointer instead. \
         A tap of Escape pauses and resumes, like Space. Only two keys leave a \
         read: holding Escape stops it and returns to NORMAL, i stops it \
@@ -103,6 +105,7 @@ enum HelpText {
         "On any article in Firefox, 8 does the whole ritual at once: opens reader mode, pauses your music, and starts Firefox narrating. 8 again closes it all back down.",
         "Vim keys work inside a read: open paren replays the sentence you just missed, b and w step by word, j and k by line, braces by paragraph, and slash searches the text. Wait, what did it just say? Open paren.",
         "Capital R turns a Notes page or a Terminal window into an audiobook: it reads from your text cursor to the end, with every reading motion live. Press it mid-read to switch documents.",
+        "Was that m or n? During a read, z spells the current word letter by letter, and a second z spells it phonetically: Mike versus November. Capital Z spells the whole sentence.",
     ]
 
     static let welcome = """

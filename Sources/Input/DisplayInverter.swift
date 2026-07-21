@@ -676,10 +676,19 @@ final class DisplayInverter: @unchecked Sendable {
 
     // MARK: - Preview "View in Dark Mode"
 
-    /// Press View → View in Dark Mode via the AX menu bar when the focused
-    /// window isn't already dark (AXMenuItemMarkChar carries the checkmark).
-    /// Off-main: menu walks are synchronous AX IPC.
+    // Opening a PDF fires THREE triggers within ~150ms (raw activation
+    // fast path, dwell path, window-created observer) — two presses both
+    // reading "unchecked" before the first lands toggled dark-then-light
+    // (field flicker). Single-flight: one press per second, all call
+    // sites are main-thread.
+    private var lastPreviewDarkAttempt = Date.distantPast
+
+    /// Press Preview's dark-appearance menu item via the AX menu bar when
+    /// the focused window isn't already dark (AXMenuItemMarkChar carries
+    /// the checkmark). Off-main: menu walks are synchronous AX IPC.
     private func applyPreviewDarkMode(pid: pid_t) {
+        guard Date().timeIntervalSince(lastPreviewDarkAttempt) > 1.0 else { return }
+        lastPreviewDarkAttempt = Date()
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.15) {
             let app = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(app, 0.3)

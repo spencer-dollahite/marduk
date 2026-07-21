@@ -305,6 +305,18 @@ final class DaemonServer {
             ?? ((config.keyboard?.dialogAlerts ?? true) ? .all : .off)
         dialogSentinel.start()
 
+        // One-time onboarding: automatic dark PDFs are an invisible
+        // automation — the first success explains itself, once ever
+        displayInverter?.onDarkApplied = { [self] in
+            let marker = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/marduk/.pdfdark-noticed")
+            guard !FileManager.default.fileExists(atPath: marker.path) else { return }
+            try? Data().write(to: marker)
+            speech.announce("Preview switched this P D F to dark view, "
+                + "matching your dark system theme. This happens "
+                + "automatically. Say colon config p d f dark off to stop.")
+        }
+
         // Visual follow: the app's view tracks the read. Page jumps drive
         // the viewer's go-to-page gesture (Preview); web reads scroll the
         // contributing element into view as the voice crosses paragraphs.

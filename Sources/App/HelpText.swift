@@ -8,11 +8,13 @@ enum HelpText {
         Marduk help. You are usually in NORMAL mode, where letters are commands, \
         not typing. Press i to type. That is INSERT mode. To get back to NORMAL, \
         hold Escape for half a second. In NORMAL mode: r selects the paragraph \
-        under the cursor, like a triple click, and reads it. \
+        under the cursor, like a triple click, and reads it. Capital R reads \
+        the whole document from the mouse pointer to the end. \
         v starts a visual selection. t speaks the time. Escape stops speech. \
         Space pauses and resumes a read. When you press colon, a panel lists \
         everything you can type. Type colon commands for the full list. \
-        Type colon tutorial for a guided tour.
+        Type colon tutorial for a guided tour, and colon tip any time to \
+        learn one feature you might not know.
         """
 
     static let commands = """
@@ -135,6 +137,7 @@ enum HelpText {
         "With Karabiner installed, Marduk runs its own Karabiner profile while active and hands yours back the moment it stops, even on a crash. Your read button reaches Marduk while it is up, and falls back to macOS Speak Selection whenever it is down. Nothing to switch by hand.",
         "When a password prompt, permission dialog, or sheet appears — even outside your zoomed view — Marduk announces it, with the dialog's title when it has one. Colon config dialogs system limits this to the central OS prompts; off silences it.",
         "Apple's premium voices sound more natural and run entirely on your Mac, free, no account. Download one like Ava in System Settings, Accessibility, Read and Speak Content, System Voice, Manage Voices — then audition it with colon voices. Fair warning: at fast speaking rates, the classic enhanced voices often stay clearer.",
+        "Cisco Packet Tracer and Pages stay blinding white even in dark mode. Say colon config invert on and Marduk flips the whole display dark while they are in front, flipping back the moment you leave. It needs the Invert Colors shortcut enabled in Keyboard Settings, under Accessibility.",
         "Working dark? Marduk notices: with your Mac in dark mode, every PDF you open in Preview switches to dark view by itself. Colon config p d f dark off if you want your PDFs paper-white. Colon config auto invert on goes further: it measures each app's real brightness and inverts the display only when the content is actually blinding — a black slide deck in Keynote stays exactly as you styled it.",
         "The view follows the voice: jump a PDF read to page three and Preview turns to page three, read a Reader article and it scrolls along like a teleprompter. Colon config follow off keeps the view still.",
         "Code names read as natural words: read Document From Caret, not one long mumble, and user id count without hearing underscore twice. Colon config identifiers off brings back the raw forms.",
@@ -149,7 +152,8 @@ enum HelpText {
         The most important key is colon, that is shift semicolon: it opens \
         the command panel, which shows and speaks everything Marduk can do. \
         From there, type h for help, or t u for the guided tour. To try a \
-        different voice any time, type colon voices. \
+        different voice any time, type colon voices, and type colon tip \
+        any time to learn one feature. \
         This message plays only once.
         """
 }

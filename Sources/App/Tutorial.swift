@@ -67,9 +67,9 @@ final class Tutorial {
     // MARK: - Script
 
     private static let intro = """
-        Welcome to the Marduk tutorial. Nine short lessons. The keys you press \
-        act for real, so open a text editor with a few lines of text first. \
-        To leave at any time, type colon tutorial again.
+        Welcome to the Marduk tutorial. Eleven short lessons. The keys you \
+        press act for real, so open a text editor with a few lines of text \
+        first. To leave at any time, type colon tutorial again.
         """
 
     private static let wrapUp = """
@@ -130,7 +130,15 @@ final class Tutorial {
                  success: "That is the time. Press t twice quickly for time "
                     + "and date."),
 
-            Step(instruction: "Lesson seven. Reading mode. Press r to start "
+            Step(instruction: "Lesson seven. Press colon, that is shift "
+                    + "semicolon. The command panel opens, listing everything "
+                    + "Marduk can do, and speaks your options when you pause. "
+                    + "Have a listen, then press Escape to close it.",
+                 isComplete: { $0 == .mode(.command) },
+                 success: "That panel is how you find everything else: "
+                    + "commands, settings, and their current values."),
+
+            Step(instruction: "Lesson eight. Reading mode. Press r to start "
                     + "a read, then press open paren, that is shift nine, "
                     + "to hear the sentence again. b steps back a word, "
                     + "braces step paragraphs.",
@@ -138,16 +146,24 @@ final class Tutorial {
                  success: "That is a reading motion. They all work while "
                     + "anything is being read."),
 
-            Step(instruction: "Lesson eight. While the read is going, press "
+            Step(instruction: "Lesson nine. While the read is going, press "
                     + "z to spell the word being spoken. Press z again to "
                     + "hear it phonetically.",
                  isComplete: { $0 == .spelled },
                  success: "z spells, capital Z spells the whole sentence."),
 
-            Step(instruction: "Lesson nine. Hold Escape for half a second "
+            Step(instruction: "Lesson ten. Hold Escape for half a second "
                     + "to end the read. A quick tap only pauses it.",
                  isComplete: { $0 == .readFinished },
                  success: "And that is reading mode."),
+
+            Step(instruction: "Lesson eleven. Point the mouse anywhere in "
+                    + "your document and press capital R. It reads from the "
+                    + "pointer to the very end, with every reading motion "
+                    + "live. Listen for a moment, then hold Escape to stop.",
+                 isComplete: { $0 == .readFinished },
+                 success: "Capital R works on documents, terminals, "
+                    + "P D Fs, and web pages."),
         ]
     }
 }

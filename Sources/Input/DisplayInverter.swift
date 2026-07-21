@@ -44,6 +44,9 @@ final class DisplayInverter: @unchecked Sendable {
 
     var invertApps: Set<String>
     var invertEnabled = true
+    /// Fired (main queue) the first time a dark-appearance press succeeds
+    /// this run — the Daemon speaks the one-time onboarding explanation.
+    var onDarkApplied: (() -> Void)?
     /// auto (default) follows the system appearance: dark theme → dark
     /// PDFs, light theme → untouched. on/off are explicit overrides.
     var pdfDarkStyle: PDFDarkStyle = .auto
@@ -782,6 +785,7 @@ final class DisplayInverter: @unchecked Sendable {
                 if let docPath { self.markPreviewTreated(docPath) }
                 fputs("[display] Preview dark: applied"
                     + "\(docPath != nil ? " (once per document)" : "")\n", stderr)
+                DispatchQueue.main.async { self.onDarkApplied?() }
             } else {
                 fputs("[display] Preview dark: press failed\n", stderr)
             }

@@ -154,7 +154,7 @@ final class DisplayInverter: @unchecked Sendable {
 
         fputs("[display] tracking started (\(invertApps.count) listed + "
             + "\(Self.builtInInvertPrefixes.count) built-in, PDF dark "
-            + "\(pdfDarkStyle.rawValue), heartbeat+lockout)\n", stderr)
+            + "\(pdfDarkStyle.rawValue), one-shot)\n", stderr)
     }
 
     func stop() {
@@ -363,22 +363,29 @@ final class DisplayInverter: @unchecked Sendable {
     private var lastToggleAt = Date.distantPast
     private static let toggleLockout: TimeInterval = 10.0
 
+    // ONE-SHOT LATCH (user-specified diagnostic, currently the shipping
+    // behavior): the display changes at most ONCE per daemon lifetime —
+    // the first invert. Everything after is logged and suppressed, so a
+    // flickering screen under a closed latch PROVES the second flip is
+    // not Marduk's. Explicit teardown (stop / :config invert off) still
+    // reverts, loudly.
+    private var hasToggledOnce = false
+    private var lastSuppressedWant: Bool?
+
     private func ensureInverted(_ wanted: Bool, holder: String?, reason: String) {
         if wanted { invertHolder = holder }
         let locked = Date().timeIntervalSince(lastToggleAt) < Self.toggleLockout
-        guard wanted != isInverted else {
-            // Drift heal (stale bookkeeping after crashes) — outside the
-            // lockout only, apply once, no verify chain
-            if !locked, Self.displayIsInverted() != wanted {
-                fputs("[display] state drift — reapplying \(wanted ? "invert" : "revert") "
-                    + "(\(reason))\n", stderr)
-                lastToggleAt = Date()
-                applyInversion(wanted)
-                beginSettleWindow()
+        guard wanted != isInverted else { return }
+        guard !hasToggledOnce else {
+            if lastSuppressedWant != wanted {
+                lastSuppressedWant = wanted
+                fputs("[display] one-shot latch closed — suppressing "
+                    + "\(wanted ? "invert" : "revert") (\(reason))\n", stderr)
             }
             return
         }
         guard !locked else { return }  // heartbeat re-ensures after the lockout
+        hasToggledOnce = true
         lastToggleAt = Date()
         applyInversion(wanted)
         isInverted = wanted

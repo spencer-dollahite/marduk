@@ -373,6 +373,11 @@ final class DaemonServer {
                 Earcon.error()
             }
         }
+        keyboardMonitor?.onReadFind = { [self] char, direction in
+            if !speech.findChar(char, direction: direction) {
+                Earcon.error()
+            }
+        }
         keyboardMonitor?.onReadSearchBegin = { [self] in
             if speech.isSpeaking, !speech.isPaused {
                 speech.pause()

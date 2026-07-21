@@ -93,6 +93,36 @@ enum ReadNavigator {
         unitStarts(in: text, unit: .paragraph).last ?? 0
     }
 
+    /// Vim f/F: the next/previous occurrence of `char` strictly after/
+    /// before `position` — case-sensitive, like vim. Nil when the
+    /// direction is exhausted (no wrap, same as search).
+    static func findChar(in text: String, from position: Int,
+                         char: Character, direction: ReadDirection) -> Int? {
+        let ns = text as NSString
+        let position = max(0, min(position, ns.length))
+        let range: NSRange
+        var options: NSString.CompareOptions = []
+        switch direction {
+        case .forward:
+            let from = min(position + 1, ns.length)
+            range = NSRange(location: from, length: ns.length - from)
+        case .back:
+            options.insert(.backwards)
+            range = NSRange(location: 0, length: position)
+        }
+        let match = ns.range(of: String(char), options: options, range: range)
+        return match.location == NSNotFound ? nil : match.location
+    }
+
+    /// Start of the word containing `position` — where a char-find hit
+    /// respeaks from, so the found character arrives inside its word
+    /// instead of mid-syllable.
+    static func wordStart(in text: String, at position: Int) -> Int {
+        let clamped = max(0, min(position, (text as NSString).length))
+        return unitStarts(in: text, unit: .word)
+            .last(where: { $0 <= clamped }) ?? clamped
+    }
+
     /// The text of the word/sentence containing `position` (spell-out).
     /// A position in the gap between units belongs to the preceding one,
     /// same as the motions. Only word/sentence — the tokenized units.

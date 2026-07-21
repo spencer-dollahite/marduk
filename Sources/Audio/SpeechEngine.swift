@@ -205,6 +205,22 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         return true
     }
 
+    /// Vim f/F + char: jump to the word containing the next/previous
+    /// occurrence. False = no match in that direction (caller buzzes).
+    /// Back-finds use the back anchor, same as the back motions.
+    @discardableResult
+    func findChar(_ char: Character, direction: ReadDirection) -> Bool {
+        stopEcho()
+        guard readActive, let text = readText else { return false }
+        let from = direction == .back ? backAnchor : readPosition
+        guard let hit = ReadNavigator.findChar(in: text, from: from,
+                                               char: char, direction: direction) else {
+            return false
+        }
+        respeak(from: ReadNavigator.wordStart(in: text, at: hit))
+        return true
+    }
+
     /// Vim 0: restart the current line. False at the line's start (or when
     /// nothing is navigable) — the caller buzzes.
     @discardableResult

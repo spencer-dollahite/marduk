@@ -230,6 +230,40 @@ final class ReadNavigatorTests: XCTestCase {
         XCTAssertNil(ReadNavigator.unitText(in: "abc", at: 1, unit: .line))
     }
 
+    // MARK: - Char find (f/F)
+
+    func testFindCharForwardAndBack() {
+        // "The quick fox jumps." — "q" at 4, "x" at 12
+        XCTAssertEqual(ReadNavigator.findChar(in: threeSentences, from: 0,
+                                              char: "q", direction: .forward), 4)
+        XCTAssertEqual(ReadNavigator.findChar(in: threeSentences, from: 20,
+                                              char: "x", direction: .back), 12)
+    }
+
+    func testFindCharExcludesCurrentPositionAndCase() {
+        // Forward starts strictly after the position
+        XCTAssertEqual(ReadNavigator.findChar(in: "aXa", from: 0,
+                                              char: "a", direction: .forward), 2)
+        // Case-sensitive, vim-style
+        XCTAssertEqual(ReadNavigator.findChar(in: "aXa", from: 0,
+                                              char: "X", direction: .forward), 1)
+        XCTAssertNil(ReadNavigator.findChar(in: "aXa", from: 0,
+                                            char: "x", direction: .forward))
+    }
+
+    func testFindCharNoMatchIsNil() {
+        XCTAssertNil(ReadNavigator.findChar(in: threeSentences, from: 60,
+                                            char: "q", direction: .forward))
+        XCTAssertNil(ReadNavigator.findChar(in: threeSentences, from: 3,
+                                            char: "q", direction: .back))
+    }
+
+    func testWordStart() {
+        XCTAssertEqual(ReadNavigator.wordStart(in: threeSentences, at: 6), 4)
+        XCTAssertEqual(ReadNavigator.wordStart(in: threeSentences, at: 4), 4)
+        XCTAssertEqual(ReadNavigator.wordStart(in: "", at: 0), 0)
+    }
+
     func testSpellOutPlainAndPhonetic() {
         XCTAssertEqual(SpeechEngine.spellOut("Cat 9", nato: false),
                        "capital c, a, t, space, 9")

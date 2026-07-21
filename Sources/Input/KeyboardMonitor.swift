@@ -108,8 +108,19 @@ final class KeyboardMonitor {
         case jump(ReadUnit, ReadDirection, Int)
         case edge(ReadDirection)
         case search(String, ReadDirection)
+        case find(Character, ReadDirection)
     }
     private var lastReadAction: ReadAction?
+    var onReadFind: ((Character, ReadDirection) -> Void)?  // f/F + char
+    private var pendingReadFind: ReadDirection?  // f pressed, awaiting the target char
+
+    /// Drop every half-entered read-motion state (count, pending gg,
+    /// armed find) — the exits, toggles, and read end all need this.
+    private func resetReadMotionState() {
+        readMotionCount = 0
+        pendingReadG = false
+        pendingReadFind = nil
+    }
 
     // Firefox Reader narration handoff (`n` in NORMAL while Firefox is
     // frontmost). true = Marduk stops its own speech and holds media
@@ -312,8 +323,7 @@ final class KeyboardMonitor {
         commandIdleTimer?.cancel()
         readSearchDirection = nil
         readSearchBuffer = ""
-        readMotionCount = 0
-        pendingReadG = false
+        resetReadMotionState()
         readingCapture = false
         pendingReadingEscape?.cancel()
         pendingReadingEscape = nil
@@ -419,8 +429,7 @@ final class KeyboardMonitor {
             // itself was stopped by the toggle path or died with it)
             readSearchDirection = nil
             readSearchBuffer = ""
-            readMotionCount = 0
-            pendingReadG = false
+            resetReadMotionState()
             readingCapture = false
             let state = isEnabled ? "ON (NORMAL)" : "OFF"
             fputs("[keyboard] Marduk \(state)\n", stderr)
@@ -603,6 +612,33 @@ final class KeyboardMonitor {
            burstBuffer.isEmpty {
             let hasShift = flags.contains(.maskShift)
 
+            // Armed f/F: the NEXT typing key is the find target — checked
+            // first so any char works, even ones with motion meanings
+            // (f-then-( finds a paren). Non-typing keys (Escape, arrows)
+            // cancel silently and act normally, vim-style.
+            if let direction = pendingReadFind {
+                if isAutorepeat { return nil }
+                pendingReadFind = nil
+                if let ch = Self.commandKeyChars[keycode] {
+                    // commandKeyChars is a-z 0-9 space: uppercased() is
+                    // always a single scalar here
+                    let target = hasShift ? Character(ch.uppercased()) : ch
+                    lastReadAction = .find(target, direction)
+                    DispatchQueue.main.async { [self] in
+                        onReadFind?(target, direction)
+                    }
+                    return nil
+                }
+            }
+
+            if keycode == 3 { // f / F — arm char-find forward / back
+                if isAutorepeat { return nil }
+                readMotionCount = 0
+                pendingReadG = false
+                pendingReadFind = hasShift ? .back : .forward
+                return nil
+            }
+
             if keycode == 49, !flags.contains(.maskShift) { // Space — pause/resume
                 if isAutorepeat { return nil }
                 DispatchQueue.main.async { [self] in onPauseToggle?() }
@@ -612,6 +648,7 @@ final class KeyboardMonitor {
             if keycode == 34 { // i — stop the read, drop to INSERT
                 if isAutorepeat { return nil }
                 readingCapture = false
+                resetReadMotionState()
                 mode = .insert
                 suppressInsertEntryRepeat = true
                 fputs("[keyboard] READING → INSERT\n", stderr)
@@ -630,6 +667,7 @@ final class KeyboardMonitor {
                     guard self.readingCapture else { return }
                     self.escapeHoldFired = true
                     self.readingCapture = false
+                    self.resetReadMotionState()
                     self.mode = .normal
                     fputs("[keyboard] READING escape held → NORMAL\n", stderr)
                     self.onStop?()
@@ -646,8 +684,7 @@ final class KeyboardMonitor {
                 if isAutorepeat { return nil }
                 readSearchDirection = hasShift ? .back : .forward
                 readSearchBuffer = ""
-                readMotionCount = 0
-                pendingReadG = false
+                resetReadMotionState()
                 fputs("[keyboard] read search entry (\(hasShift ? "?" : "/"))\n", stderr)
                 let word = hasShift ? "search back" : "search"
                 DispatchQueue.main.async { [self] in
@@ -744,6 +781,8 @@ final class KeyboardMonitor {
                     DispatchQueue.main.async { [self] in onReadJumpEdge?(direction) }
                 case .search(let query, let direction):
                     DispatchQueue.main.async { [self] in onReadSearch?(query, direction) }
+                case .find(let char, let direction):
+                    DispatchQueue.main.async { [self] in onReadFind?(char, direction) }
                 }
                 return nil
             }
@@ -1307,8 +1346,7 @@ final class KeyboardMonitor {
             fputs("[keyboard] → READING\n", stderr)
         } else if readingCapture {
             readingCapture = false
-            readMotionCount = 0
-            pendingReadG = false
+            resetReadMotionState()
             // A withheld Escape must not fire its hold on a dead read; its
             // trailing keyUp passes as an orphan, which apps ignore
             pendingReadingEscape?.cancel()

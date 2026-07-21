@@ -22,6 +22,17 @@ final class KeyboardMonitor {
     private var runLoopSource: CFRunLoopSource?
     private var tapWatchdog: DispatchSourceTimer?
     private var tapRetry: DispatchSourceTimer?
+    // FAIL-OPEN: when Marduk's main thread can't process keys promptly,
+    // the correct assistive behavior is to stop intercepting entirely —
+    // the user keeps a fully working raw keyboard while Marduk degrades.
+    // Field incident: a silent auto-update's swift build starved the main
+    // thread; withheld burst keys were never released, macOS oscillated
+    // the tap, and the machine's keyboard was half-dead until a reboot.
+    // failOpen is touched from main AND the sentinel queue — lock it.
+    private let failOpenLock = NSLock()
+    private var failOpenReasons = Set<String>()
+    private var lastMainBeat = Date()
+    private var latencySentinel: DispatchSourceTimer?
     private var onSpeak: SpeakHandler?
     private var onStop: StopHandler?
     private var onAnnounce: AnnounceHandler?
@@ -287,14 +298,78 @@ final class KeyboardMonitor {
         watchdog.schedule(deadline: .now() + 5, repeating: 5)
         watchdog.setEventHandler { [weak self] in
             guard let self, !self.stopped, let tap = self.eventTap else { return }
-            if !CGEvent.tapIsEnabled(tap: tap) {
+            self.failOpenLock.lock()
+            let open = !self.failOpenReasons.isEmpty
+            self.failOpenLock.unlock()
+            if !open, !CGEvent.tapIsEnabled(tap: tap) {
                 fputs("[keyboard] event tap was disabled — re-enabling\n", stderr)
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
         }
         watchdog.resume()
         tapWatchdog = watchdog
+        startLatencySentinel()
         return true
+    }
+
+    // MARK: - Fail-open (never half-strangle the keyboard)
+
+    /// Reasons stack: the sentinel and the updater can each hold the tap
+    /// open independently; it re-arms only when every reason clears.
+    /// Callable from any thread — CGEvent.tapEnable is thread-safe, and
+    /// dispatching to a congested main thread would defeat the point.
+    func beginFailOpen(reason: String) {
+        failOpenLock.lock()
+        let wasOpen = !failOpenReasons.isEmpty
+        failOpenReasons.insert(reason)
+        failOpenLock.unlock()
+        guard !wasOpen, let tap = eventTap else { return }
+        CGEvent.tapEnable(tap: tap, enable: false)
+        fputs("[keyboard] FAIL-OPEN (\(reason)) — keys pass through raw\n", stderr)
+    }
+
+    func endFailOpen(reason: String) {
+        failOpenLock.lock()
+        failOpenReasons.remove(reason)
+        let nowClear = failOpenReasons.isEmpty
+        failOpenLock.unlock()
+        guard nowClear, !stopped, let tap = eventTap else { return }
+        CGEvent.tapEnable(tap: tap, enable: true)
+        fputs("[keyboard] fail-open ended (\(reason)) — tap re-armed\n", stderr)
+    }
+
+    /// A background heartbeat measures MAIN QUEUE latency directly: a
+    /// marker is dispatched to main every beat; if the previous marker
+    /// hasn't run after the threshold, main is congested and the tap
+    /// fails open until markers flow again. Runs entirely off-main.
+    private func startLatencySentinel() {
+        guard latencySentinel == nil else { return }
+        failOpenLock.lock(); lastMainBeat = Date(); failOpenLock.unlock()
+        let sentinel = DispatchSource.makeTimerSource(
+            queue: DispatchQueue(label: "com.marduk.latency", qos: .userInitiated))
+        sentinel.schedule(deadline: .now() + 2, repeating: 1.5)
+        sentinel.setEventHandler { [weak self] in
+            guard let self, !self.stopped else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.failOpenLock.lock()
+                self.lastMainBeat = Date()
+                self.failOpenLock.unlock()
+            }
+            self.failOpenLock.lock()
+            let lag = Date().timeIntervalSince(self.lastMainBeat)
+            let tripped = self.failOpenReasons.contains("main-thread congestion")
+            self.failOpenLock.unlock()
+            if lag > 4, !tripped {
+                fputs("[keyboard] main thread lagging \(String(format: "%.1f", lag))s\n",
+                      stderr)
+                self.beginFailOpen(reason: "main-thread congestion")
+            } else if lag < 1, tripped {
+                self.endFailOpen(reason: "main-thread congestion")
+            }
+        }
+        sentinel.resume()
+        latencySentinel = sentinel
     }
 
     private func scheduleTapRetry() {
@@ -321,6 +396,8 @@ final class KeyboardMonitor {
         }
         tapWatchdog?.cancel()
         tapWatchdog = nil
+        latencySentinel?.cancel()
+        latencySentinel = nil
         tapRetry?.cancel()
         tapRetry = nil
         commandBuffer = ""

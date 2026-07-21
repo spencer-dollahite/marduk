@@ -2153,6 +2153,12 @@ final class DaemonServer {
 
             // swift build
             fputs("[update] Building...\n", stderr)
+            // The build pegs every core for a minute — holding the event
+            // tap through that starved key delivery system-wide (field:
+            // half-dead keyboard, user rebooted). Fail open for the
+            // duration; keys flow raw, NORMAL commands pause briefly.
+            keyboardMonitor?.beginFailOpen(reason: "self-update build")
+            defer { keyboardMonitor?.endFailOpen(reason: "self-update build") }
             let build = Self.shell("swift", "build", cwd: dir)
             if build.status != 0 {
                 fputs("[update] Build FAILED:\n\(build.output)\n", stderr)

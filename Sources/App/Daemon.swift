@@ -146,6 +146,7 @@ final class DaemonServer {
     private var updateArmedUntil: Date?
     private var lastAnnouncedRemote = ""
     private var lastAnnouncedRelease = ""  // release-channel dedup (tag, not sha)
+    private var lastVerifyFailTag = ""     // failed-verification announce, once per tag
     private var autoRetryScheduled = false
     private var updateCheckTimer: DispatchSourceTimer?
     private var autoUpdate: Bool
@@ -821,11 +822,14 @@ final class DaemonServer {
     }
 
     /// Release/Homebrew installs: compare the running version against the
-    /// latest GitHub release. Manual checks always speak an answer; the
-    /// periodic path announces each new version exactly once (mirroring
-    /// the source channel's lastAnnouncedRemote). API/network failure
-    /// falls back to the old generic pointer on manual and stays silent
-    /// on periodic — never a false "up to date".
+    /// latest GitHub release. The channel now SELF-UPDATES (download +
+    /// verify + swap, see performReleaseUpdate), so this mirrors the
+    /// source channel end to end: manual = speak the release notes and
+    /// arm the press-u-again window; periodic + auto = silent install
+    /// (deferred while speech is active); periodic without auto =
+    /// announce each new version exactly once. API/network failure falls
+    /// back to a generic pointer on manual and stays silent on periodic —
+    /// never a false "up to date".
     private func checkLatestRelease(origin: UpdateCheckOrigin) {
         DispatchQueue.global(qos: .utility).async { [self] in
             let result = Self.shell("curl", "-s", "-m", "10",
@@ -833,22 +837,42 @@ final class DaemonServer {
                                     "-H", "Accept: application/vnd.github+json",
                                     "https://api.github.com/repos/spencer-dollahite/marduk/releases/latest",
                                     cwd: "/tmp")
-            let latest = result.status == 0 ? ReleaseCheck.parseLatestTag(result.output) : nil
+            let release = result.status == 0
+                ? ReleaseCheck.parseLatestRelease(result.output) : nil
             DispatchQueue.main.async { [self] in
-                guard let latest else {
+                guard let release else {
                     if origin == .manual {
                         speech.announce("This copy of Marduk was installed from a "
                             + "release. " + releaseUpdateHint)
                     }
                     return
                 }
-                if latest == Marduk.version {
+                if release.tag == Marduk.version {
                     if origin == .manual { speech.announce("Marduk is up to date.") }
                 } else if origin == .manual {
-                    speech.announce("Marduk \(latest) is available. " + releaseUpdateHint)
-                } else if lastAnnouncedRelease != latest {
-                    lastAnnouncedRelease = latest
-                    speech.announce("Marduk \(latest) is available. " + releaseUpdateHint)
+                    updateArmedUntil = Date(timeIntervalSinceNow: 60)
+                    let notes = release.notes.isEmpty ? ""
+                        : " " + release.notes.prefix(8).joined(separator: ". ") + "."
+                    speech.announce("Marduk \(release.tag) is available.\(notes) "
+                        + "Press u again to install.")
+                } else if autoUpdate {
+                    if speech.isSpeaking {
+                        // Same courtesy as the source channel: never
+                        // restart mid-read; try again later
+                        fputs("[update] speech active — deferring auto-update\n", stderr)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 600) { [self] in
+                            checkLatestRelease(origin: .periodic)
+                        }
+                    } else {
+                        fputs("[update] auto-installing release \(release.tag)\n", stderr)
+                        DispatchQueue.global(qos: .userInitiated).async { [self] in
+                            performReleaseUpdate(silent: true)
+                        }
+                    }
+                } else if lastAnnouncedRelease != release.tag {
+                    lastAnnouncedRelease = release.tag
+                    speech.announce("Marduk \(release.tag) is available. "
+                        + "Press u to hear what's new.")
                 }
             }
         }
@@ -1352,6 +1376,110 @@ final class DaemonServer {
     }
 
     /// silent: the periodic auto-update path — no announcements at all
+    /// Release/Homebrew self-update: resolve the latest tag, then
+    /// download + verify + swap via ReleaseUpdater and restart. Runs on
+    /// a background queue (performUpdate already dispatched). The swap
+    /// keeps the bundle path, so the exit-75 relaunch applies unchanged.
+    /// A verification failure is a SECURITY event — it's announced even
+    /// on the silent path, once per tag (a retrying timer must not nag).
+    private func performReleaseUpdate(silent: Bool) {
+        func failed(_ spoken: String) {
+            DispatchQueue.main.async { [self] in
+                Earcon.error()
+                speech.announce(spoken)
+            }
+        }
+        let result = Self.shell("curl", "-s", "-m", "10",
+                                "-H", "User-Agent: marduk",
+                                "-H", "Accept: application/vnd.github+json",
+                                "https://api.github.com/repos/spencer-dollahite/marduk/releases/latest",
+                                cwd: "/tmp")
+        guard result.status == 0,
+              let release = ReleaseCheck.parseLatestRelease(result.output) else {
+            if !silent { failed("Update check failed. Is the network up?") }
+            return
+        }
+        guard release.tag != Marduk.version else {
+            if !silent {
+                DispatchQueue.main.async { [self] in
+                    speech.announce("Marduk is up to date.")
+                }
+            }
+            return
+        }
+        let exec = LaunchAgent.resolvedBinaryPath()
+        guard let range = exec.range(of: "/Contents/MacOS/") else {
+            // Bare binary without a repo — nothing we can safely swap
+            if !silent {
+                failed("This copy of Marduk was installed from a release. "
+                    + releaseUpdateHint)
+            }
+            return
+        }
+        let liveBundle = String(exec[..<range.lowerBound])
+        fputs("[update] Self-updating to \(release.tag) at \(liveBundle)\n", stderr)
+
+        switch ReleaseUpdater.install(tag: release.tag, liveBundlePath: liveBundle) {
+        case .failure(let failure):
+            switch failure {
+            case .verification:
+                if lastVerifyFailTag != release.tag {
+                    lastVerifyFailTag = release.tag
+                    failed(failure.spoken)
+                }
+            case .install:
+                if !silent { failed(failure.spoken + " " + releaseUpdateHint) }
+            case .download, .mount:
+                if !silent { failed(failure.spoken) }
+            }
+        case .success(let newExec):
+            finishReleaseUpdate(newExec: newExec, tag: release.tag, silent: silent)
+        }
+    }
+
+    /// Announce (unless silent), then restart into the swapped bundle —
+    /// the same completion-or-12s-failsafe shape as the source channel's
+    /// restart, minus migration (the bundle path never changed).
+    private func finishReleaseUpdate(newExec: String, tag: String, silent: Bool) {
+        let installed = LaunchAgent.isInstalled
+        let restart = { [self] in
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.5) { [self] in
+                LaunchAgent.truncateLog()
+                if installed {
+                    DispatchQueue.main.async { [self] in
+                        pendingExitCode = 75  // launchd relaunches the new bytes
+                        running = false
+                    }
+                } else {
+                    let daemon = Process()
+                    daemon.executableURL = URL(fileURLWithPath: newExec)
+                    daemon.arguments = ["start"]
+                    try? daemon.run()
+                    DispatchQueue.main.async { [self] in running = false }
+                }
+            }
+        }
+        DispatchQueue.main.async { [self] in
+            var restarted = false
+            let restartOnce = {
+                guard !restarted else { return }
+                restarted = true
+                restart()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+                if !restarted {
+                    fputs("[update] announcement never completed — failsafe restart\n", stderr)
+                }
+                restartOnce()
+            }
+            if silent {
+                restartOnce()
+            } else {
+                speech.announce("Marduk \(tag) installed. Restarting.") { restartOnce() }
+            }
+        }
+    }
+
     /// (failures log only; success restarts without a word).
     private func performUpdate(silent: Bool = false) {
         DispatchQueue.global(qos: .userInitiated).async { [self] in
@@ -1361,12 +1489,8 @@ final class DaemonServer {
             }
 
             guard let dir = projectDir else {
-                fputs("[update] No project directory — release install\n", stderr)
-                guard !silent else { return }
-                DispatchQueue.main.async { [self] in
-                    speech.announce("This copy of Marduk was installed from a "
-                        + "release. " + releaseUpdateHint)
-                }
+                fputs("[update] No project directory — release self-update\n", stderr)
+                performReleaseUpdate(silent: silent)
                 return
             }
 

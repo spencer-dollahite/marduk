@@ -119,6 +119,10 @@ cask "marduk" do
   version "$VERSION"
   sha256 "$SHA"
 
+  # Marduk self-updates (u/uu and the periodic timer swap the bundle in
+  # place) — Chrome-style: brew leaves the version alone unless --greedy
+  auto_updates true
+
   url "https://github.com/spencer-dollahite/marduk/releases/download/v#{version}/Marduk.dmg"
   name "Marduk"
   desc "Audio-first assistive platform for macOS with Vim-style modal navigation"

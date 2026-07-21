@@ -161,14 +161,17 @@ final class DisplayInverter: @unchecked Sendable {
     private func evaluateBrightness(bundleID: String, pid: pid_t) {
         Task { [weak self] in
             guard let self else { return }
-            var bright: Bool?
+            var measured: Double?
             do {
                 let content = try await SCShareableContent
                     .excludingDesktopWindows(false, onScreenWindowsOnly: true)
-                guard let window = content.windows.first(where: {
-                    $0.owningApplication?.processID == pid && $0.isOnScreen
-                        && $0.frame.width > 200 && $0.frame.height > 150
-                }) else { return }
+                // LARGEST window, not first — an activation that comes with
+                // a small dialog up must still measure the document window
+                guard let window = content.windows
+                    .filter({ $0.owningApplication?.processID == pid && $0.isOnScreen
+                                && $0.frame.width > 200 && $0.frame.height > 150 })
+                    .max(by: { $0.frame.width * $0.frame.height
+                             < $1.frame.width * $1.frame.height }) else { return }
                 let filter = SCContentFilter(desktopIndependentWindow: window)
                 let config = SCStreamConfiguration()
                 config.width = 64
@@ -176,7 +179,7 @@ final class DisplayInverter: @unchecked Sendable {
                 config.showsCursor = false
                 let image = try await SCScreenshotManager.captureImage(
                     contentFilter: filter, configuration: config)
-                bright = Self.meanBrightness(image).map { $0 > self.autoInvertThreshold }
+                measured = Self.meanBrightness(image)
             } catch {
                 if !self.captureFailureLogged {
                     self.captureFailureLogged = true
@@ -185,12 +188,26 @@ final class DisplayInverter: @unchecked Sendable {
                 }
                 return
             }
-            guard let bright else { return }
+            guard let measured else { return }
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.invertEnabled, self.autoInvert,
                       NSWorkspace.shared.frontmostApplication?.bundleIdentifier
                           == bundleID else { return }
-                self.ensureInverted(bright, reason: "auto \(bundleID)")
+                // The capture sees the screen AS DISPLAYED — including our
+                // own inversion (field-diagnosed: invert → next measurement
+                // reads dark → revert → oscillation). Inversion is exactly
+                // 255−x per channel, so undo it in the math, and keep a
+                // deadband so boundary values can't flap on re-measures.
+                let effective = self.isInverted ? 1 - measured : measured
+                let wanted: Bool
+                if self.isInverted {
+                    wanted = effective > self.autoInvertThreshold - 0.08
+                } else {
+                    wanted = effective > self.autoInvertThreshold
+                }
+                self.ensureInverted(wanted,
+                                    reason: "auto \(bundleID) "
+                                        + String(format: "%.2f", effective))
             }
         }
     }
@@ -257,10 +274,16 @@ final class DisplayInverter: @unchecked Sendable {
                   let rawBar = menuBarRef,
                   CFGetTypeID(rawBar) == AXUIElementGetTypeID() else { return }
 
-            guard let viewMenu = Self.child(of: rawBar as! AXUIElement, titled: "View"),
-                  let submenu = Self.children(of: viewMenu).first,
-                  let item = Self.child(of: submenu, titled: "View in Dark Mode") else {
-                fputs("[display] Preview dark: menu item not found\n", stderr)
+            // Titles shift across macOS releases — search the whole menu
+            // bar for anything containing "dark mode" instead of pinning
+            // one exact string (still English-only, a Marduk-wide limit)
+            guard let item = Self.findMenuItem(containing: "dark mode",
+                                               under: rawBar as! AXUIElement,
+                                               depth: 6) else {
+                let viewCount = Self.child(of: rawBar as! AXUIElement, titled: "View")
+                    .map { Self.children(of: $0).first.map { Self.children(of: $0).count } ?? 0 }
+                fputs("[display] Preview dark: no dark-mode menu item "
+                    + "(View menu items: \(viewCount ?? -1))\n", stderr)
                 return
             }
 
@@ -321,6 +344,28 @@ final class DisplayInverter: @unchecked Sendable {
                   element, kAXChildrenAttribute as CFString, &ref) == .success,
               let children = ref as? [AXUIElement] else { return [] }
         return children
+    }
+
+    /// Depth-limited search of a menu tree for an item whose title
+    /// contains `needle` (case-insensitive).
+    private static func findMenuItem(containing needle: String,
+                                     under element: AXUIElement,
+                                     depth: Int) -> AXUIElement? {
+        guard depth > 0 else { return nil }
+        for child in children(of: element) {
+            var titleRef: CFTypeRef?
+            _ = AXUIElementCopyAttributeValue(child, kAXTitleAttribute as CFString,
+                                              &titleRef)
+            if let title = titleRef as? String,
+               title.lowercased().contains(needle) {
+                return child
+            }
+            if let found = findMenuItem(containing: needle, under: child,
+                                        depth: depth - 1) {
+                return found
+            }
+        }
+        return nil
     }
 
     private static func child(of element: AXUIElement, titled title: String) -> AXUIElement? {

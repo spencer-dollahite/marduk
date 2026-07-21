@@ -60,6 +60,10 @@ final class KeyboardMonitor {
     var commandEchoEnabled = true    // speak chars typed after ":"
     var speedKeysEnabled = false     // Option+Up/Down nudge speech rate (NORMAL/VISUAL)
     var toggleEarconEnabled = false  // Ctrl+Option+M bloops instead of speaking
+    // Injected by the daemon (AudioDucker.audibleMediaKeyClientExists):
+    // the media play/pause toggle is only sent when an app that will
+    // CLAIM it is the audio source — an unclaimed press launches Music
+    var isMediaKeyClientAudible: () -> Bool = { false }
     var onRateChange: ((Float) -> Void)?  // signed rate delta from the speed keys
 
     // Read motions (default ON, `:config readmotions off` disables): vim
@@ -1241,8 +1245,10 @@ final class KeyboardMonitor {
             fputs("[keyboard] s → speak under pointer \(active ? "on" : "off")\n", stderr)
             mediaQueue.async { [self] in
                 if active {
-                    // Pause media before enabling speak-under-pointer
-                    if Self.isAudioOutputRunning() {
+                    // Pause media before enabling speak-under-pointer —
+                    // only when a media-key CLIENT is the audio source
+                    // (an unclaimed play/pause launches Music)
+                    if isMediaKeyClientAudible() {
                         fputs("[keyboard] pausing media for speak under pointer\n", stderr)
                         Self.sendMediaPlayPause()
                         didPauseMediaForSpeakUnderCursor = true
@@ -2302,27 +2308,10 @@ final class KeyboardMonitor {
         up.post(tap: .cghidEventTap)
     }
 
-    /// Check if the default audio output device has active streams (i.e. something is playing).
-    private static func isAudioOutputRunning() -> Bool {
-        var deviceID = AudioDeviceID(0)
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
-        ) == noErr else { return false }
-
-        var isRunning: UInt32 = 0
-        size = UInt32(MemoryLayout<UInt32>.size)
-        address.mSelector = kAudioDevicePropertyDeviceIsRunningSomewhere
-
-        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &isRunning) == noErr else { return false }
-        return isRunning != 0
-    }
+    // (isAudioOutputRunning was removed: the device-level check couldn't
+    // tell a media app from a video call, and an unclaimed play/pause
+    // keypress launches Music — the daemon injects the client-aware
+    // isMediaKeyClientAudible instead.)
 
     /// Send a system-wide media play/pause key event.
     private static func sendMediaPlayPause() {

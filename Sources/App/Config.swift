@@ -62,6 +62,10 @@ struct MardukConfig: Codable {
         var duckAppleMusic: Bool = true
         var duckSpotify: Bool = true
         var useMediaKey: Bool = true  // pause/resume browser audio via media key
+        // Extra bundle IDs / path substrings treated as media-key clients
+        // (the pause toggle is only sent to apps that will claim it —
+        // unclaimed presses launch Music). Optional: decode-safe.
+        var mediaKeyApps: [String]?
     }
 
     struct SpeechConfig: Codable {

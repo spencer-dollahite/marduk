@@ -11,6 +11,8 @@ final class AudioDucker {
         var rampSteps: Int = 15          // number of steps in the ramp
         var rampDurationMs: Int = 600    // total ramp time in milliseconds
         var targets: [DuckTarget] = DuckTarget.allCases.map { $0 }
+        var extraMediaKeyApps: [String] = []  // ducking.mediaKeyApps — extra bundle
+                                              // IDs / path tokens treated as media apps
     }
 
     enum DuckTarget: CaseIterable, Hashable {
@@ -229,8 +231,70 @@ final class AudioDucker {
             return parsePlaybackState(raw)
 
         case .mediaKey:
-            return isOtherProcessProducingAudio() ? .playing : .paused
+            // Not just "is audio playing" — "is the audio from an app
+            // that will CLAIM a media keypress". An unclaimed play/pause
+            // makes macOS launch the default media app (first-user
+            // report: Music opened out of nowhere while only a call was
+            // audible). Calls/games/unknown sources → treat as not
+            // playing: speech talks over them, which was always the
+            // intent, and the toggle never fires into an empty room.
+            return audibleMediaKeyClientExists() ? .playing : .paused
         }
+    }
+
+    /// Bundle IDs of apps that register with Now Playing and respond to
+    /// the media play/pause key. Browser audio often renders in HELPER
+    /// processes that NSWorkspace doesn't list as applications (Chrome →
+    /// "Google Chrome Helper", Safari → com.apple.WebKit.WebContent), so
+    /// matching also falls back to executable-path tokens below.
+    static let mediaKeyClientBundles: Set<String> = [
+        "com.apple.Safari", "org.mozilla.firefox", "com.google.Chrome",
+        "org.chromium.Chromium", "com.microsoft.edgemac",
+        "com.brave.Browser", "company.thebrowser.Browser",
+        "com.operasoftware.Opera", "com.vivaldi.Vivaldi",
+        "com.apple.Music", "com.apple.TV", "com.apple.QuickTimePlayerX",
+        "com.apple.podcasts", "org.videolan.vlc", "com.colliderli.iina",
+        "com.spotify.client",
+    ]
+
+    /// Lowercased substrings matched against the audio process's
+    /// executable path — covers the helper processes above.
+    static let mediaKeyClientPathTokens: [String] = [
+        "safari", "webkit", "firefox", "chrome", "chromium", "edge",
+        "brave", "vivaldi", "opera", "music.app", "tv.app", "quicktime",
+        "podcasts", "vlc", "iina", "spotify",
+    ]
+
+    /// True when at least one audio-producing process belongs to a
+    /// media-key client (built-in lists ∪ config extras, matched by
+    /// bundle ID or executable-path token). The gate that keeps the
+    /// play/pause toggle from ever reaching an empty room. Thread-safe:
+    /// CoreAudio introspection + per-PID lookups only.
+    func audibleMediaKeyClientExists() -> Bool {
+        let extras = config.extraMediaKeyApps.map { $0.lowercased() }
+        var unclaimed: [String] = []
+        for pid in audioProducingPIDs() {
+            let bundle = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+            if let bundle {
+                if Self.mediaKeyClientBundles.contains(bundle)
+                    || extras.contains(bundle.lowercased()) {
+                    return true
+                }
+            }
+            if let path = executablePath(for: pid)?.lowercased() {
+                if Self.mediaKeyClientPathTokens.contains(where: { path.contains($0) })
+                    || extras.contains(where: { path.contains($0) }) {
+                    return true
+                }
+                unclaimed.append(bundle ?? (path as NSString).lastPathComponent)
+            } else if let bundle {
+                unclaimed.append(bundle)
+            }
+        }
+        if !unclaimed.isEmpty {
+            log("audio playing but no media-key client (\(unclaimed.joined(separator: ", "))) — not pausing")
+        }
+        return false
     }
 
     private func parsePlaybackState(_ raw: String) -> PlaybackState {
@@ -239,11 +303,6 @@ final class AudioDucker {
         if s.contains("paused") { return .paused }
         if s.contains("stopped") { return .stopped }
         return .unknown
-    }
-
-    /// Returns true if any process OTHER than this one is actively producing audio output.
-    private func isOtherProcessProducingAudio() -> Bool {
-        return !audioProducingPIDs().isEmpty
     }
 
     /// Returns the PIDs (other than ours) currently producing audio output.

@@ -187,7 +187,8 @@ final class DaemonServer {
             duckLevel: config.ducking.duckLevel,
             rampSteps: config.ducking.rampSteps,
             rampDurationMs: config.ducking.rampDurationMs,
-            targets: buildDuckTargets(from: config)
+            targets: buildDuckTargets(from: config),
+            extraMediaKeyApps: config.ducking.mediaKeyApps ?? []
         )
         ducker = AudioDucker(config: duckerConfig)
         speech = SpeechEngine(ducker: ducker)
@@ -292,6 +293,9 @@ final class DaemonServer {
         keyboardMonitor?.commandEchoEnabled = config.keyboard?.commandEcho ?? true
         keyboardMonitor?.speedKeysEnabled = config.keyboard?.speedKeys ?? false
         keyboardMonitor?.readMotionsEnabled = config.keyboard?.readMotions ?? true
+        keyboardMonitor?.isMediaKeyClientAudible = { [self] in
+            ducker.audibleMediaKeyClientExists()
+        }
         keyboardMonitor?.toggleEarconEnabled =
             (config.keyboard?.toggleSound ?? "speech") == "earcon"
         palette.positionMode = CommandPalette.PositionMode(

@@ -494,7 +494,8 @@ case "duck":
             duckLevel: config.ducking.duckLevel,
             rampSteps: config.ducking.rampSteps,
             rampDurationMs: config.ducking.rampDurationMs,
-            targets: buildDuckTargets(from: config)
+            targets: buildDuckTargets(from: config),
+            extraMediaKeyApps: config.ducking.mediaKeyApps ?? []
         )
         let ducker = AudioDucker(config: duckerConfig)
         ducker.duck()
@@ -569,7 +570,8 @@ case "speak":
             duckLevel: config.ducking.duckLevel,
             rampSteps: config.ducking.rampSteps,
             rampDurationMs: config.ducking.rampDurationMs,
-            targets: buildDuckTargets(from: config)
+            targets: buildDuckTargets(from: config),
+            extraMediaKeyApps: config.ducking.mediaKeyApps ?? []
         )
 
         let ducker = AudioDucker(config: duckerConfig)

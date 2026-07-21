@@ -280,7 +280,8 @@ final class ColonCommandTests: XCTestCase {
     func testPartialCommandFilters() {
         XCTAssertEqual(completions("c"), [commandDisplays[1], commandDisplays[4]])
         XCTAssertEqual(completions("tu"), [commandDisplays[2]])
-        XCTAssertEqual(completions("t"), [commandDisplays[2], commandDisplays[3]])
+        XCTAssertEqual(completions("t"), [commandDisplays[2], commandDisplays[3],
+                                          commandDisplays[7]])  // + typing
         XCTAssertEqual(completions("z"), [])
     }
 

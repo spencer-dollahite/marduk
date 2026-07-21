@@ -1832,7 +1832,16 @@ final class KeyboardMonitor {
             // Falls back to the caret / selection start, then the top.
             // Snapped to the word start, same landing rule as char-find.
             var start = 0
-            if let pointerOffset = Self.textOffsetAtPointer(in: element) {
+            // The pointer is by definition ON SCREEN — an offset outside
+            // the visible character range is provably garbage (field:
+            // Terminal with a 9M-char scrollback answered RangeForPosition
+            // with ~2k, the top of the buffer, while the user pointed at
+            // the visible bottom). Reject it and let the row estimate —
+            // built FROM the visible range — take over.
+            let visibleRange = Self.visibleCharacterRange(of: element)
+            if let pointerOffset = Self.textOffsetAtPointer(in: element),
+               Self.validatedPointerOffset(pointerOffset,
+                                           visible: visibleRange) != nil {
                 start = pointerOffset
                 fputs("[keyboard] R: starting at pointer\n", stderr)
             } else if let estimate = Self.pointerRowEstimate(in: element,
@@ -1872,6 +1881,32 @@ final class KeyboardMonitor {
     /// VISIBLE character range. Terminal rows are uniform height, so this
     /// is line-accurate — all a "start here" gesture needs (the wordStart
     /// snap afterwards lands cleanly).
+    /// Pure sanity check, unit-tested: a pointer-derived text offset must
+    /// lie within the element's visible character range (nil range = no
+    /// information, trust the offset). Returns nil for garbage.
+    static func validatedPointerOffset(_ offset: Int, visible: NSRange?) -> Int? {
+        guard let visible, visible.length > 0 else { return offset }
+        let inRange = offset >= visible.location
+            && offset <= visible.location + visible.length
+        if !inRange {
+            fputs("[keyboard] R: pointer offset \(offset) outside visible "
+                + "range \(visible.location)..\(visible.location + visible.length) "
+                + "— using row estimate\n", stderr)
+        }
+        return inRange ? offset : nil
+    }
+
+    private static func visibleCharacterRange(of element: AXUIElement) -> NSRange? {
+        var visRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  element, kAXVisibleCharacterRangeAttribute as CFString,
+                  &visRef) == .success,
+              let vr = visRef, CFGetTypeID(vr) == AXValueGetTypeID() else { return nil }
+        var visible = CFRange(location: 0, length: 0)
+        guard AXValueGetValue(vr as! AXValue, .cfRange, &visible) else { return nil }
+        return NSRange(location: visible.location, length: visible.length)
+    }
+
     private static func pointerRowEstimate(in element: AXUIElement,
                                            text: NSString) -> Int? {
         var posRef: CFTypeRef?

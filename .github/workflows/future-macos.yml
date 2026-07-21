@@ -1,0 +1,30 @@
+name: Future macOS probe
+
+# Manual-only ON PURPOSE: a scheduled job against a not-yet-existing
+# runner image would sit queued for hours attached to HEAD, and the
+# daemon's silent auto-update gate holds on pending checks. Trigger with
+#   gh workflow run future-macos.yml
+# occasionally; when GitHub ships the macos-27 image the matrix leg
+# starts compiling for real. continue-on-error keeps the check run
+# green either way — this probe informs, never gates.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [macos-26, macos-27]
+    runs-on: ${{ matrix.image }}
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Toolchain
+        run: sw_vers && swift --version
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test

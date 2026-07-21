@@ -7,7 +7,10 @@ on:
 
 jobs:
   build-test:
-    runs-on: macos-latest
+    # Pinned to the tested major — macos-latest drifting under us would
+    # conflate "our regression" with "new macOS". future-macos.yml probes
+    # newer images on demand.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v5
 

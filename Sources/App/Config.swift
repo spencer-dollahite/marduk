@@ -29,6 +29,8 @@ struct MardukConfig: Codable {
         var speedKeys: Bool? = false     // Option+Up/Down nudge speech rate (NORMAL/VISUAL)
         var toggleSound: String? = "speech" // "speech" | "earcon" — Ctrl+Option+M feedback
         var readMotions: Bool? = true    // vim motions inside a read: b/w hjkl ( ) { } 0 gg G . / ?
+        var karabinerReadKey: String? = "equal_sign" // Karabiner key_code the read button sends
+                                                     // (Naga side button 12 = the = key)
     }
 
     struct OverlayConfig: Codable {

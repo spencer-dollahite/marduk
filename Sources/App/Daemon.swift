@@ -2,6 +2,29 @@ import Foundation
 import AppKit
 import AVFoundation
 
+// Crash-restore state for the Karabiner profile handoff, file-scope so the
+// signal handler (a C function, no captures) can reach it. Prepared on
+// profile activation (main thread); the handler only reads. See
+// DaemonServer.armCrashRestore.
+private nonisolated(unsafe) var gKarabinerCLIPath: UnsafeMutablePointer<CChar>?
+private nonisolated(unsafe) var gCrashProfileArgv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+private nonisolated(unsafe) var gCrashVariableArgv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+private nonisolated(unsafe) var gTermRequested: sig_atomic_t = 0
+
+/// Async-signal-safe crash path: hand the keyboard back to the user's
+/// Karabiner profile, then let the crash proceed to the default handler
+/// (so launchd sees the crash and KeepAlive relaunches). posix_spawn and
+/// raise are safe in handlers; everything else was prepared beforehand.
+private func mardukCrashRestore(_ sig: Int32) {
+    if let path = gKarabinerCLIPath {
+        var pid: pid_t = 0
+        if let argv = gCrashProfileArgv { posix_spawn(&pid, path, nil, nil, argv, nil) }
+        if let argv = gCrashVariableArgv { posix_spawn(&pid, path, nil, nil, argv, nil) }
+    }
+    signal(sig, SIG_DFL)
+    raise(sig)
+}
+
 enum MardukDaemon {
     /// Per-user, mode-0700 runtime directory (Darwin's /var/folders/…/T/).
     /// These paths used to live in world-writable /tmp, where any local
@@ -313,9 +336,14 @@ final class DaemonServer {
         keyboardMonitor?.onEnabledChange = { [self] enabled in
             DispatchQueue.main.async { [self] in
                 modeOverlay?.setEnabled(enabled)
-                // Ctrl+Option+M off = "Marduk is down" to Karabiner rules
-                // (button routes fall back to the macOS speech shortcut)
+                // Ctrl+Option+M = the whole Karabiner story flips: profile
+                // AND liveness variable, so the user never switches by hand
                 Self.setKarabinerVariable(up: enabled)
+                if enabled {
+                    activateKarabinerProfile()
+                } else {
+                    deactivateKarabinerProfile()
+                }
                 if !enabled {
                     tutorial.abort(silent: true)
                     palette.hide()
@@ -480,14 +508,26 @@ final class DaemonServer {
         fputs("[marduk] Daemon running (PID \(pid))\n", stderr)
         fputs("[marduk] Socket: \(MardukDaemon.socketPath)\n", stderr)
         Self.setKarabinerVariable(up: true)
+        activateKarabinerProfile()
+
+        // SIGTERM (logout, launchctl bootout) → flag polled by the loop →
+        // FULL clean teardown, Karabiner profile included. Signal handlers
+        // can only touch a flag safely; the loop below does the real work.
+        signal(SIGTERM) { _ in gTermRequested = 1 }
 
         // Main RunLoop — needed for AVSpeechSynthesizer + CGEventTap callbacks
         while running {
+            if gTermRequested != 0 {
+                fputs("[marduk] SIGTERM — clean shutdown\n", stderr)
+                running = false
+                break
+            }
             RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.05))
         }
 
         // Stop event tap first to prevent callbacks during teardown
         Self.setKarabinerVariable(up: false)
+        deactivateKarabinerProfile()
         keyboardMonitor?.stop()
         // Drain pending callbacks
         RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
@@ -1071,6 +1111,165 @@ final class DaemonServer {
         process.arguments = ["--set-variables", "{\"marduk_up\":\(up ? 1 : 0)}"]
         try? process.run() // fire and forget — never block on Karabiner
         fputs("[keyboard] karabiner marduk_up=\(up ? 1 : 0)\n", stderr)
+    }
+
+    // MARK: - Karabiner profile ("Marduk brings its own config")
+
+    /// Arm the crash-restore path: pre-build the karabiner_cli argv
+    /// vectors so the signal handler touches only prepared memory
+    /// (posix_spawn and raise are async-signal-safe; allocation is not).
+    /// Covers SIGSEGV/SIGABRT/etc — the user's profile comes back even
+    /// when Marduk dies mid-flight. SIGKILL/power loss can't be caught;
+    /// KeepAlive's relaunch re-activates and self-heals that gap.
+    private static func armCrashRestore(userProfile: String) {
+        let cli = "/Library/Application Support/org.pqrs/Karabiner-Elements/bin/karabiner_cli"
+        guard FileManager.default.isExecutableFile(atPath: cli) else { return }
+        gKarabinerCLIPath = strdup(cli)
+        gCrashProfileArgv = makeArgv([cli, "--select-profile", userProfile])
+        gCrashVariableArgv = makeArgv([cli, "--set-variables", "{\"marduk_up\":0}"])
+        for sig in [SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE, SIGTRAP] {
+            signal(sig, mardukCrashRestore)
+        }
+    }
+
+    private static func makeArgv(_ args: [String])
+        -> UnsafeMutablePointer<UnsafeMutablePointer<CChar>?> {
+        let argv = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
+            .allocate(capacity: args.count + 1)
+        for (i, arg) in args.enumerated() { argv[i] = strdup(arg) }
+        argv[args.count] = nil
+        return argv
+    }
+
+    /// The user's own profile name, remembered at activation so clean
+    /// stop / Ctrl+Option+M disable can hand the keyboard back to it.
+    private var karabinerUserProfile: String?
+
+    private static let karabinerConfigPath =
+        NSHomeDirectory() + "/.config/karabiner/karabiner.json"
+
+    /// Marduk maintains its OWN Karabiner profile, fully automatically —
+    /// the user never switches anything by hand. Contract: the profile
+    /// NAMED "Marduk" belongs to Marduk. If the user already made one
+    /// (their case), it's ADOPTED — everything they put in it is
+    /// preserved; only Marduk's own rule (matched by description) is
+    /// refreshed inside it on every activation. If none exists, it's
+    /// bootstrapped as a clone of the selected profile so the user's rig
+    /// carries over. Selection goes through karabiner_cli (the supported
+    /// path; file-watch reload is flaky). Safety: karabiner.json is
+    /// backed up beside itself before every rewrite, a parse failure
+    /// means nothing is written, and non-Marduk profiles are never
+    /// modified or deleted. The read button's key_code comes from
+    /// keyboard.karabinerReadKey (default equal_sign — a Razer Naga's
+    /// side button 12).
+    private func activateKarabinerProfile() {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: Self.karabinerConfigPath) else { return }
+        guard let data = fm.contents(atPath: Self.karabinerConfigPath),
+              var root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              var profiles = root["profiles"] as? [[String: Any]], !profiles.isEmpty else {
+            fputs("[marduk] karabiner.json unreadable — leaving it alone\n", stderr)
+            return
+        }
+
+        // The user's own profile: selected and not ours (after a crash the
+        // selected one may still be "Marduk" — fall back to any other)
+        karabinerUserProfile = (profiles.first(where: {
+            ($0["selected"] as? Bool == true) && ($0["name"] as? String) != "Marduk"
+        }) ?? profiles.first(where: { ($0["name"] as? String) != "Marduk" }))?["name"] as? String
+
+        var marduk: [String: Any]
+        if let existing = profiles.first(where: { ($0["name"] as? String) == "Marduk" }) {
+            marduk = existing  // adopt as-is; only our rule is refreshed
+        } else {
+            guard let source = profiles.first(where: {
+                ($0["name"] as? String) == karabinerUserProfile
+            }) else { return }
+            marduk = source
+            marduk["name"] = "Marduk"
+            marduk["selected"] = false  // karabiner_cli does the selecting
+            fputs("[marduk] no Marduk profile — bootstrapping from "
+                + "\"\(karabinerUserProfile ?? "?")\"\n", stderr)
+        }
+        var cm = marduk["complex_modifications"] as? [String: Any] ?? [:]
+        var rules = cm["rules"] as? [[String: Any]] ?? []
+        rules.removeAll { ($0["description"] as? String)?.hasPrefix("Marduk read button") == true }
+        rules.insert(Self.readButtonRule(key: config.keyboard?.karabinerReadKey ?? "equal_sign"),
+                     at: 0)
+        cm["rules"] = rules
+        marduk["complex_modifications"] = cm
+
+        if let index = profiles.firstIndex(where: { ($0["name"] as? String) == "Marduk" }) {
+            profiles[index] = marduk
+        } else {
+            profiles.append(marduk)
+        }
+        root["profiles"] = profiles
+
+        do {
+            let backup = Self.karabinerConfigPath + ".marduk-backup"
+            try? fm.removeItem(atPath: backup)
+            try fm.copyItem(atPath: Self.karabinerConfigPath, toPath: backup)
+            let out = try JSONSerialization.data(withJSONObject: root,
+                                                 options: [.prettyPrinted, .sortedKeys])
+            try out.write(to: URL(fileURLWithPath: Self.karabinerConfigPath), options: .atomic)
+        } catch {
+            fputs("[marduk] karabiner.json write failed: \(error.localizedDescription)\n", stderr)
+            return
+        }
+        fputs("[marduk] Karabiner profile ready (user profile: "
+            + "\"\(karabinerUserProfile ?? "?")\")\n", stderr)
+        Self.karabinerCLI("--select-profile", "Marduk")
+        if let name = karabinerUserProfile {
+            Self.armCrashRestore(userProfile: name)
+        }
+    }
+
+    /// Hand the keyboard back to the user's own profile. Every exit path
+    /// lands here or in a sibling: clean stop and Ctrl+Option+M call this
+    /// directly, SIGTERM drains into the clean teardown, and hard crashes
+    /// run the armed signal handler (mardukCrashRestore). Only SIGKILL /
+    /// power loss escape all three — KeepAlive's relaunch re-activates
+    /// and heals that within seconds.
+    private func deactivateKarabinerProfile() {
+        guard let name = karabinerUserProfile else { return }
+        Self.karabinerCLI("--select-profile", name)
+    }
+
+    /// The rule injected into the Marduk profile: read button → Marduk's
+    /// chord while marduk_up is 1, macOS Speak Selection otherwise (first
+    /// matching manipulator wins). The variable condition matters even
+    /// inside our own profile: after a crash the profile is still
+    /// selected but the daemon is gone — the fallback keeps the button
+    /// alive. Mirrors assets/karabiner/marduk-read-button.json.
+    private static func readButtonRule(key: String) -> [String: Any] {
+        func manipulator(_ conditions: [[String: Any]]?, toModifiers: [String]) -> [String: Any] {
+            var m: [String: Any] = [
+                "type": "basic",
+                "from": ["key_code": key, "modifiers": ["optional": ["any"]]],
+                "to": [["key_code": "escape", "modifiers": toModifiers]],
+            ]
+            if let conditions { m["conditions"] = conditions }
+            return m
+        }
+        return [
+            "description": "Marduk read button (managed by Marduk — regenerated every start)",
+            "manipulators": [
+                manipulator([["type": "variable_if", "name": "marduk_up", "value": 1]],
+                            toModifiers: ["left_control", "left_option"]),
+                manipulator(nil, toModifiers: ["left_option"]),
+            ],
+        ]
+    }
+
+    private static func karabinerCLI(_ args: String...) {
+        let cli = "/Library/Application Support/org.pqrs/Karabiner-Elements/bin/karabiner_cli"
+        guard FileManager.default.isExecutableFile(atPath: cli) else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cli)
+        process.arguments = args
+        try? process.run() // fire and forget
+        fputs("[marduk] karabiner_cli \(args.joined(separator: " "))\n", stderr)
     }
 
     /// Entering the ":voices" picker. When no premium English voice is

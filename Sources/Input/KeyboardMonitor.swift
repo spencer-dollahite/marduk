@@ -1842,18 +1842,30 @@ final class KeyboardMonitor {
                 return
             }
 
-            // Caret / selection start; missing or unreadable range → 0
+            // Start position: the character under the mouse POINTER wins
+            // when it's over this element's text — in Terminal the shell
+            // caret is pinned to the prompt, so pointing is the only way
+            // to say "start here"; in editable apps clicking moves the
+            // caret to the pointer anyway, so the two rarely disagree.
+            // Falls back to the caret / selection start, then the top.
+            // Snapped to the word start, same landing rule as char-find.
             var start = 0
-            var rangeRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(
-                   element, kAXSelectedTextRangeAttribute as CFString, &rangeRef
-               ) == .success,
-               let rr = rangeRef, CFGetTypeID(rr) == AXValueGetTypeID() {
-                var range = CFRange(location: 0, length: 0)
-                if AXValueGetValue(rr as! AXValue, .cfRange, &range) {
-                    start = max(0, range.location)
+            if let pointerOffset = Self.textOffsetAtPointer(in: element) {
+                start = pointerOffset
+                fputs("[keyboard] R: starting at pointer\n", stderr)
+            } else {
+                var rangeRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(
+                       element, kAXSelectedTextRangeAttribute as CFString, &rangeRef
+                   ) == .success,
+                   let rr = rangeRef, CFGetTypeID(rr) == AXValueGetTypeID() {
+                    var range = CFRange(location: 0, length: 0)
+                    if AXValueGetValue(rr as! AXValue, .cfRange, &range) {
+                        start = max(0, range.location)
+                    }
                 }
             }
+            start = ReadNavigator.wordStart(in: text, at: start)
 
             let ns = text as NSString
             let remainder = ns.substring(from: min(start, ns.length))
@@ -1866,6 +1878,29 @@ final class KeyboardMonitor {
             fputs("[keyboard] R: document read (\(remainder.count) of \(ns.length) chars)\n", stderr)
             onSpeak?(remainder)
         }
+    }
+
+    /// The text offset under the mouse pointer, via the parameterized
+    /// AXRangeForPosition attribute (how hover speech maps pointer→text).
+    /// Nil when the element doesn't support it or the pointer isn't over
+    /// its text. AX coordinates are top-left origin; NSEvent's are
+    /// bottom-left — flip against the primary screen's height.
+    private static func textOffsetAtPointer(in element: AXUIElement) -> Int? {
+        let mouse = NSEvent.mouseLocation
+        let primaryHeight = NSScreen.screens.first?.frame.maxY ?? 0
+        var point = CGPoint(x: mouse.x, y: primaryHeight - mouse.y)
+        guard let pointValue = AXValueCreate(.cgPoint, &point) else { return nil }
+        var rangeRef: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+                  element,
+                  kAXRangeForPositionParameterizedAttribute as CFString,
+                  pointValue, &rangeRef
+              ) == .success,
+              let rr = rangeRef, CFGetTypeID(rr) == AXValueGetTypeID() else { return nil }
+        var range = CFRange(location: 0, length: 0)
+        guard AXValueGetValue(rr as! AXValue, .cfRange, &range),
+              range.location >= 0 else { return nil }
+        return range.location
     }
 
     /// PDF fallback for R: the focused window's document path (standard

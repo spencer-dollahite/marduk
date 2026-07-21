@@ -1896,20 +1896,46 @@ final class KeyboardMonitor {
             AXUIElementSetMessagingTimeout(axApp, 0.5)
 
             var focusedRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(
-                      axApp, kAXFocusedUIElementAttribute as CFString, &focusedRef
-                  ) == .success,
+            let focusErr = AXUIElementCopyAttributeValue(
+                axApp, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+            guard focusErr == .success,
                   let raw = focusedRef,
                   CFGetTypeID(raw) == AXUIElementGetTypeID() else {
-                return noDocument("no focused element")
+                // Tell the TRUTH about a broken permission — "no readable
+                // document" sent the user hunting the wrong problem while
+                // the real one was a revoked Accessibility grant
+                if focusErr.rawValue == -25211 {
+                    Self.noteAXError(focusErr.rawValue)
+                    fputs("[keyboard] R: AX API disabled (-25211)\n", stderr)
+                    Earcon.error()
+                    return
+                }
+                return noDocument("no focused element (\(focusErr.rawValue))")
             }
-            let element = raw as! AXUIElement
+            var element = raw as! AXUIElement
             AXUIElementSetMessagingTimeout(element, 0.5)
 
             var valueRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(
-                      element, kAXValueAttribute as CFString, &valueRef
-                  ) == .success,
+            var valueErr = AXUIElementCopyAttributeValue(
+                element, kAXValueAttribute as CFString, &valueRef)
+            if valueErr != .success || (valueRef as? String)?.isEmpty != false {
+                // The focused element may be a CONTAINER (Notes focuses a
+                // wrapper view) — descend to the first real text area
+                // before giving up on the app entirely
+                if let textArea = Self.findDescendant(of: element,
+                                                      role: "AXTextArea",
+                                                      depthBudget: 8) {
+                    element = textArea
+                    AXUIElementSetMessagingTimeout(element, 0.5)
+                    valueRef = nil
+                    valueErr = AXUIElementCopyAttributeValue(
+                        element, kAXValueAttribute as CFString, &valueRef)
+                    if valueErr == .success {
+                        fputs("[keyboard] R: descended to text area\n", stderr)
+                    }
+                }
+            }
+            guard valueErr == .success,
                   let text = valueRef as? String, !text.isEmpty else {
                 // No AX text — PDF viewers (Preview) expose almost none.
                 // Fall back to reading the FILE: the window's document

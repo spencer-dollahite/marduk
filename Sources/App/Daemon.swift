@@ -131,6 +131,7 @@ final class DaemonServer {
     // Retained for live mutation (":config") + persistence
     private var config: MardukConfig
     private let tutorial = Tutorial()
+    private let dialogSentinel = DialogSentinel()
     private let palette = CommandPalette()
     private var paletteEnabled: Bool
     // Palette state, main-queue-only: last buffer + its completion candidates
@@ -283,6 +284,13 @@ final class DaemonServer {
         modeOverlay?.start()
 
         tutorial.announce = { [self] text in speech.announce(text) }
+
+        // Dialog sentinel: password prompts, permission dialogs, and
+        // in-app sheets are invisible to a zoomed-in user — announce
+        // them (interrupting reads on purpose; a dialog IS urgent)
+        dialogSentinel.announce = { [self] text in speech.announce(text) }
+        dialogSentinel.enabled = config.keyboard?.dialogAlerts ?? true
+        dialogSentinel.start()
 
         // Start keyboard monitor (Option+Escape → speak selection)
         keyboardMonitor = KeyboardMonitor()
@@ -533,6 +541,7 @@ final class DaemonServer {
         // Stop event tap first to prevent callbacks during teardown
         Self.setKarabinerVariable(up: false)
         deactivateKarabinerProfile()
+        dialogSentinel.stop()
         keyboardMonitor?.stop()
         // Drain pending callbacks
         RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
@@ -1506,6 +1515,16 @@ final class DaemonServer {
             speech.announce(on ? "Speed keys on. Option up and down change the rate."
                                : "Speed keys off.")
 
+        case "dialogs":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            dialogSentinel.enabled = on
+            var kb = config.keyboard ?? .init()
+            kb.dialogAlerts = on
+            config.keyboard = kb
+            ConfigLoader.save(config)
+            speech.announce(on ? "Dialog alerts on. Sheets and system prompts are announced."
+                               : "Dialog alerts off.")
+
         case "readmotions":
             guard let on = toggle() else { return fail("Say on or off.") }
             keyboardMonitor?.readMotionsEnabled = on
@@ -1561,7 +1580,7 @@ final class DaemonServer {
                 fail("Unknown setting \(key). Settings are rate, pitch, level, hashes, "
                     + "rescue, burst, escape hold, echo, command echo, palette, "
                     + "auto update, check hours, border, pointer, thickness, "
-                    + "speed keys, toggle sound, read motions.")
+                    + "speed keys, toggle sound, read motions, dialogs.")
             }
         }
     }
@@ -1602,6 +1621,7 @@ final class DaemonServer {
             "speedkeys": (keyboardMonitor?.speedKeysEnabled ?? false) ? "on" : "off",
             "togglesound": (keyboardMonitor?.toggleEarconEnabled ?? false) ? "earcon" : "speech",
             "readmotions": (keyboardMonitor?.readMotionsEnabled ?? false) ? "on" : "off",
+            "dialogs": dialogSentinel.enabled ? "on" : "off",
         ]
     }
 

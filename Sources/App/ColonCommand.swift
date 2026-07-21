@@ -198,6 +198,7 @@ enum ColonCommand: Equatable {
         ("speedkeys", .toggle),
         ("togglesound", .choice(["speech", "earcon"])),
         ("readmotions", .toggle),
+        ("dialogs", .toggle),
     ]
 
     static func kind(for key: String) -> SettingKind? {

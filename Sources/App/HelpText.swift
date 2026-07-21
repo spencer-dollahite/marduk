@@ -82,7 +82,8 @@ enum HelpText {
         speed keys, one word, on or off: Option up and down arrows change \
         the speech rate. toggle sound, one word, speech or earcon, what \
         Control Option M plays. read motions, one word, on or off: vim \
-        navigation keys inside a read.
+        navigation keys inside a read. dialogs, on or off: announce \
+        sheets, password prompts, and system dialogs aloud.
         """
 
     /// ":tip" — one is picked at random (never the same twice in a row).
@@ -117,6 +118,7 @@ enum HelpText {
         "During a read, f plus any character hops forward to it, like vim: f q jumps to the next q. Capital F hunts backward, and period repeats the hop.",
         "Open a PDF in Preview and press capital R: Marduk reads the file itself, starting at the page you are looking at. Control F turns the page, twelve then capital G jumps to page twelve.",
         "With Karabiner installed, Marduk runs its own Karabiner profile while active and hands yours back the moment it stops, even on a crash. Your read button reaches Marduk while it is up, and falls back to macOS Speak Selection whenever it is down. Nothing to switch by hand.",
+        "When a password prompt, permission dialog, or sheet appears — even outside your zoomed view — Marduk announces it, with the dialog's title when it has one. Colon config dialogs off silences this.",
         "Apple's premium voices sound more natural and run entirely on your Mac, free, no account. Download one like Ava in System Settings, Accessibility, Read and Speak Content, System Voice, Manage Voices — then audition it with colon voices. Fair warning: at fast speaking rates, the classic enhanced voices often stay clearer.",
     ]
 

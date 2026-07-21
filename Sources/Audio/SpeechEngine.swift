@@ -380,7 +380,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     func spell(_ unit: ReadUnit) -> Bool {
         guard readActive, let text = readText else { return false }
         if synthesizer.isSpeaking, !synthesizer.isPaused {
-            synthesizer.pauseSpeaking(at: .word)
+            synthesizer.pauseSpeaking(at: .immediate)
         }
         let anchor = backAnchor
         guard let span = ReadNavigator.unitText(in: text, at: anchor, unit: unit),
@@ -438,6 +438,12 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
             synthesizer.continueSpeaking()
         }
         synthesizer.speak(utterance)
+        // Duck NOW, not only on didStart: duck() is idempotent (already-
+        // ducked targets skip), and delegate delivery can lapse when the
+        // synthesizer is wedge-adjacent — media must still pause even if
+        // didStart never arrives (field-diagnosed: reads audible over
+        // music with zero didStart lines in the log).
+        ducker.duck()
     }
 
     func stop() {
@@ -454,16 +460,23 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     }
 
     func pause() {
-        synthesizer.pauseSpeaking(at: .word)
+        synthesizer.pauseSpeaking(at: .immediate)
     }
 
     func resume() {
         synthesizer.continueSpeaking()
     }
 
-    /// Space toggle: pause an active read at a word boundary, resume a
-    /// paused one. Media stays ducked/paused across the pause — only the
-    /// read's natural end (or a stop) unducks.
+    /// Space toggle: pause an active read, resume a paused one. Media
+    /// stays ducked/paused across the pause — only the read's natural end
+    /// (or a stop) unducks. PAUSES ARE .immediate EVERYWHERE, never
+    /// .word: a word-boundary pause is DEFERRED, and if a stop or a new
+    /// speak lands in that window (Escape tap-then-hold, tap-then-r,
+    /// Space-then-read — routine gestures now), the pending pause applies
+    /// to a stopped synthesizer and wedges it — delegate callbacks stop
+    /// arriving, didStart never fires, ducking (didStart-driven) dies,
+    /// and the engine eventually goes fully mute until restart.
+    /// Field-diagnosed 2026-07-21 from the user's log.
     func togglePause() {
         stopEcho() // resuming must not compete with a running spell-out
         if synthesizer.isPaused {
@@ -471,7 +484,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
             synthesizer.continueSpeaking()
         } else if synthesizer.isSpeaking {
             fputs("[speech] paused\n", stderr)
-            synthesizer.pauseSpeaking(at: .word)
+            synthesizer.pauseSpeaking(at: .immediate)
         }
     }
 

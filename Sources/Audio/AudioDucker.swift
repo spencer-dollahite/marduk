@@ -292,7 +292,10 @@ final class AudioDucker {
             }
         }
         if !unclaimed.isEmpty {
-            log("audio playing but no media-key client (\(unclaimed.joined(separator: ", "))) — not pausing")
+            // Unconditional (not debug-gated): this is THE diagnostic when
+            // "media stopped pausing" — names are app identity, log-safe
+            fputs("[ducker] audio playing but no media-key client "
+                + "(\(unclaimed.joined(separator: ", "))) — not pausing\n", stderr)
         }
         return false
     }

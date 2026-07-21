@@ -109,7 +109,11 @@ final class KeyboardMonitor {
         case edge(ReadDirection)
         case search(String, ReadDirection)
         case find(Character, ReadDirection)
+        case pageStep(Int)
     }
+    var onReadPageStep: ((Int) -> Void)?      // Ctrl+F/Ctrl+B, ±count pages
+    var onReadPageAbsolute: ((Int) -> Void)?  // 12G — page twelve
+    var onSpeakPaged: ((PagedText, Int) -> Void)?  // PDF read (paged, 1-based start)
     private var lastReadAction: ReadAction?
     var onReadFind: ((Character, ReadDirection) -> Void)?  // f/F + char
     private var pendingReadFind: ReadDirection?  // f pressed, awaiting the target char
@@ -608,6 +612,21 @@ final class KeyboardMonitor {
         if readingCapture, !isReadActive() {
             readingCapture = false  // engine state is the truth; heal drift
         }
+        // Ctrl+F / Ctrl+B — vim page scroll, THE one exception to the
+        // Ctrl-passthrough rule, and only here: during a captured read the
+        // app receives no keys anyway, so the carve-out steals nothing.
+        // Counts apply (3 Ctrl+F = three pages, vim semantics); autorepeat
+        // allowed like the motions; buzzes via the daemon on unpaged
+        // reads. Every other Ctrl combo still passes through everywhere.
+        if readingCapture, hasControl, !hasCommand, !hasOption,
+           burstBuffer.isEmpty, keycode == 3 || keycode == 11 {
+            let count = max(1, readMotionCount)
+            readMotionCount = 0
+            let step = keycode == 3 ? count : -count
+            lastReadAction = .pageStep(step)
+            DispatchQueue.main.async { [self] in onReadPageStep?(step) }
+            return nil
+        }
         if readingCapture, !hasCommand, !hasControl, !hasOption,
            burstBuffer.isEmpty {
             let hasShift = flags.contains(.maskShift)
@@ -699,11 +718,16 @@ final class KeyboardMonitor {
             // the pair, vim-style with no timeout; any other key breaks it.
             if keycode == 5 {
                 if isAutorepeat { return nil }
-                if hasShift { // G
+                if hasShift { // G — end of the read; with a count, page N (12G)
                     pendingReadG = false
+                    let count = readMotionCount
                     readMotionCount = 0
-                    lastReadAction = .edge(.forward)
-                    DispatchQueue.main.async { [self] in onReadJumpEdge?(.forward) }
+                    if count > 0 {
+                        DispatchQueue.main.async { [self] in onReadPageAbsolute?(count) }
+                    } else {
+                        lastReadAction = .edge(.forward)
+                        DispatchQueue.main.async { [self] in onReadJumpEdge?(.forward) }
+                    }
                 } else if pendingReadG { // gg
                     pendingReadG = false
                     readMotionCount = 0
@@ -783,6 +807,8 @@ final class KeyboardMonitor {
                     DispatchQueue.main.async { [self] in onReadSearch?(query, direction) }
                 case .find(let char, let direction):
                     DispatchQueue.main.async { [self] in onReadFind?(char, direction) }
+                case .pageStep(let step):
+                    DispatchQueue.main.async { [self] in onReadPageStep?(step) }
                 }
                 return nil
             }
@@ -1794,7 +1820,14 @@ final class KeyboardMonitor {
                       element, kAXValueAttribute as CFString, &valueRef
                   ) == .success,
                   let text = valueRef as? String, !text.isEmpty else {
-                return noDocument("focused element has no text value")
+                // No AX text — PDF viewers (Preview) expose almost none.
+                // Fall back to reading the FILE: the window's document
+                // path + PDFKit gives per-page text, and pages become
+                // first-class reading targets.
+                if !readPDFDocument(app: app) {
+                    noDocument("focused element has no text value")
+                }
+                return
             }
 
             // Caret / selection start; missing or unreadable range → 0
@@ -1821,6 +1854,56 @@ final class KeyboardMonitor {
             fputs("[keyboard] R: document read (\(remainder.count) of \(ns.length) chars)\n", stderr)
             onSpeak?(remainder)
         }
+    }
+
+    /// PDF fallback for R: the focused window's document path (standard
+    /// NSDocument AX) → PDFKit per-page text → paged read. Start page
+    /// comes from Preview's "Page 3 of 12" window title when parseable.
+    /// AX stays on main; the PDFKit load (big files take a moment) hops
+    /// to a utility queue and dispatches back. Returns false when there's
+    /// no PDF to try (caller falls through to the normal buzz).
+    /// Main-thread only.
+    private func readPDFDocument(app: NSRunningApplication) -> Bool {
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 0.5)
+
+        var windowRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  axApp, kAXFocusedWindowAttribute as CFString, &windowRef
+              ) == .success,
+              let rawWindow = windowRef,
+              CFGetTypeID(rawWindow) == AXUIElementGetTypeID() else { return false }
+        let window = rawWindow as! AXUIElement
+        AXUIElementSetMessagingTimeout(window, 0.5)
+
+        var documentRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  window, kAXDocumentAttribute as CFString, &documentRef
+              ) == .success else { return false }
+        let documentPath = (documentRef as? String) ?? (documentRef as? URL)?.absoluteString ?? ""
+        guard documentPath.lowercased().hasSuffix(".pdf"),
+              let url = URL(string: documentPath).flatMap({ $0.isFileURL ? $0 : nil })
+                  ?? (documentPath.hasPrefix("/") ? URL(fileURLWithPath: documentPath) : nil)
+        else { return false }
+
+        // Visible page from the window title, while we're on main with AX
+        var titleRef: CFTypeRef?
+        _ = AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
+        let startPage = (titleRef as? String).flatMap(PagedText.previewPage(fromTitle:)) ?? 1
+
+        fputs("[keyboard] R: PDF \(url.lastPathComponent), starting page \(startPage)\n", stderr)
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let paged = PagedText.load(url: url)
+            DispatchQueue.main.async { [self] in
+                guard let paged else {
+                    Earcon.error()
+                    onAnnounce?("No readable document here.")
+                    return
+                }
+                onSpeakPaged?(paged, startPage)
+            }
+        }
+        return true
     }
 
     /// The `r` command: triple-click selects the paragraph under the

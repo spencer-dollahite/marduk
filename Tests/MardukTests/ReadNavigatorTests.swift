@@ -270,4 +270,33 @@ final class ReadNavigatorTests: XCTestCase {
         XCTAssertEqual(SpeechEngine.spellOut("Cab", nato: true),
                        "capital Charlie, Alpha, Bravo")
     }
+
+    // MARK: - PagedText
+
+    func testPagedTextOffsets() {
+        // "One." at 0; "\n\n" join; "Two two." at 6; "Three." at 16
+        let paged = PagedText(pages: ["One.", "Two two.", "Three."])
+        XCTAssertEqual(paged.pageStarts, [0, 6, 16])
+        XCTAssertEqual(paged.pageCount, 3)
+        XCTAssertEqual(paged.pageIndex(at: 0), 0)
+        XCTAssertEqual(paged.pageIndex(at: 5), 0)   // in the join → preceding
+        XCTAssertEqual(paged.pageIndex(at: 6), 1)
+        XCTAssertEqual(paged.pageIndex(at: 99), 2)  // past the end → last
+    }
+
+    func testPagedTextEmptyPagesAndUTF16() {
+        let paged = PagedText(pages: ["🦉 owl", "", "next"])
+        // "🦉" is 2 UTF-16 units: "🦉 owl" = 6 units, join = 2 → page 2 at 8
+        XCTAssertEqual(paged.pageStarts, [0, 8, 10])
+        XCTAssertEqual(paged.pageIndex(at: 9), 1)
+    }
+
+    func testPreviewPageTitleParsing() {
+        XCTAssertEqual(PagedText.previewPage(
+            fromTitle: "report.pdf — Page 3 of 12"), 3)
+        XCTAssertEqual(PagedText.previewPage(
+            fromTitle: "book.pdf — Page 12 of 300 — Edited"), 12)
+        XCTAssertNil(PagedText.previewPage(fromTitle: "report.pdf"))
+        XCTAssertNil(PagedText.previewPage(fromTitle: "Page of nothing"))
+    }
 }

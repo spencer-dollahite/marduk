@@ -19,7 +19,10 @@ enum HelpText {
         Marduk commands. NORMAL mode: i, enter INSERT mode. r, select the \
         paragraph under the cursor, like a triple click, and read it. \
         Capital R, read the whole document from the text cursor to the \
-        end, in apps that share their text, like Notes and Terminal. \
+        end, in apps that share their text, like Notes and Terminal. On \
+        a PDF, capital R reads the file itself, page aware: control F \
+        and control B turn pages, a number then capital G jumps to that \
+        page, g g goes to page one, capital G to the last page. \
         v, visual selection. Capital V, select whole lines. t, speak the \
         time. t t, time and date. s, toggle speak under pointer. u, check \
         for updates and hear what's new. u u, install the update. \
@@ -109,6 +112,7 @@ enum HelpText {
         "Capital R turns a Notes page or a Terminal window into an audiobook: it reads from your text cursor to the end, with every reading motion live. Press it mid-read to switch documents.",
         "Was that m or n? During a read, z spells the current word letter by letter, and a second z spells it phonetically: Mike versus November. Capital Z spells the whole sentence.",
         "During a read, f plus any character hops forward to it, like vim: f q jumps to the next q. Capital F hunts backward, and period repeats the hop.",
+        "Open a PDF in Preview and press capital R: Marduk reads the file itself, starting at the page you are looking at. Control F turns the page, twelve then capital G jumps to page twelve.",
     ]
 
     static let welcome = """

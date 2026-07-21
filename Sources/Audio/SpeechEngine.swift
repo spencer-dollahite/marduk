@@ -47,6 +47,9 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     private var readText: String?
     private var readBase = 0
     private var readPosition = 0
+    // Page starts when the current read is a paged document (PDF) — pages
+    // are respeak targets layered on the flat readText. Nil = not paged.
+    private var readPaged: PagedText?
 
     // Back-motion anchor: at fast speech rates the boundary callbacks race
     // ahead of comprehension — by the time a `b` lands, readPosition is
@@ -107,6 +110,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         stop()
 
         readText = processed
+        readPaged = nil  // plain read; speakPaged re-sets after this returns
         readBase = 0
         readPosition = 0
         segmentStartedAt = Date()
@@ -144,6 +148,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         startSpeaking(utterance, completion: completion)
         readActive = false
         readText = nil
+        readPaged = nil
     }
 
     func speakSSML(_ ssml: String) {
@@ -161,6 +166,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         startSpeaking(utterance, completion: nil)
         readActive = true
         readText = nil // SSML positions don't map to plain text — no motions
+        readPaged = nil
     }
 
     // MARK: - Read motions (vim-style navigation within the current read)
@@ -202,6 +208,54 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         let target = direction == .back ? 0 : ReadNavigator.endTarget(in: text)
         guard target != readPosition else { return false }
         respeak(from: target)
+        return true
+    }
+
+    /// Whether the current read has page structure (PDF).
+    var isPaged: Bool { readActive && readPaged != nil }
+
+    /// A paged document read: normal speak, then page structure recorded,
+    /// then an optional jump to the visible page (1-based; respeak keeps
+    /// the completion and duck state).
+    func speakPaged(_ paged: PagedText, startPage: Int, completion: (() -> Void)? = nil) {
+        speak(paged.text, completion: completion)
+        guard readActive else { return }  // empty-after-preprocessing
+        readPaged = paged
+        let index = startPage - 1
+        if index > 0, paged.pageStarts.indices.contains(index) {
+            jumpTo(offset: paged.pageStarts[index])
+        }
+    }
+
+    /// Ctrl+F / Ctrl+B: step pages (vim count semantics — step may be ±N).
+    /// False when the read isn't paged or the edge stops the whole step.
+    @discardableResult
+    func jumpPage(step: Int) -> Bool {
+        stopEcho()
+        guard readActive, let paged = readPaged else { return false }
+        let current = paged.pageIndex(at: step < 0 ? backAnchor : readPosition)
+        let target = max(0, min(current + step, paged.pageCount - 1))
+        guard target != current else { return false }
+        return speakPage(index: target, paged: paged)
+    }
+
+    /// 12G / bare G on a paged read: absolute page, 1-based, clamped.
+    @discardableResult
+    func jumpToPage(_ number: Int) -> Bool {
+        stopEcho()
+        guard readActive, let paged = readPaged else { return false }
+        let target = max(0, min(number - 1, paged.pageCount - 1))
+        return speakPage(index: target, paged: paged)
+    }
+
+    var pageCount: Int { readPaged?.pageCount ?? 0 }
+
+    private func speakPage(index: Int, paged: PagedText) -> Bool {
+        fputs("[speech] page \(index + 1) of \(paged.pageCount)\n", stderr)
+        // The echo overlaps the respeak's first beat on purpose — it's the
+        // distinct voice, and a pause-announce-resume dance costs latency
+        echo("page \(index + 1)")
+        respeak(from: paged.pageStarts[index])
         return true
     }
 
@@ -456,6 +510,7 @@ extension SpeechEngine: AVSpeechSynthesizerDelegate {
             currentUtterance = nil
             readActive = false
             readText = nil
+            readPaged = nil
         }
         if let completion = completions.removeValue(forKey: ObjectIdentifier(utterance)) {
             completion()

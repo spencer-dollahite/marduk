@@ -361,10 +361,33 @@ final class DaemonServer {
             }
         }
         keyboardMonitor?.onReadJumpEdge = { [self] direction in
-            if speech.jumpToEdge(direction) {
+            // On a paged read, G means "last page", not "last paragraph"
+            let jumped = direction == .forward && speech.isPaged
+                ? speech.jumpToPage(speech.pageCount)
+                : speech.jumpToEdge(direction)
+            if jumped {
                 tutorial.handle(.readJumped)
             } else {
                 Earcon.error()
+            }
+        }
+        keyboardMonitor?.onReadPageStep = { [self] step in
+            if speech.jumpPage(step: step) {
+                tutorial.handle(.readJumped)
+            } else {
+                Earcon.error()
+            }
+        }
+        keyboardMonitor?.onReadPageAbsolute = { [self] page in
+            if speech.jumpToPage(page) {
+                tutorial.handle(.readJumped)
+            } else {
+                Earcon.error()
+            }
+        }
+        keyboardMonitor?.onSpeakPaged = { [self] paged, startPage in
+            speech.speakPaged(paged, startPage: startPage) { [self] in
+                tutorial.handle(.readFinished)
             }
         }
         keyboardMonitor?.onReadLineStart = { [self] in

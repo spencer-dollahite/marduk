@@ -20,6 +20,13 @@ PROFILE="${MARDUK_NOTARY_PROFILE:-marduk-notary}"
 [[ -f Package.swift ]] || { echo "error: run from the repo root" >&2; exit 1; }
 [[ -z "$(git status --porcelain)" ]] || { echo "error: working tree not clean" >&2; exit 1; }
 
+# Sync with origin BEFORE bumping/tagging: a commit pushed from another
+# machine mid-release once left the tag pointing at an orphaned commit
+# (the push raced and lost, but the tag went through). --ff-only can
+# only advance; on divergence it fails here, before anything is stamped.
+echo "==> Syncing with origin"
+git pull --ff-only origin main
+
 echo "==> Version $VERSION"
 sed -i '' "s/static let version = \".*\"/static let version = \"$VERSION\"/" \
     Sources/App/Version.swift

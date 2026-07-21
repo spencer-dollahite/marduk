@@ -266,7 +266,7 @@ final class DaemonServer {
         keyboardMonitor?.typingEchoEnabled = config.keyboard?.typingEcho ?? false
         keyboardMonitor?.commandEchoEnabled = config.keyboard?.commandEcho ?? true
         keyboardMonitor?.speedKeysEnabled = config.keyboard?.speedKeys ?? false
-        keyboardMonitor?.readMotionsEnabled = config.keyboard?.readMotions ?? false
+        keyboardMonitor?.readMotionsEnabled = config.keyboard?.readMotions ?? true
         keyboardMonitor?.toggleEarconEnabled =
             (config.keyboard?.toggleSound ?? "speech") == "earcon"
         palette.positionMode = CommandPalette.PositionMode(

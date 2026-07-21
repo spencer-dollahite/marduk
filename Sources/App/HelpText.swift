@@ -98,7 +98,7 @@ enum HelpText {
         "With colon config speed keys on, Option up arrow and Option down arrow change the speech rate on the spot, ten words per minute at a time. Hold the key to glide.",
         "In Firefox reader mode, n hands the reading to Firefox's own narrator: your music pauses, Marduk goes quiet, and Firefox reads the page. Press n again or Escape to bring the music back.",
         "On any article in Firefox, 8 does the whole ritual at once: opens reader mode, pauses your music, and starts Firefox narrating. 8 again closes it all back down.",
-        "With colon config read motions on, vim keys work inside a read: open paren replays the sentence you just missed, b and w step by word, braces by paragraph, and slash searches the text. Wait, what did it just say? Open paren.",
+        "Vim keys work inside a read: open paren replays the sentence you just missed, b and w step by word, j and k by line, braces by paragraph, and slash searches the text. Wait, what did it just say? Open paren.",
     ]
 
     static let welcome = """

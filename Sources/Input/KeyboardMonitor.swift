@@ -61,12 +61,13 @@ final class KeyboardMonitor {
     var toggleEarconEnabled = false  // Ctrl+Option+M bloops instead of speaking
     var onRateChange: ((Float) -> Void)?  // signed rate delta from the speed keys
 
-    // Read motions (opt-in): vim navigation inside an active read — b/w
-    // word, (/) sentence, {/} paragraph, digits count, / and ? search.
-    // While enabled, an active read CAPTURES the keyboard from any mode
-    // (READING is a real mode: i and Escape are the only exits); with the
-    // setting off, every key keeps its normal behavior. State is
-    // main-thread-only like all tap state.
+    // Read motions (default ON, `:config readmotions off` disables): vim
+    // navigation inside an active read — b/w/h/l word, (/) sentence, j/k
+    // line, {/} paragraph, digits count, / and ? search. While enabled,
+    // an active read CAPTURES the keyboard from any mode (READING is a
+    // real mode: i and held Escape are the only exits); with the setting
+    // off, every key keeps its normal behavior. State is main-thread-only
+    // like all tap state.
     var readMotionsEnabled = false {
         didSet {
             // Turned off mid-read (socket-side :config): drop the capture,

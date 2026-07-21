@@ -1253,7 +1253,10 @@ final class DaemonServer {
         var cm = marduk["complex_modifications"] as? [String: Any] ?? [:]
         var rules = cm["rules"] as? [[String: Any]] ?? []
         rules.removeAll { ($0["description"] as? String)?.hasPrefix("Marduk read button") == true }
-        rules.insert(Self.readButtonRule(key: config.keyboard?.karabinerReadKey ?? "equal_sign"),
+        rules.insert(Self.readButtonRule(
+                         key: config.keyboard?.karabinerReadKey ?? "equal_sign",
+                         vendorId: config.keyboard?.karabinerReadVendorId ?? 5426,
+                         productId: config.keyboard?.karabinerReadProductId),
                      at: 0)
         cm["rules"] = rules
         marduk["complex_modifications"] = cm
@@ -1333,14 +1336,31 @@ final class DaemonServer {
     /// inside our own profile: after a crash the profile is still
     /// selected but the daemon is gone — the fallback keeps the button
     /// alive. Mirrors assets/karabiner/marduk-read-button.json.
-    private static func readButtonRule(key: String) -> [String: Any] {
-        func manipulator(_ conditions: [[String: Any]]?, toModifiers: [String]) -> [String: Any] {
+    /// The rule is DEVICE-SCOPED: equal_sign is also the real keyboard's
+    /// =/+ key, and an unscoped rule ate it in every mode (field report —
+    /// typing plus/equals was impossible). Default scope is vendor 5426
+    /// (Razer, the Naga assumption behind the default key);
+    /// keyboard.karabinerReadVendorId/ProductId override, vendorId 0 =
+    /// any device (the old behavior, for exotic setups). BOTH manipulators
+    /// carry the condition — the fallback would otherwise turn the
+    /// keyboard's = into Option+Escape whenever Marduk is down.
+    private static func readButtonRule(key: String, vendorId: Int,
+                                       productId: Int?) -> [String: Any] {
+        var deviceCondition: [String: Any]?
+        if vendorId != 0 {
+            var identifiers: [String: Any] = ["vendor_id": vendorId]
+            if let productId { identifiers["product_id"] = productId }
+            deviceCondition = ["type": "device_if", "identifiers": [identifiers]]
+        }
+        func manipulator(_ conditions: [[String: Any]], toModifiers: [String]) -> [String: Any] {
+            var all = conditions
+            if let deviceCondition { all.append(deviceCondition) }
             var m: [String: Any] = [
                 "type": "basic",
                 "from": ["key_code": key, "modifiers": ["optional": ["any"]]],
                 "to": [["key_code": "escape", "modifiers": toModifiers]],
             ]
-            if let conditions { m["conditions"] = conditions }
+            if !all.isEmpty { m["conditions"] = all }
             return m
         }
         return [
@@ -1348,7 +1368,7 @@ final class DaemonServer {
             "manipulators": [
                 manipulator([["type": "variable_if", "name": "marduk_up", "value": 1]],
                             toModifiers: ["left_control", "left_option"]),
-                manipulator(nil, toModifiers: ["left_option"]),
+                manipulator([], toModifiers: ["left_option"]),
             ],
         ]
     }

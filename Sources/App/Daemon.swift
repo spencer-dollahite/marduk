@@ -287,6 +287,7 @@ final class DaemonServer {
             onUpdate: { [self] in performUpdate() },
             isSpeaking: { [self] in speech.isSpeaking },
             isReadActive: { [self] in speech.readActive },
+            isReadPaused: { [self] in speech.isPaused },
             onPauseToggle: { [self] in
                 tutorial.handle(.pauseToggled)
                 speech.togglePause()
@@ -303,6 +304,9 @@ final class DaemonServer {
                     autoAcceptTimer?.cancel()
                 }
             }
+        }
+        keyboardMonitor?.onReadingChange = { [self] reading in
+            DispatchQueue.main.async { [self] in modeOverlay?.setReading(reading) }
         }
         keyboardMonitor?.onEnabledChange = { [self] enabled in
             DispatchQueue.main.async { [self] in
@@ -1215,6 +1219,7 @@ final class DaemonServer {
         modeOverlay = ModeOverlay(config: config.overlay ?? .init())
         modeOverlay?.start()
         modeOverlay?.setMode(keyboardMonitor?.mode ?? .normal)
+        modeOverlay?.setReading(keyboardMonitor?.readingCapture ?? false)
         modeOverlay?.setEnabled(keyboardMonitor?.isEnabled ?? true)
     }
 

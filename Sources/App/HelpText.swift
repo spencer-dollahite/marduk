@@ -65,7 +65,7 @@ enum HelpText {
         between update checks, zero for never. position, center or pointer, \
         where the panel opens. Pointer keeps it inside a zoomed view. \
         border, on or off, a screen edge color showing the current mode: \
-        red NORMAL, green INSERT, blue VISUAL. pointer, on or off, the same \
+        red NORMAL, green INSERT, blue VISUAL, purple while reading. pointer, on or off, the same \
         color as a dot following the mouse. thickness, border width in points. \
         speed keys, one word, on or off: Option up and down arrows change \
         the speech rate. toggle sound, one word, speech or earcon, what \

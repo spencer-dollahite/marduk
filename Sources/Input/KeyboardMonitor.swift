@@ -28,6 +28,7 @@ final class KeyboardMonitor {
     private var onUpdate: UpdateHandler?
     private var isSpeaking: () -> Bool = { false }
     private var isReadActive: () -> Bool = { false }
+    private var isReadPaused: () -> Bool = { false }
     private var onPauseToggle: (() -> Void)?
     private var stopped = false
 
@@ -80,7 +81,14 @@ final class KeyboardMonitor {
     // reads it directly. The underlying `mode` is left untouched while
     // capturing; only the explicit exits (i, Escape) change it, so a read
     // that ends naturally returns the user exactly where they were.
-    private var readingCapture = false
+    // onReadingChange fires on actual flips, sometimes synchronously from
+    // the tap callback — handlers must only dispatch, never block (same
+    // contract as onModeChange/onEnabledChange). Drives the overlay's
+    // purple READING color.
+    var onReadingChange: ((Bool) -> Void)?
+    private(set) var readingCapture = false {
+        didSet { if readingCapture != oldValue { onReadingChange?(readingCapture) } }
+    }
     var onReadJump: ((ReadUnit, ReadDirection, Int) -> Void)?
     var onReadSearch: ((String, ReadDirection) -> Void)?
     var onReadSearchBegin: (() -> Void)?    // pause the read while typing
@@ -200,6 +208,7 @@ final class KeyboardMonitor {
         onUpdate: @escaping UpdateHandler,
         isSpeaking: @escaping () -> Bool,
         isReadActive: @escaping () -> Bool = { false },
+        isReadPaused: @escaping () -> Bool = { false },
         onPauseToggle: (() -> Void)? = nil
     ) {
         self.onSpeak = onSpeak
@@ -208,6 +217,7 @@ final class KeyboardMonitor {
         self.onUpdate = onUpdate
         self.isSpeaking = isSpeaking
         self.isReadActive = isReadActive
+        self.isReadPaused = isReadPaused
         self.onPauseToggle = onPauseToggle
 
         // Keep the frontmost-app cache warm for the `n` narration gate
@@ -363,12 +373,22 @@ final class KeyboardMonitor {
 
         // === Always-active shortcuts ===
 
-        // Option+Escape — speak selection / stop speech
+        // Option+Escape — speak selection / stop speech. A PAUSED read is
+        // silent but still reports isSpeaking — before Escape-tap-pause
+        // existed that state was rare; now it's routine, and letting it
+        // swallow the press ("stop" nothing audible) made chained selection
+        // reads feel completely broken. Paused = the user obviously wants
+        // the new selection: clear the old read AND read in one press.
+        // Audibly speaking = the press means "silence that", unchanged.
         if keycode == 53, hasOption {
             if isAutorepeat { return nil }
             DispatchQueue.main.async { [self] in
                 if isSpeaking() {
+                    let paused = isReadPaused()
                     onStop?()
+                    if paused {
+                        Self.readSelection { [self] text in onSpeak?(text) }
+                    }
                 } else {
                     Self.readSelection { [self] text in onSpeak?(text) }
                 }

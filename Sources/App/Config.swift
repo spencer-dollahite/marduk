@@ -39,6 +39,7 @@ struct MardukConfig: Codable {
         var normalColor: String? = "#FF3B30"  // red; "none" or "" hides in that mode
         var insertColor: String? = "#34C759"  // green
         var visualColor: String? = "#007AFF"  // blue
+        var readingColor: String? = "#AF52DE" // purple — while a read captures the keyboard
     }
 
     struct UpdateConfig: Codable {

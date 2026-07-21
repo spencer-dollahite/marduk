@@ -2,8 +2,9 @@ import AppKit
 
 /// Full-screen, click-through visual mode indicator: a thick colored border
 /// at the screen edges and/or a small colored dot that follows the mouse
-/// pointer. Red = NORMAL, green = INSERT, blue = VISUAL, nothing = Marduk
-/// off (colors configurable; "none" hides a mode). BOTH OFF by default —
+/// pointer. Red = NORMAL, green = INSERT, blue = VISUAL, purple = READING
+/// capture (overrides the mode color), nothing = Marduk off (colors
+/// configurable; "none" hides a mode). BOTH OFF by default —
 /// enable with `:config border on` / `:config pointer on` or the `overlay`
 /// block in config.json.
 ///
@@ -27,6 +28,7 @@ final class ModeOverlay {
         let normalColor: NSColor?
         let insertColor: NSColor?
         let visualColor: NSColor?
+        let readingColor: NSColor?
     }
 
     private let style: Style
@@ -35,6 +37,7 @@ final class ModeOverlay {
     private var mouseMonitor: Any?
     private var screenObserver: NSObjectProtocol?
     private var currentMode: KeyboardMonitor.Mode = .normal
+    private var reading = false   // READING capture overrides the mode color
     private var mardukEnabled = true
     private var started = false
 
@@ -59,7 +62,8 @@ final class ModeOverlay {
             pointerSize: CGFloat(max(8, config.pointerSize ?? 28)),
             normalColor: Self.parseColor(config.normalColor ?? "#FF3B30"),
             insertColor: Self.parseColor(config.insertColor ?? "#34C759"),
-            visualColor: Self.parseColor(config.visualColor ?? "#007AFF")
+            visualColor: Self.parseColor(config.visualColor ?? "#007AFF"),
+            readingColor: Self.parseColor(config.readingColor ?? "#AF52DE")
         )
     }
 
@@ -137,11 +141,21 @@ final class ModeOverlay {
         }
     }
 
+    /// READING capture (read motions): purple while a read owns the
+    /// keyboard, whatever mode sits underneath.
+    func setReading(_ reading: Bool) {
+        DispatchQueue.main.async { [self] in
+            self.reading = reading
+            apply()
+        }
+    }
+
     // MARK: - Internals (main thread only)
 
     private func apply() {
         guard started else { return }
-        let activeColor = mardukEnabled ? color(for: currentMode) : nil
+        let modeColor = reading ? style.readingColor : color(for: currentMode)
+        let activeColor = mardukEnabled ? modeColor : nil
         if hasApplied, activeColor == appliedColor { return }
         hasApplied = true
         appliedColor = activeColor

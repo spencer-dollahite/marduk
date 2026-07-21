@@ -437,6 +437,17 @@ final class DaemonServer {
                     tutorial.abort(silent: true)
                     palette.hide()
                     hoverSpeech.deactivate()
+                    // "Systems disengaged" must mean ALL systems: the
+                    // sentinel's toggle gating was lost in the level
+                    // migration and the inverter was never wired (field:
+                    // a disengaged Marduk kept announcing dialogs and
+                    // inverting displays). stop() also reverts any active
+                    // inversion — teardown code reused as stand-down.
+                    dialogSentinel.stop()
+                    displayInverter?.stop()
+                } else if !safeMode {
+                    dialogSentinel.start()
+                    displayInverter?.start()
                 }
             }
         }

@@ -157,12 +157,13 @@ These are deliberate trade-offs of the typing-rescue system, not bugs:
 
 ### Emergency stop
 
-Marduk is a background daemon — it has no Dock icon and macOS excludes it from the Force Quit window (and force-killing wouldn't help: the launch agent restarts it in seconds, by design). The stops that work, gentlest first:
+Marduk is a background daemon — by default it has no Dock icon and macOS excludes it from the Force Quit window (`:config dock on` makes it a visible app: Dock, app switcher, and Force Quit, as one package) (and force-killing wouldn't help: the launch agent restarts it in seconds, by design). The stops that work, gentlest first:
 
-1. **`Ctrl+Option+M`** — instant off. Keys pass through untouched, your Karabiner profile comes back. Same chord turns it back on.
-2. **`:quit`** — stops the daemon cleanly; it stays stopped until next login or `marduk start`.
-3. **`marduk stop`** in Terminal — same as `:quit`, from outside.
-4. **Activity Monitor → marduk → Force Quit** — works as a last resort, but expect the automatic relaunch; follow with `marduk stop` if you want it to stay down.
+1. **`Ctrl+Option+Delete`** (with Karabiner) — the panic chord. Karabiner itself force-kills Marduk, upstream of everything, so it works even if Marduk is wedged and eating keys. The launch agent restarts it fresh in ~10 seconds; repeated panics put it in safe mode.
+2. **`Ctrl+Option+M`** — instant off. Keys pass through untouched, your Karabiner profile comes back. Same chord turns it back on.
+3. **`:quit`** — stops the daemon cleanly; it stays stopped until next login or `marduk start`.
+4. **`marduk stop`** in Terminal — same as `:quit`, from outside.
+5. **Activity Monitor → marduk → Force Quit** — works as a last resort, but expect the automatic relaunch; follow with `marduk stop` if you want it to stay down.
 
 ## Known limitations
 

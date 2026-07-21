@@ -110,7 +110,9 @@ enum HelpText {
         one word, auto, on, or off: Preview documents switch to dark view \
         by themselves — auto follows your system theme. auto invert, one word, on or off: measure each app's \
         real brightness with a tiny screenshot and invert only when it is \
-        actually bright — needs the Screen Recording permission.
+        actually bright — needs the Screen Recording permission. dock, on \
+        or off: show Marduk in the Dock, the app switcher, and the Force \
+        Quit window.
         """
 
     /// ":tip" — one is picked at random (never the same twice in a row).
@@ -153,7 +155,7 @@ enum HelpText {
         "The view follows the voice: jump a PDF read to page three and Preview turns to page three, read a Reader article and it scrolls along like a teleprompter. Colon config follow off keeps the view still.",
         "Code names read as natural words: read Document From Caret, not one long mumble, and user id count without hearing underscore twice. Colon config identifiers off brings back the raw forms.",
         "Press i during a read and the reading keeps going while you type — notes while you listen. Hold Escape to give the keyboard back to the read; hold it again to stop. Option Escape kills the audio without leaving your typing.",
-        "If Marduk ever misbehaves, Control Option M turns it off instantly — keys pass through untouched and your Karabiner setup comes back. Colon quit stops the daemon entirely, and marduk stop in Terminal does the same from outside. Force quitting doesn't stick: the launch agent restarts it on purpose.",
+        "If Marduk ever misbehaves, Control Option Delete is the panic chord: Karabiner itself force-kills Marduk, so it works even when Marduk is stuck — and the launch agent brings back a fresh one in seconds. Control Option M turns Marduk off gently; colon quit or marduk stop in Terminal keep it stopped. Colon config dock on adds Marduk to the Dock and the Force Quit window.",
         "Want every key you type spoken, in every app? macOS already does that: colon typing opens the typing feedback settings. Marduk is happy to be your front desk for the accessibility features Apple already built.",
         "Marduk mispronouncing a name? Colon pronunciation opens the system pronunciation editor. Add the word there, typed or spoken, and Marduk says it your way from the very next read — including entries you scope to a single app.",
     ]

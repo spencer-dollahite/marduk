@@ -534,11 +534,35 @@ final class DisplayInverter: @unchecked Sendable {
                 fputs("[display] osascript launch failed\n", stderr)
                 return
             }
-            // Kill-on-timeout watchdog, same policy as the ducker's scripts
-            let deadline = Date().addingTimeInterval(3)
+            // Kill-on-timeout watchdog. Generous: a first-run Automation
+            // prompt legitimately stalls osascript, and killing one
+            // MID-GESTURE leaves virtual modifiers stuck down system-wide
+            // (field: Cmd+Q stopped working — arriving as Shift+Cmd+Q).
+            let deadline = Date().addingTimeInterval(10)
             while process.isRunning && Date() < deadline { usleep(50_000) }
-            if process.isRunning { process.terminate() }
+            if process.isRunning {
+                process.terminate()
+                fputs("[display] invert osascript timed out — releasing "
+                    + "modifiers\n", stderr)
+                Self.releaseStuckModifiers()
+            }
         }
+    }
+
+    /// A killed keystroke script can leave shift/command logically held —
+    /// force-release every modifier so one incident can't disable the
+    /// keyboard's chords until reboot.
+    private static func releaseStuckModifiers() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", "tell application \"System Events\"",
+                             "-e", "key up shift", "-e", "key up command",
+                             "-e", "key up option", "-e", "key up control",
+                             "-e", "end tell"]
+        guard (try? process.run()) != nil else { return }
+        let deadline = Date().addingTimeInterval(3)
+        while process.isRunning && Date() < deadline { usleep(50_000) }
+        if process.isRunning { process.terminate() }
     }
 
     /// Verification NEVER acts on the display (the old retry was a

@@ -188,6 +188,32 @@ final class DisplayInverter: @unchecked Sendable {
     private var pendingActivation: DispatchWorkItem?
     private static let activationDwell: TimeInterval = 0.8
 
+    /// The app that owns the topmost normal-layer window — what the user's
+    /// EYES consider front. NSWorkspace activation turned out to be
+    /// politics: Packet Tracer flaps it chronically (dialog churn), and
+    /// every activation-based scheme strobed the display while PT's window
+    /// never left the top of the screen. Window z-order is ground truth.
+    /// Basic window info needs no Screen Recording (names are redacted;
+    /// we read only layer, owner, and bounds).
+    static func visuallyFrontmostApp() -> (bundleID: String, pid: pid_t)? {
+        guard let info = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] else { return nil }
+        for window in info {  // front-to-back
+            guard let layer = window[kCGWindowLayer as String] as? Int, layer == 0,
+                  let pid = window[kCGWindowOwnerPID as String] as? pid_t,
+                  pid != getpid(),
+                  let bounds = window[kCGWindowBounds as String] as? [String: Any],
+                  let width = bounds["Width"] as? Double,
+                  let height = bounds["Height"] as? Double,
+                  width > 200, height > 150,
+                  let app = NSRunningApplication(processIdentifier: pid),
+                  let bundle = app.bundleIdentifier else { continue }
+            return (bundle, pid)
+        }
+        return nil
+    }
+
     // OUR OWN inversion changes the display configuration, which makes Qt
     // apps tear down and rebuild windows — resigning activation for over a
     // second and handing the front to the next app. Acting on that echo
@@ -214,10 +240,10 @@ final class DisplayInverter: @unchecked Sendable {
         guard Date() >= settleUntil else { return }
         pendingActivation?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self,
-                  NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-                      == bundleID else { return }
-            self.handleAppActivated(bundleID, pid: pid)
+            // The activation was only the doorbell — the decision reads
+            // the actual window stack
+            guard let self, let front = Self.visuallyFrontmostApp() else { return }
+            self.handleAppActivated(front.bundleID, pid: front.pid)
         }
         pendingActivation = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.activationDwell,
@@ -226,15 +252,15 @@ final class DisplayInverter: @unchecked Sendable {
 
     private func handleAppActivated(_ bundleID: String, pid: pid_t) {
         if invertEnabled {
-            // Measurement OVERRIDES the list when auto is on: a Pages deck
-            // the user styled black-on-white-text must not be inverted into
-            // glare just because Pages is listed. The list alone (auto off)
-            // stays unconditional — instant, no capture permission needed.
-            if autoInvert, bundleID != Self.previewBundle || !previewDarkActive,
-               bundleID != Bundle.main.bundleIdentifier {
-                evaluateBrightness(bundleID: bundleID, pid: pid)
-            } else if invertApps.contains(bundleID) {
+            // The LIST is unconditional certainty — invert on arrival, no
+            // capture, no permission. Auto-measurement judges only UNLISTED
+            // apps, so a black-styled Pages deck stays safe by staying off
+            // the list and letting the measurement see it.
+            if invertApps.contains(bundleID) {
                 ensureInverted(true, reason: bundleID)
+            } else if autoInvert, bundleID != Self.previewBundle || !previewDarkActive,
+                      bundleID != Bundle.main.bundleIdentifier {
+                evaluateBrightness(bundleID: bundleID, pid: pid)
             } else {
                 ensureInverted(false, reason: "left invert app")
             }
@@ -326,8 +352,7 @@ final class DisplayInverter: @unchecked Sendable {
             guard let measured else { return }
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.invertEnabled, self.autoInvert,
-                      NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-                          == bundleID else { return }
+                      Self.visuallyFrontmostApp()?.bundleID == bundleID else { return }
                 // Window captures come from the backing store, BEFORE the
                 // display-level inversion filter — the measurement is the
                 // app's true brightness either way. (The one observed

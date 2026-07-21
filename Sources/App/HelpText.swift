@@ -9,8 +9,11 @@ enum HelpText {
         not typing. Press i to type. That is INSERT mode. To get back to NORMAL, \
         hold Escape for half a second. In NORMAL mode: lowercase r selects the \
         paragraph under the cursor, like a triple click, and reads it. \
-        Uppercase R reads the whole document from the mouse pointer to the \
-        end. \
+        Uppercase R is Marduk's signature: it reads the whole document from \
+        the mouse pointer to the end, like an audiobook, and while anything \
+        reads, vim keys move through the text — b back a word, open paren \
+        back a sentence, slash to search. It is all vim on purpose: if you \
+        know vim, everything carries over. \
         v starts a visual selection. t speaks the time. Escape stops speech. \
         Space pauses and resumes a read. When you press colon, a panel lists \
         everything you can type. Type colon commands for the full list. \
@@ -111,7 +114,7 @@ enum HelpText {
         "Press t twice quickly for the time and the date. A single t is just the time.",
         "Space pauses a read mid-sentence and resumes it exactly where it stopped, and so does a quick tap of Escape. Holding Escape abandons the read instead.",
         "In INSERT mode, a quick tap of Escape goes to the app, so vim keeps working. Only holding Escape returns to NORMAL.",
-        "In visual mode, numbers repeat motions: v 3 j selects three lines down before you press r to read them.",
+        "In visual mode, numbers repeat motions: v 3 j selects three lines down before you press lowercase r to read them.",
         "Capital V selects whole lines at a time. Lowercase v selects character by character.",
         "If you start typing a word in NORMAL mode by mistake, Marduk notices, switches to INSERT, and types it for you. That is the falling sound.",
         "Words that start with the letter i lose that i if typed in NORMAL mode, because i switches to INSERT instantly. The rescue catches the rest.",
@@ -130,6 +133,7 @@ enum HelpText {
         "With colon config speed keys on, Option up arrow and Option down arrow change the speech rate on the spot, ten words per minute at a time. Hold the key to glide.",
         "In Firefox reader mode, n hands the reading to Firefox's own narrator: your music pauses, Marduk goes quiet, and Firefox reads the page. Press n again or Escape to bring the music back.",
         "On any article in Firefox, 8 does the whole ritual at once: opens reader mode, pauses your music, and starts Firefox narrating. 8 again closes it all back down.",
+        "Marduk's reading keys are vim's keys on purpose: b and w for words, parens for sentences, slash to search, dot to repeat. If you already know vim, everything carries over. If you don't, the choices may feel odd for a few days — then the muscle memory kicks in, and it pays off for good.",
         "Vim keys work inside a read: open paren replays the sentence you just missed, b and w step by word, j and k by line, braces by paragraph, and slash searches the text. Wait, what did it just say? Open paren.",
         "Uppercase R turns a Notes page or a Terminal window into an audiobook: point the mouse where you want to start and it reads from there to the end, with every reading motion live. Press it mid-read to switch documents.",
         "Uppercase R reads web pages in Safari and Firefox with every reading motion live. Open the Reader view first — shift command R in Safari, the reader icon in Firefox — and the read is just the title and article, no site clutter.",
@@ -151,6 +155,9 @@ enum HelpText {
         typing. Press i to type. Hold Escape for half a second to come back to \
         NORMAL. Press lowercase r to hear the paragraph under the cursor. Press Escape \
         to stop speech. \
+        Marduk's signature is uppercase R: point the mouse at any document \
+        and it reads to the end like an audiobook, with vim keys to move \
+        through the text as it speaks. \
         The most important key is colon, that is shift semicolon: it opens \
         the command panel, which shows and speaks everything Marduk can do. \
         From there, type h for help, or t u for the guided tour. To try a \

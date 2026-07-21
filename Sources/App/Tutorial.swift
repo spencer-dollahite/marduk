@@ -138,10 +138,12 @@ final class Tutorial {
                  success: "That panel is how you find everything else: "
                     + "commands, settings, and their current values."),
 
-            Step(instruction: "Lesson eight. Reading mode. Press lowercase r to start "
-                    + "a read, then press open paren, that is shift nine, "
-                    + "to hear the sentence again. b steps back a word, "
-                    + "braces step paragraphs.",
+            Step(instruction: "Lesson eight. Reading mode, Marduk's signature. "
+                    + "Press lowercase r to start a read, then press open "
+                    + "paren, that is shift nine, to hear the sentence "
+                    + "again. b steps back a word, braces step paragraphs. "
+                    + "These are vim's keys on purpose — learn them once, "
+                    + "use them everywhere.",
                  isComplete: { $0 == .readJumped },
                  success: "That is a reading motion. They all work while "
                     + "anything is being read."),

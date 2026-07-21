@@ -70,27 +70,38 @@ final class DisplayInverter: @unchecked Sendable {
     private var previewObserver: AXObserver?
     private var previewObserverPID: pid_t = -1
 
-    // Same marker used by KeyboardMonitor so the event tap passes these through
-    private static let syntheticMarker: Int64 = 0x4D52444B // "MRDK"
-
-    // The direct road: the same UniversalAccess function Settings itself
-    // calls. Private framework — Apple-signed, loadable by a Developer ID
-    // binary — resolved once, nil when a macOS release drops the symbol
-    // (the keystroke fallback and the whiteOnBlack verification take over).
-    // Field history forced this: the Invert Colors symbolic hotkey ignored
-    // every synthetic chord shape we posted, real modifiers included.
-    private typealias UASetEnabled = @convention(c) (Bool) -> Void
-    private static let uaSetWhiteOnBlack: UASetEnabled? = {
-        guard let handle = dlopen(
-            "/System/Library/PrivateFrameworks/UniversalAccess.framework/UniversalAccess",
-            RTLD_LAZY),
-              let symbol = dlsym(handle, "UAWhiteOnBlackSetEnabled") else {
-            fputs("[display] UniversalAccess setter unavailable — keystroke fallback\n",
-                  stderr)
+    // THE MECHANISM, settled by a night of field forensics: fire the
+    // system Invert Colors keyboard shortcut through System Events
+    // (osascript) — the sanctioned symbolic-hotkey path, hardware-verified
+    // to STICK. Raw CGEvent chords are ignored by the hotkey handler, and
+    // the private UAWhiteOnBlackSetEnabled SELF-FLICKERS on macOS 26
+    // (filter flashes on, universalaccessd overrides it back off, pref
+    // left stranded at 1 — proven by the one-shot latch experiment: one
+    // call, closed latch, still flickered). Do not resurrect either.
+    // The user's actual binding is auto-discovered from
+    // com.apple.symbolichotkeys entry 21 (fallback Shift+Cmd+F13).
+    static func invertShortcut() -> (keyCode: Int, modifiers: [String], enabled: Bool)? {
+        let domain = "com.apple.symbolichotkeys" as CFString
+        CFPreferencesAppSynchronize(domain)
+        guard let hotkeys = CFPreferencesCopyAppValue(
+                  "AppleSymbolicHotKeys" as CFString, domain) as? [String: Any],
+              let entry = hotkeys["21"] as? [String: Any] else { return nil }
+        let enabled = (entry["enabled"] as? NSNumber)?.boolValue ?? true
+        guard let value = entry["value"] as? [String: Any],
+              let params = value["parameters"] as? [NSNumber], params.count >= 3 else {
             return nil
         }
-        return unsafeBitCast(symbol, to: UASetEnabled.self)
-    }()
+        let mask = params[2].intValue
+        var mods: [String] = []
+        if mask & (1 << 17) != 0 { mods.append("shift") }
+        if mask & (1 << 18) != 0 { mods.append("control") }
+        if mask & (1 << 19) != 0 { mods.append("option") }
+        if mask & (1 << 20) != 0 { mods.append("command") }
+        return (params[1].intValue, mods, enabled)
+    }
+
+    private let scriptQueue = DispatchQueue(label: "com.marduk.display.invert",
+                                            qos: .userInitiated)
 
     static let previewBundle = "com.apple.Preview"
 
@@ -154,7 +165,7 @@ final class DisplayInverter: @unchecked Sendable {
 
         fputs("[display] tracking started (\(invertApps.count) listed + "
             + "\(Self.builtInInvertPrefixes.count) built-in, PDF dark "
-            + "\(pdfDarkStyle.rawValue), one-shot)\n", stderr)
+            + "\(pdfDarkStyle.rawValue), hotkey)\n", stderr)
     }
 
     func stop() {
@@ -363,29 +374,12 @@ final class DisplayInverter: @unchecked Sendable {
     private var lastToggleAt = Date.distantPast
     private static let toggleLockout: TimeInterval = 10.0
 
-    // ONE-SHOT LATCH (user-specified diagnostic, currently the shipping
-    // behavior): the display changes at most ONCE per daemon lifetime —
-    // the first invert. Everything after is logged and suppressed, so a
-    // flickering screen under a closed latch PROVES the second flip is
-    // not Marduk's. Explicit teardown (stop / :config invert off) still
-    // reverts, loudly.
-    private var hasToggledOnce = false
-    private var lastSuppressedWant: Bool?
-
     private func ensureInverted(_ wanted: Bool, holder: String?, reason: String) {
         if wanted { invertHolder = holder }
-        let locked = Date().timeIntervalSince(lastToggleAt) < Self.toggleLockout
         guard wanted != isInverted else { return }
-        guard !hasToggledOnce else {
-            if lastSuppressedWant != wanted {
-                lastSuppressedWant = wanted
-                fputs("[display] one-shot latch closed — suppressing "
-                    + "\(wanted ? "invert" : "revert") (\(reason))\n", stderr)
-            }
-            return
-        }
-        guard !locked else { return }  // heartbeat re-ensures after the lockout
-        hasToggledOnce = true
+        // The lockout stands even with a sticking mechanism: one change,
+        // then silence — deferred wants converge via the heartbeat
+        guard Date().timeIntervalSince(lastToggleAt) >= Self.toggleLockout else { return }
         lastToggleAt = Date()
         applyInversion(wanted)
         isInverted = wanted
@@ -395,33 +389,50 @@ final class DisplayInverter: @unchecked Sendable {
         verifyInversion(wanted)
     }
 
+    /// Fires the Invert Colors shortcut via System Events. The hotkey is
+    /// a TOGGLE — ensureInverted guarantees this only runs on a genuine
+    /// transition, and the lockout guarantees it can't double-fire.
     private func applyInversion(_ wanted: Bool) {
-        if let setter = Self.uaSetWhiteOnBlack {
-            setter(wanted)
-        } else {
-            toggleInversion()
+        let shortcut = Self.invertShortcut()
+        if let s = shortcut, !s.enabled {
+            fputs("[display] the Invert Colors shortcut is DISABLED — enable it "
+                + "in Settings, Keyboard, Keyboard Shortcuts, Accessibility\n", stderr)
+        }
+        let keyCode = shortcut?.keyCode ?? 105
+        let mods = shortcut?.modifiers.isEmpty == false
+            ? shortcut!.modifiers : ["shift", "command"]
+        let using = mods.map { "\($0) down" }.joined(separator: ", ")
+        let script = "tell application \"System Events\" to key code \(keyCode) "
+            + "using {\(using)}"
+        scriptQueue.async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = ["-e", script]
+            guard (try? process.run()) != nil else {
+                fputs("[display] osascript launch failed\n", stderr)
+                return
+            }
+            // Kill-on-timeout watchdog, same policy as the ducker's scripts
+            let deadline = Date().addingTimeInterval(3)
+            while process.isRunning && Date() < deadline { usleep(50_000) }
+            if process.isRunning { process.terminate() }
         }
     }
 
-    /// LOG-ONLY verification — never acts. The old retry fired the
-    /// keystroke CHORD (a toggle!) on a possibly-stale whiteOnBlack read
-    /// and un-inverted freshly inverted screens: the final flicker
-    /// generator. Chord-only systems (no UA setter) still resync
-    /// bookkeeping so a disabled shortcut can't lie forever.
+    /// Verification NEVER acts on the display (the old retry was a
+    /// flicker generator) — it only resyncs bookkeeping and hints. With
+    /// the hotkey path, a mismatch means the shortcut didn't fire
+    /// (disabled, or the first-run Automation prompt is waiting).
     private func verifyInversion(_ wanted: Bool) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             guard let self, self.isInverted == wanted else { return }
             let actual = Self.displayIsInverted()
             guard actual != wanted else { return }
-            if Self.uaSetWhiteOnBlack == nil {
-                self.isInverted = actual
-                fputs("[display] inversion had no effect — enable the Invert "
-                    + "Colors shortcut in Settings, Keyboard, Keyboard "
-                    + "Shortcuts, Accessibility\n", stderr)
-            } else {
-                fputs("[display] verification mismatch (read lag?) — "
-                    + "no action taken\n", stderr)
-            }
+            self.isInverted = actual
+            fputs("[display] inversion had no effect — check the Invert Colors "
+                + "shortcut in Settings, Keyboard, Keyboard Shortcuts, "
+                + "Accessibility, and Marduk's Automation permission for "
+                + "System Events\n", stderr)
         }
     }
 
@@ -506,33 +517,6 @@ final class DisplayInverter: @unchecked Sendable {
         }
         guard samples > 0 else { return nil }
         return Double(total) / Double(samples) / 255.0
-    }
-
-    /// Posts the system Invert Colors shortcut (default Shift+Cmd+F13 —
-    /// enable the same chord in System Settings → Keyboard → Shortcuts →
-    /// Accessibility → Invert colors). Symbolic hotkeys want to SEE the
-    /// modifiers pressed — real Shift/Cmd key events around the F13, the
-    /// way a hand types it — flags-only events reach apps but not the
-    /// system hotkey handler (field-diagnosed: chord posted, nothing
-    /// inverted).
-    private func toggleInversion() {
-        let source = CGEventSource(stateID: .hidSystemState)
-        let shift: CGKeyCode = 56, command: CGKeyCode = 55, f13: CGKeyCode = 105
-        let chord: [(key: CGKeyCode, down: Bool, flags: CGEventFlags)] = [
-            (shift, true, .maskShift),
-            (command, true, [.maskShift, .maskCommand]),
-            (f13, true, [.maskShift, .maskCommand]),
-            (f13, false, [.maskShift, .maskCommand]),
-            (command, false, .maskShift),
-            (shift, false, []),
-        ]
-        for step in chord {
-            guard let event = CGEvent(keyboardEventSource: source,
-                                      virtualKey: step.key, keyDown: step.down) else { continue }
-            event.flags = step.flags
-            event.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMarker)
-            event.post(tap: .cghidEventTap)
-        }
     }
 
     /// Ground truth from the same store Settings writes — no guessing

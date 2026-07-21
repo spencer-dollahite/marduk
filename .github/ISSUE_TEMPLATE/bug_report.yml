@@ -5,8 +5,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        > [!IMPORTANT]
-        > **Privacy: your log contains text Marduk has spoken.** `~/Library/Logs/marduk.log` includes the first ~80 characters of everything read aloud — emails, messages, whatever you selected. **Redact before pasting.** Check the [Known quirks](../../#known-quirks-read-before-filing-bugs) section first — some surprising behaviors are deliberate.
+        > [!NOTE]
+        > **Privacy: skim log lines before pasting.** Marduk never logs what it reads or speaks (lengths only) — but the log does include file paths with your macOS username, app identifiers, and update output, and log files from versions before 0.3.7 may contain snippets of spoken text on `cmd: speak` lines. Check the [Known quirks](../../#known-quirks-read-before-filing-bugs) section first — some surprising behaviors are deliberate.
         >
         > **Security problem?** Don't file it here — email [spencer@ssdollahite.com](mailto:spencer@ssdollahite.com) instead (see the [security policy](../../security/policy)).
   - type: textarea
@@ -33,5 +33,5 @@ body:
     id: logs
     attributes:
       label: Relevant log lines
-      description: Redacted — see the privacy note above.
+      description: Skim before pasting — see the privacy note above.
       render: text

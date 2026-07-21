@@ -32,7 +32,7 @@ enum HelpText {
         page, g g goes to page one, capital G to the last page. \
         v, visual selection. Capital V, select whole lines. t, speak the \
         time. t t, time and date. s, speak what is under the mouse pointer as it moves, in your reading voice. u, check \
-        for updates and hear what's new. u u, install the update. \
+        for updates and hear what's new. u again within a minute installs. \
         n, in Firefox reader mode: pause your media and start Firefox's \
         own narration. n again, or Escape, brings the media back. n works \
         from INSERT mode too when the reader page has focus. \
@@ -127,7 +127,7 @@ enum HelpText {
         "You can shorten colon commands like vim: colon conf ra 230 is colon config rate 230.",
         "Long hex strings are shortened when read: an m d 5 hash becomes m d 5 ending in its last three characters. Turn that off with colon config hashes off.",
         "The s command speaks whatever is under your mouse pointer as it moves, in your own reading voice at your rate and pitch. No setup, and it never interrupts a read. Press s again to stop.",
-        "Press u in NORMAL mode to hear what updates are available. Press u twice, or u again within a minute, to install them.",
+        "Press u in NORMAL mode to hear what updates are available, then u again within a minute to install them. The first press always just speaks — a stray double u can never install anything.",
         "The lowercase r command selects the whole paragraph under the mouse cursor, like a triple click, then reads the selection.",
         "Media pauses during reads and resumes after, only if it was actually playing. Music apps get volume-ducked instead of paused.",
         "If you can see some of the screen, colon config border on frames it in the mode color: red for NORMAL, green for INSERT, blue for VISUAL. Colon config pointer on adds a dot at the mouse that stays visible while zoomed in.",

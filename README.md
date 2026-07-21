@@ -136,6 +136,7 @@ These are deliberate trade-offs of the typing-rescue system, not bugs:
 - **A command followed quickly by `k` reads as typing** — protects words like "skip".
 - **Short reads pause your media briefly** even for a two-word utterance — pause/resume is deliberate (volume-ducking a browser can't stop a video, and lowering system volume would quiet Marduk itself).
 - **Reading a selection can overwrite your clipboard** in apps whose accessibility tree won't hand over the selected text (Firefox text boxes, iMessage) or when the selection is huge (Cmd+A on a long document): Marduk falls back to a synthetic Cmd+C and reads the pasteboard, so the clipboard ends up holding the text it just read.
+- **Selection reads sound doubled or use the wrong voice?** macOS's own *Speak Selection* feature defaults to the same Option+Escape shortcut, and its hotkey fires alongside Marduk's. Turn it off (or rebind it) in System Settings → Accessibility → Read and Speak Content, and Marduk owns the key — with its own voice, rate, and pitch (`:voices`, `:config rate`, `:config pitch`).
 - Hand-edits to config.json need a daemon restart — use `:config` from inside Marduk (or `marduk config rate`) for live changes.
 - **Upgrading from a pre-bundle install:** the first update converts Marduk into `Marduk.app` and announces it aloud. If keyboard commands stop afterwards, re-grant Accessibility to `Marduk.app`; the Automation prompt also re-asks once (now explaining why Marduk wants media control).
 

@@ -90,7 +90,13 @@ enum HelpText {
         all announces app sheets and system prompts, system announces \
         only the central password and permission prompts. follow, on or \
         off: the app's view tracks the read — Preview turns to the page \
-        you jump to, and reader articles scroll with the voice.
+        you jump to, and reader articles scroll with the voice. \
+        invert, on or off: flip the display for bright apps you list in \
+        the config file, and restore it when you leave them. p d f dark, \
+        one word, on or off: Preview documents switch to dark view by \
+        themselves. auto invert, one word, on or off: measure each app's \
+        real brightness with a tiny screenshot and invert only when it is \
+        actually bright — needs the Screen Recording permission.
         """
 
     /// ":tip" — one is picked at random (never the same twice in a row).
@@ -127,6 +133,7 @@ enum HelpText {
         "With Karabiner installed, Marduk runs its own Karabiner profile while active and hands yours back the moment it stops, even on a crash. Your read button reaches Marduk while it is up, and falls back to macOS Speak Selection whenever it is down. Nothing to switch by hand.",
         "When a password prompt, permission dialog, or sheet appears — even outside your zoomed view — Marduk announces it, with the dialog's title when it has one. Colon config dialogs system limits this to the central OS prompts; off silences it.",
         "Apple's premium voices sound more natural and run entirely on your Mac, free, no account. Download one like Ava in System Settings, Accessibility, Read and Speak Content, System Voice, Manage Voices — then audition it with colon voices. Fair warning: at fast speaking rates, the classic enhanced voices often stay clearer.",
+        "Working dark? Colon config p d f dark on flips every PDF you open in Preview to dark view. Colon config auto invert on goes further: it measures each app's real brightness and inverts the display only when the content is actually blinding — a black slide deck in Keynote stays exactly as you styled it.",
         "The view follows the voice: jump a PDF read to page three and Preview turns to page three, read a Reader article and it scrolls along like a teleprompter. Colon config follow off keeps the view still.",
         "Code names read as natural words: read Document From Caret, not one long mumble, and user id count without hearing underscore twice. Colon config identifiers off brings back the raw forms.",
         "Marduk mispronouncing a name? Colon pronunciation opens the system pronunciation editor. Add the word there, typed or spoken, and Marduk says it your way from the very next read — including entries you scope to a single app.",

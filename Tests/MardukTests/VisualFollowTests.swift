@@ -30,3 +30,35 @@ final class VisualFollowTests: XCTestCase {
         XCTAssertEqual(KeyboardMonitor.lineIndex(of: -1, in: text), 0)
     }
 }
+
+final class DisplayInverterTests: XCTestCase {
+
+    private func solidImage(r: UInt8, g: UInt8, b: UInt8) -> CGImage {
+        let width = 8, height = 8
+        var pixels = [UInt8]()
+        for _ in 0..<(width * height) { pixels.append(contentsOf: [r, g, b, 255]) }
+        let data = CFDataCreate(nil, pixels, pixels.count)!
+        let provider = CGDataProvider(data: data)!
+        return CGImage(width: width, height: height, bitsPerComponent: 8,
+                       bitsPerPixel: 32, bytesPerRow: width * 4,
+                       space: CGColorSpaceCreateDeviceRGB(),
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: false,
+                       intent: .defaultIntent)!
+    }
+
+    func testMeanBrightnessExtremes() {
+        let white = DisplayInverter.meanBrightness(solidImage(r: 255, g: 255, b: 255))
+        XCTAssertNotNil(white)
+        XCTAssertGreaterThan(white ?? 0, 0.95)
+
+        let black = DisplayInverter.meanBrightness(solidImage(r: 0, g: 0, b: 0))
+        XCTAssertNotNil(black)
+        XCTAssertLessThan(black ?? 1, 0.05)
+    }
+
+    func testMeanBrightnessMidGrayCrossesNoThreshold() {
+        let gray = DisplayInverter.meanBrightness(solidImage(r: 128, g: 128, b: 128))
+        XCTAssertEqual(gray ?? 0, 0.5, accuracy: 0.05)
+    }
+}

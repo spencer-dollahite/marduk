@@ -205,6 +205,9 @@ enum ColonCommand: Equatable {
         ("readmotions", .toggle),
         ("dialogs", .choice(["all", "system", "off"])),
         ("follow", .toggle),
+        ("invert", .toggle),
+        ("pdfdark", .toggle),
+        ("autoinvert", .toggle),
     ]
 
     static func kind(for key: String) -> SettingKind? {

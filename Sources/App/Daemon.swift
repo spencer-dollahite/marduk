@@ -204,6 +204,11 @@ final class DaemonServer {
         }
 
         displayInverter = DisplayInverter(invertApps: config.display.invertForApps)
+        displayInverter?.invertEnabled = config.display.invertEnabled ?? true
+        displayInverter?.previewDarkMode = config.display.previewDarkMode ?? false
+        displayInverter?.autoInvert = config.display.autoInvert ?? false
+        displayInverter?.autoInvertThreshold =
+            Double(min(95, max(40, config.display.autoInvertThreshold ?? 70))) / 100.0
         modeOverlay = ModeOverlay(config: config.overlay ?? .init())
     }
 
@@ -1593,6 +1598,54 @@ final class DaemonServer {
             speech.announce(on ? "Follow along on. The view tracks the read."
                                : "Follow along off.")
 
+        case "invert":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            displayInverter?.invertEnabled = on
+            if !on { displayInverter?.revertIfInverted() }
+            config.display.invertEnabled = on
+            ConfigLoader.save(config)
+            if on && config.display.invertForApps.isEmpty
+                && !(config.display.autoInvert ?? false) {
+                speech.announce("Display inversion on, but no apps are listed. "
+                    + "Add bundle identifiers to invert for apps in config "
+                    + "dot json, or turn on auto invert.")
+            } else {
+                speech.announce(on ? "Display inversion on." : "Display inversion off.")
+            }
+
+        case "pdfdark":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            displayInverter?.previewDarkMode = on
+            config.display.previewDarkMode = on
+            ConfigLoader.save(config)
+            if on {
+                displayInverter?.applyPreviewDarkModeIfFront()
+                speech.announce("Preview dark mode on. PDFs switch to dark "
+                    + "view automatically.")
+            } else {
+                speech.announce("Preview dark mode off.")
+            }
+
+        case "autoinvert":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            displayInverter?.autoInvert = on
+            config.display.autoInvert = on
+            ConfigLoader.save(config)
+            if on {
+                if !CGPreflightScreenCaptureAccess() {
+                    CGRequestScreenCaptureAccess()
+                    speech.announce("Auto invert on. It measures each app's "
+                        + "brightness with a tiny screenshot, so macOS will ask "
+                        + "for Screen Recording permission — grant it to Marduk "
+                        + "in the dialog or in Privacy settings.")
+                } else {
+                    speech.announce("Auto invert on. Bright apps invert, dark "
+                        + "apps revert, measured as you switch.")
+                }
+            } else {
+                speech.announce("Auto invert off.")
+            }
+
         case "readmotions":
             guard let on = toggle() else { return fail("Say on or off.") }
             keyboardMonitor?.readMotionsEnabled = on
@@ -1648,7 +1701,8 @@ final class DaemonServer {
                 fail("Unknown setting \(key). Settings are rate, pitch, level, hashes, identifiers, "
                     + "rescue, burst, escape hold, echo, command echo, palette, "
                     + "auto update, check hours, border, pointer, thickness, "
-                    + "speed keys, toggle sound, read motions, dialogs, follow.")
+                    + "speed keys, toggle sound, read motions, dialogs, follow, "
+                    + "invert, p d f dark, auto invert.")
             }
         }
     }
@@ -1692,6 +1746,9 @@ final class DaemonServer {
             "readmotions": (keyboardMonitor?.readMotionsEnabled ?? false) ? "on" : "off",
             "dialogs": dialogSentinel.level.rawValue,
             "follow": (keyboardMonitor?.followEnabled ?? true) ? "on" : "off",
+            "invert": (config.display.invertEnabled ?? true) ? "on" : "off",
+            "pdfdark": (config.display.previewDarkMode ?? false) ? "on" : "off",
+            "autoinvert": (config.display.autoInvert ?? false) ? "on" : "off",
         ]
     }
 

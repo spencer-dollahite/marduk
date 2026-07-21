@@ -66,6 +66,7 @@ final class DisplayInverter: @unchecked Sendable {
 
     private var isInverted = false
     private var observer: NSObjectProtocol?
+    private var terminationObserver: NSObjectProtocol?
     private var themeObserver: NSObjectProtocol?
     private var previewObserver: AXObserver?
     private var previewObserverPID: pid_t = -1
@@ -184,6 +185,23 @@ final class DisplayInverter: @unchecked Sendable {
             scheduleActivation(bundleID, pid: app.processIdentifier)
         }
 
+        // Death is the one departure that can't lie — a terminated holder
+        // has no ghost activations left in it. Revert immediately, no
+        // envelope, no burst (field: quitting PT stranded the display
+        // inverted; activation-based reverts never fired cleanly for it).
+        terminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, self.isInverted,
+                  let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                      as? NSRunningApplication,
+                  let bundleID = app.bundleIdentifier,
+                  bundleID == self.invertHolder else { return }
+            self.fastConfirmGeneration += 1
+            self.ensureInverted(false, holder: nil, reason: "\(bundleID) quit")
+        }
+
         // A theme flip while Preview is front should dark its PDFs at
         // that moment (auto style). Going light never un-darks windows —
         // reopening them is cheap, toggling them all is presumptuous.
@@ -211,6 +229,10 @@ final class DisplayInverter: @unchecked Sendable {
         if let observer = observer {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
             self.observer = nil
+        }
+        if let observer = terminationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            terminationObserver = nil
         }
         if let observer = themeObserver {
             DistributedNotificationCenter.default().removeObserver(observer)

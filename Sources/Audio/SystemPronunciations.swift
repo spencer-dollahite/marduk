@@ -180,6 +180,9 @@ enum SystemPronunciations {
 
     /// Stand-in for the private UAPronunciationSubstitutionModel: decodes
     /// the same archive keys, defaults every missing flag permissively.
+    /// The @objc name is arbitrary but must be stable (compiler-enforced
+    /// for NSCoding) — decoding maps the archive's class name explicitly.
+    @objc(MardukPronunciationArchivedModel)
     private final class ArchivedModel: NSObject, NSCoding {
         let phrase: String?
         let replacement: String?

@@ -35,8 +35,9 @@ enum HelpText {
         restarts from the top, capital G jumps to the last paragraph. Slash searches forward, question mark searches \
         back: the read pauses while you type, Return jumps to the match, \
         Escape resumes where you were. Period repeats the last motion or \
-        search, so period after a search hops match to match. A tap of \
-        Escape pauses and resumes, like Space. Only two keys leave a \
+        search, so period after a search hops match to match. r drops the \
+        current read and reads the paragraph under the pointer instead. \
+        A tap of Escape pauses and resumes, like Space. Only two keys leave a \
         read: holding Escape stops it and returns to NORMAL, i stops it \
         and drops to INSERT for typing. Other letters buzz. \
         VISUAL mode: h j k l extend the selection. Numbers repeat a motion, \

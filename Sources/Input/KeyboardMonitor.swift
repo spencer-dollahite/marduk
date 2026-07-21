@@ -675,6 +675,17 @@ final class KeyboardMonitor {
             }
             pendingReadG = false  // any non-g key breaks a pending gg
 
+            // r — abandon this read and read what's under the pointer
+            // instead (works speaking or paused; the replacement read keeps
+            // media ducked and the capture engaged)
+            if keycode == 15 {
+                if isAutorepeat { return nil }
+                readMotionCount = 0
+                fputs("[keyboard] READING r → new read\n", stderr)
+                readAtPointer()
+                return nil
+            }
+
             // Digits accumulate a count. Bare 0 never starts one (vim: 0
             // is a motion, not a count starter) — it only joins after 3,
             // 30…; on its own it restarts the current line below.
@@ -1108,12 +1119,7 @@ final class KeyboardMonitor {
             return nil
 
         case 15: // r — read line (triple-click + speak)
-            DispatchQueue.main.async { [self] in
-                tripleClickAtCursor()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [self] in
-                    Self.readSelection { [self] text in onSpeak?(text) }
-                }
-            }
+            readAtPointer()
             return nil
 
         case 17: // t — speak time. tt (time + date) resolves in the burst
@@ -1689,6 +1695,20 @@ final class KeyboardMonitor {
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, // a-r, roughly
         31, 32, 34, 35, 37, 38, 45, 46                              // o-z, roughly (minus k=40)
     ]
+
+    /// The `r` command: triple-click selects the paragraph under the
+    /// pointer, then read the selection. Shared by the NORMAL dispatch and
+    /// the READING capture — r mid-read is a clear "read that instead", and
+    /// the new speak() replaces the current utterance seamlessly (stale
+    /// didCancel: media stays ducked, capture stays engaged).
+    private func readAtPointer() {
+        DispatchQueue.main.async { [self] in
+            tripleClickAtCursor()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [self] in
+                Self.readSelection { [self] text in onSpeak?(text) }
+            }
+        }
+    }
 
     // MARK: - Triple Click
 

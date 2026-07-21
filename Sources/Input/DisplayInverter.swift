@@ -154,7 +154,7 @@ final class DisplayInverter: @unchecked Sendable {
 
         fputs("[display] tracking started (\(invertApps.count) listed + "
             + "\(Self.builtInInvertPrefixes.count) built-in, PDF dark "
-            + "\(pdfDarkStyle.rawValue), heartbeat)\n", stderr)
+            + "\(pdfDarkStyle.rawValue), heartbeat+lockout)\n", stderr)
     }
 
     func stop() {
@@ -171,6 +171,7 @@ final class DisplayInverter: @unchecked Sendable {
         pollTimer = nil
         // Revert inversion if active
         if isInverted {
+            lastToggleAt = Date()
             applyInversion(false)
             isInverted = false
             fputs("[display] Reverted inversion on stop\n", stderr)
@@ -180,6 +181,7 @@ final class DisplayInverter: @unchecked Sendable {
     /// Live `:config invert off` mid-invert must hand the display back.
     func revertIfInverted() {
         if isInverted {
+            lastToggleAt = Date()
             applyInversion(false)
             isInverted = false
             fputs("[display] Reverted inversion (invert off)\n", stderr)
@@ -351,49 +353,39 @@ final class DisplayInverter: @unchecked Sendable {
         }
     }
 
-    // False until this session has actually driven the setter once —
-    // inherited state is never trusted (see the pulse below).
-    private var hasAppliedThisSession = false
+    // THE TOGGLE LOCKOUT (user-specified): once the display changes, NO
+    // code path may change it again for toggleLockout seconds, full stop.
+    // The last flicker generators were all "act again quickly" mechanisms
+    // — the verify-retry CHORD (a toggle fired on a stale whiteOnBlack
+    // read un-inverts a just-inverted screen) and the coherence pulse.
+    // Both are deleted. Anything deferred by the lockout converges via the
+    // heartbeat, which re-ensures every beat.
+    private var lastToggleAt = Date.distantPast
+    private static let toggleLockout: TimeInterval = 10.0
 
     private func ensureInverted(_ wanted: Bool, holder: String?, reason: String) {
         if wanted { invertHolder = holder }
+        let locked = Date().timeIntervalSince(lastToggleAt) < Self.toggleLockout
         guard wanted != isInverted else {
-            // Reality checks: bookkeeping can go stale (a restart or crash
-            // mid-toggle) — if the system's own record disagrees with the
-            // state we think we're already in, act anyway
-            if Self.displayIsInverted() != wanted {
+            // Drift heal (stale bookkeeping after crashes) — outside the
+            // lockout only, apply once, no verify chain
+            if !locked, Self.displayIsInverted() != wanted {
                 fputs("[display] state drift — reapplying \(wanted ? "invert" : "revert") "
                     + "(\(reason))\n", stderr)
+                lastToggleAt = Date()
                 applyInversion(wanted)
-                hasAppliedThisSession = true
                 beginSettleWindow()
-                verifyInversion(wanted, retryWithChord: Self.uaSetWhiteOnBlack != nil)
-            } else if !hasAppliedThisSession && wanted {
-                // Pref and bookkeeping agree we're inverted, but this
-                // session never proved it — after a crash the PREF can say
-                // inverted while the actual screen filter is off, and a
-                // trusting no-op leaves listed apps bright forever (field:
-                // Pages, a well-behaved app, wouldn't invert). PULSE for a
-                // coherent state: off, then on.
-                fputs("[display] unverified inherited invert state — pulsing "
-                    + "(\(reason))\n", stderr)
-                hasAppliedThisSession = true
-                applyInversion(false)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                    self?.applyInversion(true)
-                }
-                beginSettleWindow()
-                verifyInversion(wanted, retryWithChord: false)
             }
             return
         }
-        hasAppliedThisSession = true
+        guard !locked else { return }  // heartbeat re-ensures after the lockout
+        lastToggleAt = Date()
         applyInversion(wanted)
         isInverted = wanted
         if !wanted { invertHolder = nil }
         beginSettleWindow()
         fputs("[display] \(wanted ? "Inverted" : "Reverted") (\(reason))\n", stderr)
-        verifyInversion(wanted, retryWithChord: Self.uaSetWhiteOnBlack != nil)
+        verifyInversion(wanted)
     }
 
     private func applyInversion(_ wanted: Bool) {
@@ -404,23 +396,24 @@ final class DisplayInverter: @unchecked Sendable {
         }
     }
 
-    /// Verify against the system's own record and resync — a dead setter
-    /// or disabled shortcut must not leave the bookkeeping lying forever.
-    /// One escalation: setter missed → try the keystroke once, re-verify.
-    private func verifyInversion(_ wanted: Bool, retryWithChord: Bool) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+    /// LOG-ONLY verification — never acts. The old retry fired the
+    /// keystroke CHORD (a toggle!) on a possibly-stale whiteOnBlack read
+    /// and un-inverted freshly inverted screens: the final flicker
+    /// generator. Chord-only systems (no UA setter) still resync
+    /// bookkeeping so a disabled shortcut can't lie forever.
+    private func verifyInversion(_ wanted: Bool) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             guard let self, self.isInverted == wanted else { return }
             let actual = Self.displayIsInverted()
             guard actual != wanted else { return }
-            if retryWithChord {
-                fputs("[display] setter had no effect — trying the keystroke\n", stderr)
-                self.toggleInversion()
-                self.verifyInversion(wanted, retryWithChord: false)
-            } else {
+            if Self.uaSetWhiteOnBlack == nil {
                 self.isInverted = actual
-                fputs("[display] inversion failed — enable the Invert Colors "
-                    + "shortcut in Settings, Keyboard, Keyboard Shortcuts, "
-                    + "Accessibility\n", stderr)
+                fputs("[display] inversion had no effect — enable the Invert "
+                    + "Colors shortcut in Settings, Keyboard, Keyboard "
+                    + "Shortcuts, Accessibility\n", stderr)
+            } else {
+                fputs("[display] verification mismatch (read lag?) — "
+                    + "no action taken\n", stderr)
             }
         }
     }

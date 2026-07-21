@@ -261,6 +261,7 @@ final class ColonCommandTests: XCTestCase {
         "tip — a random feature tip",
         "config — change a setting",
         "voices — choose the reading voice",
+        "pronunciation — open the system pronunciation editor",
         "quit — stop Marduk",
         "restart — restart the daemon",
         "update — install updates now",

@@ -194,19 +194,26 @@ enum SystemPronunciations {
         let bundles: Set<String>
 
         required init?(coder: NSCoder) {
+            // Flags are archived as OBJECT REFERENCES (UID → CFBoolean), not
+            // inline primitives — decodeBool(forKey:) mismatches there, and
+            // with .setErrorAndReturn that first error POISONS every decode
+            // after it (fixture-caught: all flags false, later fields nil).
+            // decodeObject resolves references and inline values alike, and
+            // a failed Swift cast never touches the coder's error state.
+            func flag(_ key: String) -> Bool {
+                guard coder.containsValue(forKey: key) else { return true }
+                return (coder.decodeObject(forKey: key) as? NSNumber)?.boolValue ?? true
+            }
             phrase = coder.decodeObject(forKey: "originalString") as? String
             replacement = coder.decodeObject(forKey: "replacementString") as? String
             let attributed = coder.decodeObject(forKey: "ipa") as? NSAttributedString
             let phonetic = attributed?.string
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             ipa = phonetic.isEmpty ? nil : phonetic
-            active = coder.containsValue(forKey: "active")
-                ? coder.decodeBool(forKey: "active") : true
-            ignoreCase = coder.containsValue(forKey: "ignoreCase")
-                ? coder.decodeBool(forKey: "ignoreCase") : true
+            active = flag("active")
+            ignoreCase = flag("ignoreCase")
             language = coder.decodeObject(forKey: "language") as? String
-            appliesToAllApps = coder.containsValue(forKey: "appliesToAllApps")
-                ? coder.decodeBool(forKey: "appliesToAllApps") : true
+            appliesToAllApps = flag("appliesToAllApps")
             let set = coder.decodeObject(forKey: "bundleIdentifiers") as? NSSet
             bundles = Set((set?.allObjects as? [String]) ?? [])
             super.init()

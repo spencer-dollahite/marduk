@@ -683,6 +683,24 @@ final class DisplayInverter: @unchecked Sendable {
     // sites are main-thread.
     private var lastPreviewDarkAttempt = Date.distantPast
 
+    // ONCE PER DOCUMENT PER SESSION (user-specified): after Marduk's
+    // first pass on a document, its dark/light state belongs to the USER
+    // — a manual flip back to light must survive every later focus cycle.
+    // Keyed by the window's AXDocument path; documents the user darkened
+    // themselves count as treated (the checkmark says so).
+    private let previewDocsLock = NSLock()
+    private var previewTreatedDocs = Set<String>()
+
+    private func previewAlreadyTreated(_ path: String) -> Bool {
+        previewDocsLock.lock(); defer { previewDocsLock.unlock() }
+        return previewTreatedDocs.contains(path)
+    }
+
+    private func markPreviewTreated(_ path: String) {
+        previewDocsLock.lock(); defer { previewDocsLock.unlock() }
+        previewTreatedDocs.insert(path)
+    }
+
     /// Press Preview's dark-appearance menu item via the AX menu bar when
     /// the focused window isn't already dark (AXMenuItemMarkChar carries
     /// the checkmark). Off-main: menu walks are synchronous AX IPC.
@@ -690,8 +708,29 @@ final class DisplayInverter: @unchecked Sendable {
         guard Date().timeIntervalSince(lastPreviewDarkAttempt) > 1.0 else { return }
         lastPreviewDarkAttempt = Date()
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.15) {
+            [weak self] in
+            guard let self else { return }
             let app = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(app, 0.3)
+
+            // Focused window's document path — the once-per-document key.
+            // Pathless windows (no document) fall through to the plain
+            // checkmark-guarded behavior with no memory.
+            var docPath: String?
+            var windowRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(
+                   app, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
+               let rawWindow = windowRef,
+               CFGetTypeID(rawWindow) == AXUIElementGetTypeID() {
+                var docRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(
+                       rawWindow as! AXUIElement, "AXDocument" as CFString,
+                       &docRef) == .success,
+                   let doc = docRef as? String {
+                    docPath = doc
+                }
+            }
+            if let docPath, self.previewAlreadyTreated(docPath) { return }
 
             var menuBarRef: CFTypeRef?
             guard AXUIElementCopyAttributeValue(
@@ -719,10 +758,15 @@ final class DisplayInverter: @unchecked Sendable {
             _ = AXUIElementCopyAttributeValue(
                 item, "AXMenuItemMarkChar" as CFString, &markRef)
             if let mark = markRef as? String, !mark.isEmpty {
-                return  // already dark — pressing would toggle it back
+                // Already dark — the user (or a prior pass) got here first;
+                // remember the document so we never argue with them later
+                if let docPath { self.markPreviewTreated(docPath) }
+                return
             }
             if AXUIElementPerformAction(item, kAXPressAction as CFString) == .success {
-                fputs("[display] Preview dark: applied\n", stderr)
+                if let docPath { self.markPreviewTreated(docPath) }
+                fputs("[display] Preview dark: applied"
+                    + "\(docPath != nil ? " (once per document)" : "")\n", stderr)
             } else {
                 fputs("[display] Preview dark: press failed\n", stderr)
             }

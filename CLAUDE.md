@@ -46,7 +46,7 @@ DaemonServer (Unix socket IPC, per-user $DARWIN_USER_TEMP_DIR/marduk.sock)
 
 ## Key Patterns
 
-- **Logging:** `fputs("[component] message\n", stderr)` — components: `[speech]`, `[ducker]`, `[keyboard]`, `[marduk]`, `[update]`, `[main]`, `[display]`, `[overlay]`, `[earcon]`, `[verbalizer]`, `[agent]`, `[sign]`, `[command]`, `[tutorial]`, `[bundle]`
+- **Logging:** `fputs("[component] message\n", stderr)` — components: `[speech]`, `[ducker]`, `[keyboard]`, `[marduk]`, `[update]`, `[main]`, `[display]`, `[overlay]`, `[earcon]`, `[verbalizer]`, `[agent]`, `[sign]`, `[command]`, `[tutorial]`, `[bundle]`. **Privacy (allowlist, not redaction):** NEVER log user content — selected/spoken text, read-search queries — only lengths and metadata (char counts, keycodes, AX error codes, paths); the log is DESIGNED to be pasted into public GitHub issues (`:log copy`, `:bug`). Colon-command echoes (`: config rate 100`) are structured vocabulary, fine. Sole content exception: the inline `marduk speak --debug` path echoes its own CLI argument to the invoking terminal (never the daemon log). Don't add SSN/address regex scrubbing — keep content out at the source instead.
 - **Sendable workarounds:** `@unchecked Sendable` classes with `nonisolated(unsafe)` for AV framework types
 - **Callbacks:** `onEvent` pattern (onSpeak, onStop, onAnnounce, onWordBoundary); speech chaining uses the per-utterance `completion:` parameter of `speak`/`announce`
 - **Enums as namespaces:** `Earcon`, `DaemonClient`, `ConfigLoader`, `MardukDaemon` are caseless enums with static members

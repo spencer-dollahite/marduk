@@ -497,8 +497,17 @@ final class DaemonServer {
         let cmd = parts.first.map(String.init) ?? ""
         let arg = parts.count > 1 ? String(parts[1]) : ""
 
+        // Never log speak's payload — it's user content (the log is built
+        // to be pasted into public issues via :log copy). Length only.
+        // Other verbs carry settings vocabulary, useful for debugging.
         fputs("[marduk] cmd: \(cmd)", stderr)
-        if !arg.isEmpty { fputs(" \(arg.prefix(80))", stderr) }
+        if !arg.isEmpty {
+            if cmd == "speak" {
+                fputs(" (\(arg.count) chars)", stderr)
+            } else {
+                fputs(" \(arg.prefix(80))", stderr)
+            }
+        }
         fputs("\n", stderr)
 
         switch cmd {

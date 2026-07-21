@@ -515,8 +515,11 @@ final class KeyboardMonitor {
                         DispatchQueue.main.async { [self] in onReadSearchCancel?() }
                     } else {
                         lastReadAction = .search(query, direction)
+                        // Length only — the query is user content and the
+                        // log gets pasted into public issues
                         fputs("[keyboard] read search "
-                            + "\(direction == .forward ? "/" : "?")\(query)\n", stderr)
+                            + "\(direction == .forward ? "/" : "?") "
+                            + "(\(query.count) chars)\n", stderr)
                         DispatchQueue.main.async { [self] in
                             onReadSearch?(query, direction)
                         }

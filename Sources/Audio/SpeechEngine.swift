@@ -30,6 +30,23 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     // synchronously to decide whether Space is pause/resume or a normal key.
     private(set) var readActive = false
 
+    // Read-motion state: the FULL processed text of the current read plus
+    // where the voice is in it. AVSpeechSynthesizer cannot seek, so a jump
+    // stops the current utterance and re-speaks a substring — readBase maps
+    // the replacement utterance's boundary callbacks (relative to the
+    // substring) back into full-text coordinates. All UTF-16 offsets,
+    // matching willSpeakRangeOfSpeechString. nil readText = not navigable
+    // (announcements, SSML).
+    private var readText: String?
+    private var readBase = 0
+    private var readPosition = 0
+
+    // Dedicated synthesizer for search-entry echo: announce() stop()s the
+    // main synthesizer, which would destroy the paused read mid-search.
+    // A second synthesizer speaks over it without touching read state,
+    // completions, or ducking.
+    private nonisolated(unsafe) let echoSynthesizer = AVSpeechSynthesizer()
+
     init(ducker: AudioDucker) {
         self.ducker = ducker
         super.init()
@@ -66,16 +83,22 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         }
         stop()
 
-        let utterance = AVSpeechUtterance(string: processed)
+        readText = processed
+        readBase = 0
+        readPosition = 0
+        startSpeaking(makeReadUtterance(processed), completion: completion)
+        readActive = true
+    }
+
+    private func makeReadUtterance(_ text: String) -> AVSpeechUtterance {
+        let utterance = AVSpeechUtterance(string: text)
         utterance.rate = rate
         utterance.voice = voice
         utterance.pitchMultiplier = 1.0
         utterance.volume = 1.0
         utterance.preUtteranceDelay = 0.05
         utterance.postUtteranceDelay = 0.05
-
-        startSpeaking(utterance, completion: completion)
-        readActive = true
+        return utterance
     }
 
     /// Speak with distinct announcement voice — status updates only.
@@ -96,6 +119,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
 
         startSpeaking(utterance, completion: completion)
         readActive = false
+        readText = nil
     }
 
     func speakSSML(_ ssml: String) {
@@ -112,6 +136,94 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
 
         startSpeaking(utterance, completion: nil)
         readActive = true
+        readText = nil // SSML positions don't map to plain text — no motions
+    }
+
+    // MARK: - Read motions (vim-style navigation within the current read)
+
+    /// Jump within the current read. A count applies the motion repeatedly
+    /// (vim `3(`), stopping early at an edge — as far as possible beats a
+    /// no-op. Returns false only when nothing moved at all (already at the
+    /// edge, or nothing navigable) — the caller buzzes so silence isn't
+    /// ambiguous. Works while paused: the respeak auto-resumes from the
+    /// target, which doubles as feedback.
+    @discardableResult
+    func jump(_ unit: ReadUnit, direction: ReadDirection, count: Int = 1) -> Bool {
+        guard readActive, let text = readText else { return false }
+        var position = readPosition
+        for _ in 0..<max(1, count) {
+            let next = ReadNavigator.target(in: text, from: position,
+                                            unit: unit, direction: direction)
+            if next == position { break }
+            position = next
+        }
+        guard position != readPosition else { return false }
+        respeak(from: position)
+        return true
+    }
+
+    /// Absolute-offset jump (the search handler computes the target).
+    func jumpTo(offset: Int) {
+        guard readActive, readText != nil else { return }
+        respeak(from: offset)
+    }
+
+    /// gg (.back → the very beginning) / G (.forward → the last paragraph).
+    @discardableResult
+    func jumpToEdge(_ direction: ReadDirection) -> Bool {
+        guard readActive, let text = readText else { return false }
+        let target = direction == .back ? 0 : ReadNavigator.endTarget(in: text)
+        guard target != readPosition else { return false }
+        respeak(from: target)
+        return true
+    }
+
+    /// The current read's full text and voice position, for search.
+    var readSnapshot: (text: String, position: Int)? {
+        guard readActive, let text = readText else { return nil }
+        return (text, readPosition)
+    }
+
+    /// Re-speak the retained read text from a new offset. Reuses the normal
+    /// startSpeaking flow: the replaced utterance's didCancel is stale by the
+    /// time it lands (currentUtterance already points at the successor), so
+    /// nothing unducks — media stays paused across the jump with no blip.
+    /// The old utterance's completion moves to the new one, so the read's
+    /// eventual end still fires it (the inline CLI blocks on it, the
+    /// tutorial listens for it). No re-preprocessing: readText already IS
+    /// the processed string, and boundary offsets must keep matching it.
+    private func respeak(from target: Int) {
+        guard let text = readText else { return }
+        let ns = text as NSString
+        let clamped = max(0, min(target, ns.length))
+        let remainder = ns.substring(from: clamped)
+        guard !remainder.isEmpty else { return }
+
+        let carried = currentUtterance.flatMap {
+            completions.removeValue(forKey: ObjectIdentifier($0))
+        }
+        stop()
+        readBase = clamped
+        readPosition = clamped
+        startSpeaking(makeReadUtterance(remainder), completion: carried)
+        readActive = true
+    }
+
+    /// Speak a short cue (search-entry keystroke echo) over a paused read
+    /// WITHOUT touching it — announce() would stop() the read. No ducking,
+    /// no completion, no read state; a new echo cuts off the previous one.
+    func echo(_ text: String) {
+        let sanitized = SpeechPreprocessor.sanitize(text)
+        guard !sanitized.isEmpty else { return }
+        if echoSynthesizer.isSpeaking {
+            echoSynthesizer.stopSpeaking(at: .immediate)
+        }
+        let utterance = AVSpeechUtterance(string: sanitized)
+        utterance.rate = 0.55
+        utterance.voice = announcementVoice ?? voice
+        utterance.pitchMultiplier = 0.9
+        utterance.volume = 1.0
+        echoSynthesizer.speak(utterance)
     }
 
     private func startSpeaking(_ utterance: AVSpeechUtterance, completion: (() -> Void)?) {
@@ -198,6 +310,12 @@ extension SpeechEngine: AVSpeechSynthesizerDelegate {
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
                            willSpeakRangeOfSpeechString characterRange: NSRange,
                            utterance: AVSpeechUtterance) {
+        // Track the voice's position for read motions — full-text coordinates
+        // via readBase. Stale utterances (just replaced by a jump) must not
+        // drag the position back to where the old utterance was.
+        if utterance === currentUtterance, readText != nil {
+            readPosition = readBase + characterRange.location
+        }
         onWordBoundary?(characterRange)
     }
 
@@ -210,6 +328,7 @@ extension SpeechEngine: AVSpeechSynthesizerDelegate {
             ducker.unduck()
             currentUtterance = nil
             readActive = false
+            readText = nil
         }
         if let completion = completions.removeValue(forKey: ObjectIdentifier(utterance)) {
             completion()

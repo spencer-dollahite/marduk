@@ -196,6 +196,7 @@ enum ColonCommand: Equatable {
         // NOT "ratekeys" — "rate" would be its prefix, breaking expansion
         ("speedkeys", .toggle),
         ("togglesound", .choice(["speech", "earcon"])),
+        ("readmotions", .toggle),
     ]
 
     static func kind(for key: String) -> SettingKind? {

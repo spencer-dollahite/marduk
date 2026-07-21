@@ -61,6 +61,32 @@ final class KeyboardMonitor {
     var toggleEarconEnabled = false  // Ctrl+Option+M bloops instead of speaking
     var onRateChange: ((Float) -> Void)?  // signed rate delta from the speed keys
 
+    // Read motions (opt-in): vim navigation inside an active read — b/w
+    // word, (/) sentence, {/} paragraph, digits count, / and ? search.
+    // Only live while a content read is speaking or paused (NORMAL mode);
+    // everywhere else the keys keep their normal behavior. State is
+    // main-thread-only like all tap state.
+    var readMotionsEnabled = false
+    var onReadJump: ((ReadUnit, ReadDirection, Int) -> Void)?
+    var onReadSearch: ((String, ReadDirection) -> Void)?
+    var onReadSearchBegin: (() -> Void)?    // pause the read while typing
+    var onReadSearchCancel: (() -> Void)?   // Escape/empty — resume in place
+    var onReadSearchEcho: ((String) -> Void)?  // echo keystrokes OVER the paused read
+    private var readSearchDirection: ReadDirection?  // non-nil = entry state active
+    private var readSearchBuffer = ""
+    private var readMotionCount = 0          // pending vim count, e.g. 3(
+    private var pendingReadG = false         // first g of gg seen (no timeout — vim style)
+    var onReadJumpEdge: ((ReadDirection) -> Void)?   // gg (.back) / G (.forward)
+    // `.` repeats the last motion (vim). Repeating a search re-hunts from
+    // the new position — vim's n by another name, without the Firefox-n
+    // collision. Persists across reads, like vim's dot across edits.
+    private enum ReadAction {
+        case jump(ReadUnit, ReadDirection, Int)
+        case edge(ReadDirection)
+        case search(String, ReadDirection)
+    }
+    private var lastReadAction: ReadAction?
+
     // Firefox Reader narration handoff (`n` in NORMAL while Firefox is
     // frontmost). true = Marduk stops its own speech and holds media
     // paused while Firefox's Narrate reads; false = release. State is
@@ -252,6 +278,10 @@ final class KeyboardMonitor {
         tapRetry = nil
         commandBuffer = ""
         commandIdleTimer?.cancel()
+        readSearchDirection = nil
+        readSearchBuffer = ""
+        readMotionCount = 0
+        pendingReadG = false
         discardBurstAndReplay()
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
@@ -337,6 +367,13 @@ final class KeyboardMonitor {
             // And a half-typed ":" command
             commandBuffer = ""
             commandIdleTimer?.cancel()
+            // And any read-motion state (a paused search must not eat keys
+            // after re-enable; the daemon side resumes nothing — the read
+            // itself was stopped by the toggle path or died with it)
+            readSearchDirection = nil
+            readSearchBuffer = ""
+            readMotionCount = 0
+            pendingReadG = false
             let state = isEnabled ? "ON (NORMAL)" : "OFF"
             fputs("[keyboard] Marduk \(state)\n", stderr)
             let word = isEnabled ? "Systems engaged" : "Systems disengaged"
@@ -394,6 +431,78 @@ final class KeyboardMonitor {
             return nil
         }
 
+        // === READ-SEARCH entry: typing a / or ? query over a paused read ===
+        // A lightweight sibling of COMMAND mode. The read was paused on
+        // entry; echo goes through the dedicated echo path (announce()
+        // would stop() the paused read). MUST be checked before the Space
+        // pause block: Space is a LITERAL query char here, and the paused
+        // read still reports readActive — Space would otherwise resume it
+        // mid-query.
+        if let direction = readSearchDirection {
+            // Read died under us (Option+Escape, daemon restart): abandon
+            // the entry state and let the key take its normal route.
+            if !isReadActive() {
+                readSearchDirection = nil
+                readSearchBuffer = ""
+            } else {
+                if hasCommand || hasControl { return pass }   // app shortcuts untouched
+                if isAutorepeat, keycode != 51 { return nil } // only Delete repeats
+
+                switch keycode {
+                case 36: // Return — run the search (empty buffer = cancel)
+                    let query = readSearchBuffer
+                    readSearchDirection = nil
+                    readSearchBuffer = ""
+                    if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                        DispatchQueue.main.async { [self] in onReadSearchCancel?() }
+                    } else {
+                        lastReadAction = .search(query, direction)
+                        fputs("[keyboard] read search "
+                            + "\(direction == .forward ? "/" : "?")\(query)\n", stderr)
+                        DispatchQueue.main.async { [self] in
+                            onReadSearch?(query, direction)
+                        }
+                    }
+                    return nil
+
+                case 53: // Escape — cancel, resume the read where it paused
+                    readSearchDirection = nil
+                    readSearchBuffer = ""
+                    fputs("[keyboard] read search cancelled\n", stderr)
+                    DispatchQueue.main.async { [self] in onReadSearchCancel?() }
+                    return nil
+
+                case 51: // Delete — edit; empty buffer backs out entirely
+                    if let removed = readSearchBuffer.popLast() {
+                        let spoken = removed == " " ? "space" : String(removed)
+                        DispatchQueue.main.async { [self] in
+                            if commandEchoEnabled { onReadSearchEcho?("\(spoken) deleted") }
+                        }
+                    } else {
+                        readSearchDirection = nil
+                        DispatchQueue.main.async { [self] in onReadSearchCancel?() }
+                    }
+                    return nil
+
+                default:
+                    if hasOption { return pass }  // zoom shortcuts ride on Option
+                    if let ch = Self.commandKeyChars[keycode] {
+                        readSearchBuffer.append(ch)
+                        let spoken = ch == " " ? "space" : String(ch)
+                        DispatchQueue.main.async { [self] in
+                            if commandEchoEnabled { onReadSearchEcho?(spoken) }
+                        }
+                        return nil
+                    }
+                    if Self.typingPunctuationKeys.contains(keycode) {
+                        DispatchQueue.main.async { Earcon.error() }
+                        return nil
+                    }
+                    return pass  // F-keys, media keys — not query input
+                }
+            }
+        }
+
         // === Space: pause/resume an active read (NORMAL/VISUAL only) ===
         // Only while a content read is speaking or paused — announcements
         // never capture Space, and otherwise it types/passes as normal.
@@ -409,6 +518,120 @@ final class KeyboardMonitor {
             if isAutorepeat { return nil }
             DispatchQueue.main.async { [self] in onPauseToggle?() }
             return nil
+        }
+
+        // === Read motions (opt-in): vim navigation inside an active read ===
+        // Same gate shape as Space above, NORMAL only (VISUAL owns its
+        // letters as selection motions). b/w step words, (/) sentences,
+        // {/} paragraphs, digits build a count (3( = back three), / and ?
+        // open search. Motions deliberately ALLOW autorepeat — holding (
+        // glides back sentence by sentence; the engine recomputes from the
+        // live position each time. Outside a read every key here keeps its
+        // normal meaning, so the letters stay typing-rescue letters and
+        // the punctuation keeps passing through.
+        if readMotionsEnabled, mode == .normal,
+           !hasCommand, !hasControl, !hasOption,
+           burstBuffer.isEmpty, isReadActive() {
+            let hasShift = flags.contains(.maskShift)
+
+            if keycode == 44 { // / or ? — search entry
+                if isAutorepeat { return nil }
+                readSearchDirection = hasShift ? .back : .forward
+                readSearchBuffer = ""
+                readMotionCount = 0
+                pendingReadG = false
+                fputs("[keyboard] read search entry (\(hasShift ? "?" : "/"))\n", stderr)
+                let word = hasShift ? "search back" : "search"
+                DispatchQueue.main.async { [self] in
+                    onReadSearchBegin?()
+                    if commandEchoEnabled { onReadSearchEcho?(word) }
+                }
+                return nil
+            }
+
+            // gg — back to the very beginning; G — the last paragraph
+            // (vim's first/last line, scaled to listening). A lone g arms
+            // the pair, vim-style with no timeout; any other key breaks it.
+            if keycode == 5 {
+                if isAutorepeat { return nil }
+                if hasShift { // G
+                    pendingReadG = false
+                    readMotionCount = 0
+                    lastReadAction = .edge(.forward)
+                    DispatchQueue.main.async { [self] in onReadJumpEdge?(.forward) }
+                } else if pendingReadG { // gg
+                    pendingReadG = false
+                    readMotionCount = 0
+                    lastReadAction = .edge(.back)
+                    DispatchQueue.main.async { [self] in onReadJumpEdge?(.back) }
+                } else {
+                    pendingReadG = true
+                }
+                return nil
+            }
+            pendingReadG = false  // any non-g key breaks a pending gg
+
+            // Digits accumulate a count. Bare 0 stays app-bound (vim: 0 is
+            // a motion, not a count starter); it only joins after 3, 30…
+            if !hasShift, let digit = Self.digitKeyCodes[keycode],
+               digit != 0 || readMotionCount > 0 {
+                readMotionCount = min(readMotionCount * 10 + digit, 999)
+                return nil
+            }
+
+            // . — repeat the last motion; a pending count overrides a
+            // jump's recorded one (3. = the same motion, three times).
+            // Autorepeat allowed: holding . keeps stepping, like the
+            // motions themselves.
+            if keycode == 47, !hasShift {
+                guard let action = lastReadAction else {
+                    readMotionCount = 0
+                    DispatchQueue.main.async { Earcon.error() }
+                    return nil
+                }
+                let pending = readMotionCount
+                readMotionCount = 0
+                switch action {
+                case .jump(let unit, let direction, let recorded):
+                    let n = pending > 0 ? pending : recorded
+                    lastReadAction = .jump(unit, direction, n)
+                    DispatchQueue.main.async { [self] in onReadJump?(unit, direction, n) }
+                case .edge(let direction):
+                    DispatchQueue.main.async { [self] in onReadJumpEdge?(direction) }
+                case .search(let query, let direction):
+                    DispatchQueue.main.async { [self] in onReadSearch?(query, direction) }
+                }
+                return nil
+            }
+
+            var jump: (ReadUnit, ReadDirection)?
+            if hasShift {
+                switch keycode {
+                case 25: jump = (.sentence, .back)     // (
+                case 29: jump = (.sentence, .forward)  // )
+                case 33: jump = (.paragraph, .back)    // {
+                case 30: jump = (.paragraph, .forward) // }
+                default: break
+                }
+            } else {
+                switch keycode {
+                case 11: jump = (.word, .back)         // b
+                case 13: jump = (.word, .forward)      // w
+                default: break
+                }
+            }
+            if let (unit, direction) = jump {
+                let count = max(1, readMotionCount)
+                readMotionCount = 0
+                lastReadAction = .jump(unit, direction, count)
+                DispatchQueue.main.async { [self] in
+                    onReadJump?(unit, direction, count)
+                }
+                return nil
+            }
+            // Not a motion: drop any half-typed count and fall through to
+            // the normal dispatch (Escape still stops the read, etc.)
+            readMotionCount = 0
         }
 
         // === INSERT-mode n over a Firefox Reader document ===

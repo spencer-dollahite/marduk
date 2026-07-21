@@ -28,6 +28,7 @@ struct MardukConfig: Codable {
                                                  // only placement zoom always keeps in view
         var speedKeys: Bool? = false     // Option+Up/Down nudge speech rate (NORMAL/VISUAL)
         var toggleSound: String? = "speech" // "speech" | "earcon" — Ctrl+Option+M feedback
+        var readMotions: Bool? = false   // vim motions inside a read: b/w ( ) { } gg G / ?
     }
 
     struct OverlayConfig: Codable {

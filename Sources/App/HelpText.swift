@@ -27,6 +27,14 @@ enum HelpText {
         8, in Firefox: open reader mode and start narrating, one key. \
         8 again stops narrating and closes the reader. \
         Escape, stop speech. Space, pause or resume a read. \
+        With read motions on, vim keys navigate inside a read: b and w \
+        step back and forward a word. Parentheses step a sentence. Braces \
+        step a paragraph. Numbers repeat, like 3 then open paren. g g \
+        restarts from the top, capital G jumps to the last paragraph. \
+        Slash searches forward, question mark searches back: the read \
+        pauses while you type, Return jumps to the match, Escape resumes \
+        where you were. Period repeats the last motion or search, so \
+        period after a search hops match to match. \
         VISUAL mode: h j k l extend the selection. Numbers repeat a motion, \
         like 3 j. r reads the selection. Escape cancels. \
         INSERT mode: hold Escape half a second to return to NORMAL. \
@@ -57,7 +65,8 @@ enum HelpText {
         color as a dot following the mouse. thickness, border width in points. \
         speed keys, one word, on or off: Option up and down arrows change \
         the speech rate. toggle sound, one word, speech or earcon, what \
-        Control Option M plays.
+        Control Option M plays. read motions, one word, on or off: vim \
+        navigation keys inside a read.
         """
 
     /// ":tip" — one is picked at random (never the same twice in a row).
@@ -85,6 +94,7 @@ enum HelpText {
         "With colon config speed keys on, Option up arrow and Option down arrow change the speech rate on the spot, ten words per minute at a time. Hold the key to glide.",
         "In Firefox reader mode, n hands the reading to Firefox's own narrator: your music pauses, Marduk goes quiet, and Firefox reads the page. Press n again or Escape to bring the music back.",
         "On any article in Firefox, 8 does the whole ritual at once: opens reader mode, pauses your music, and starts Firefox narrating. 8 again closes it all back down.",
+        "With colon config read motions on, vim keys work inside a read: open paren replays the sentence you just missed, b and w step by word, braces by paragraph, and slash searches the text. Wait, what did it just say? Open paren.",
     ]
 
     static let welcome = """

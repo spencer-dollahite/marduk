@@ -119,6 +119,10 @@ final class DaemonServer {
     // Speed keys (Option+Up/Down): announce + persist once after the last
     // nudge, not per autorepeat event
     private var rateSaveTimer: DispatchWorkItem?
+    // Read search: true when opening / or ? paused a SPEAKING read — the
+    // cancel/no-match paths resume only then (a read the user had already
+    // Space-paused before searching stays paused)
+    private var searchPausedRead = false
 
     // ":voices" picker rows: installed English voices, best quality first,
     // enumerated once on first use (same filter/sort as `marduk voices`)
@@ -262,6 +266,7 @@ final class DaemonServer {
         keyboardMonitor?.typingEchoEnabled = config.keyboard?.typingEcho ?? false
         keyboardMonitor?.commandEchoEnabled = config.keyboard?.commandEcho ?? true
         keyboardMonitor?.speedKeysEnabled = config.keyboard?.speedKeys ?? false
+        keyboardMonitor?.readMotionsEnabled = config.keyboard?.readMotions ?? false
         keyboardMonitor?.toggleEarconEnabled =
             (config.keyboard?.toggleSound ?? "speech") == "earcon"
         palette.positionMode = CommandPalette.PositionMode(
@@ -334,6 +339,46 @@ final class DaemonServer {
             rateSaveTimer = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
         }
+        // Read motions: all handlers arrive on main (the monitor dispatches).
+        // The buzz on an unmoved jump keeps edges audible — silence after a
+        // keypress would read as a broken key.
+        keyboardMonitor?.onReadJump = { [self] unit, direction, count in
+            if !speech.jump(unit, direction: direction, count: count) {
+                Earcon.error()
+            }
+        }
+        keyboardMonitor?.onReadJumpEdge = { [self] direction in
+            if !speech.jumpToEdge(direction) {
+                Earcon.error()
+            }
+        }
+        keyboardMonitor?.onReadSearchBegin = { [self] in
+            if speech.isSpeaking, !speech.isPaused {
+                speech.pause()
+                searchPausedRead = true
+            } else {
+                searchPausedRead = false
+            }
+        }
+        keyboardMonitor?.onReadSearchCancel = { [self] in
+            if searchPausedRead { speech.resume() }
+            searchPausedRead = false
+        }
+        keyboardMonitor?.onReadSearch = { [self] query, direction in
+            let paused = searchPausedRead
+            searchPausedRead = false
+            guard let snapshot = speech.readSnapshot,
+                  let target = ReadNavigator.searchTarget(
+                      in: snapshot.text, from: snapshot.position,
+                      query: query, direction: direction) else {
+                Earcon.error()
+                if paused { speech.resume() }
+                return
+            }
+            speech.jumpTo(offset: target) // respeak = auto-resume
+        }
+        // Echo over the paused read — announce() would stop() it
+        keyboardMonitor?.onReadSearchEcho = { [self] text in speech.echo(text) }
         // Firefox Reader narration handoff (`n`): Marduk gets out of the
         // way — hold FIRST so the speech cancel's unduck lands blocked,
         // then stop our speech and pause media. The hold keeps media
@@ -1089,6 +1134,19 @@ final class DaemonServer {
             speech.announce(on ? "Speed keys on. Option up and down change the rate."
                                : "Speed keys off.")
 
+        case "readmotions":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            keyboardMonitor?.readMotionsEnabled = on
+            var kb = config.keyboard ?? .init()
+            kb.readMotions = on
+            config.keyboard = kb
+            ConfigLoader.save(config)
+            speech.announce(on
+                ? "Read motions on. During a read: b and w step words, "
+                    + "parens sentences, braces paragraphs, g g start, "
+                    + "capital G end, slash searches."
+                : "Read motions off.")
+
         case "togglesound":
             guard ["speech", "earcon"].contains(value) else {
                 return fail("Toggle sound must be speech or earcon.")
@@ -1130,7 +1188,7 @@ final class DaemonServer {
                 fail("Unknown setting \(key). Settings are rate, level, hashes, "
                     + "rescue, burst, escape hold, echo, command echo, palette, "
                     + "auto update, check hours, border, pointer, thickness, "
-                    + "speed keys, toggle sound.")
+                    + "speed keys, toggle sound, read motions.")
             }
         }
     }
@@ -1168,6 +1226,7 @@ final class DaemonServer {
             "thickness": "\(config.overlay?.thickness ?? 6) pt",
             "speedkeys": (keyboardMonitor?.speedKeysEnabled ?? false) ? "on" : "off",
             "togglesound": (keyboardMonitor?.toggleEarconEnabled ?? false) ? "earcon" : "speech",
+            "readmotions": (keyboardMonitor?.readMotionsEnabled ?? false) ? "on" : "off",
         ]
     }
 

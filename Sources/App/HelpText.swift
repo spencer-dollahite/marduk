@@ -54,9 +54,11 @@ enum HelpText {
         the current word letter by letter, z again spells it phonetically, \
         capital Z spells the whole sentence. Lowercase r drops the \
         current read and reads the paragraph under the pointer instead. \
-        A tap of Escape pauses and resumes, like Space. Only two keys leave a \
-        read: holding Escape stops it and returns to NORMAL, i stops it \
-        and drops to INSERT for typing. Other letters buzz. \
+        A tap of Escape pauses and resumes, like Space. Holding Escape stops \
+        the read and returns to NORMAL. i drops to INSERT and the read \
+        keeps talking — type notes while you listen; hold Escape to hand \
+        the keyboard back to the read, or Option Escape to stop the audio \
+        without leaving your typing. Other letters buzz. \
         VISUAL mode: h j k l extend the selection. Numbers repeat a motion, \
         like 3 j. Lowercase r reads the selection. Escape cancels. \
         INSERT mode: a quick tap of Escape goes to the app, so vim keeps its \
@@ -150,6 +152,7 @@ enum HelpText {
         "Working dark? Marduk notices: with your Mac in dark mode, every PDF you open in Preview switches to dark view by itself. Colon config p d f dark off if you want your PDFs paper-white. Colon config auto invert on goes further: it measures each app's real brightness and inverts the display only when the content is actually blinding — a black slide deck in Keynote stays exactly as you styled it.",
         "The view follows the voice: jump a PDF read to page three and Preview turns to page three, read a Reader article and it scrolls along like a teleprompter. Colon config follow off keeps the view still.",
         "Code names read as natural words: read Document From Caret, not one long mumble, and user id count without hearing underscore twice. Colon config identifiers off brings back the raw forms.",
+        "Press i during a read and the reading keeps going while you type — notes while you listen. Hold Escape to give the keyboard back to the read; hold it again to stop. Option Escape kills the audio without leaving your typing.",
         "If Marduk ever misbehaves, Control Option M turns it off instantly — keys pass through untouched and your Karabiner setup comes back. Colon quit stops the daemon entirely, and marduk stop in Terminal does the same from outside. Force quitting doesn't stick: the launch agent restarts it on purpose.",
         "Want every key you type spoken, in every app? macOS already does that: colon typing opens the typing feedback settings. Marduk is happy to be your front desk for the accessibility features Apple already built.",
         "Marduk mispronouncing a name? Colon pronunciation opens the system pronunciation editor. Add the word there, typed or spoken, and Marduk says it your way from the very next read — including entries you scope to a single app.",

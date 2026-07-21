@@ -341,7 +341,13 @@ final class DaemonServer {
         // the viewer's go-to-page gesture (Preview); web reads scroll the
         // contributing element into view as the voice crosses paragraphs.
         keyboardMonitor?.followEnabled = config.keyboard?.follow ?? true
-        speech.onNewRead = { [self] in keyboardMonitor?.clearWebReadAnchors() }
+        speech.onNewRead = { [self] in
+            keyboardMonitor?.clearWebReadAnchors()
+            // Asking for a NEW read means "I want to listen" — reclaim the
+            // capture even when the previous read was still playing under
+            // an i-suspended INSERT (no readActive edge fires then)
+            keyboardMonitor?.readStateChanged(true)
+        }
         speech.onPositionChange = { [self] offset in
             guard let snapshot = speech.readSnapshot else { return }
             keyboardMonitor?.followScroll(offset: offset, text: snapshot.text)

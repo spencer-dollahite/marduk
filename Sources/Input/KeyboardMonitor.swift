@@ -664,17 +664,20 @@ final class KeyboardMonitor {
                 return nil
             }
 
-            if keycode == 34 { // i — stop the read, drop to INSERT
+            if keycode == 34 { // i — type WHILE the read keeps talking
+                // (user-redesigned: the old exit also stopped the read, but
+                // "take notes while listening" is a legitimate mode of
+                // being human). The capture drops so keys reach the app;
+                // the read plays on as background audio. Held Escape climbs
+                // BACK into the capture (see the INSERT hold path); Option+
+                // Escape stops the audio from anywhere.
                 if isAutorepeat { return nil }
                 readingCapture = false
                 resetReadMotionState()
                 mode = .insert
                 suppressInsertEntryRepeat = true
-                fputs("[keyboard] READING → INSERT\n", stderr)
-                DispatchQueue.main.async { [self] in
-                    onStop?()
-                    Earcon.fallToInsert()
-                }
+                fputs("[keyboard] READING → INSERT (read continues)\n", stderr)
+                DispatchQueue.main.async { Earcon.fallToInsert() }
                 return nil
             }
 
@@ -1044,6 +1047,17 @@ final class KeyboardMonitor {
                     guard let self else { return }
                     self.pendingEscapeHold = nil
                     self.escapeHoldFired = true
+                    // Leave typing — and when a read is still playing, the
+                    // read reclaims the keyboard first: hold Escape climbs
+                    // INSERT → READING → NORMAL, one level per hold
+                    if self.readMotionsEnabled, self.isEnabled,
+                       self.isReadActive() {
+                        self.readingCapture = true
+                        fputs("[keyboard] escape held → READING (read reclaimed)\n",
+                              stderr)
+                        Earcon.riseToNormal()
+                        return
+                    }
                     self.mode = .normal
                     fputs("[keyboard] escape held → NORMAL\n", stderr)
                     Earcon.riseToNormal()

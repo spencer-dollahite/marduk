@@ -679,13 +679,19 @@ final class KeyboardMonitor {
             pendingReadG = false  // any non-g key breaks a pending gg
 
             // r — abandon this read and read what's under the pointer
-            // instead (works speaking or paused; the replacement read keeps
-            // media ducked and the capture engaged)
+            // instead; R — abandon it and read the focused document from
+            // the caret to the end (both work speaking or paused; the
+            // replacement read keeps media ducked and the capture engaged)
             if keycode == 15 {
                 if isAutorepeat { return nil }
                 readMotionCount = 0
-                fputs("[keyboard] READING r → new read\n", stderr)
-                readAtPointer()
+                if hasShift {
+                    fputs("[keyboard] READING R → document read\n", stderr)
+                    readDocumentFromCaret()
+                } else {
+                    fputs("[keyboard] READING r → new read\n", stderr)
+                    readAtPointer()
+                }
                 return nil
             }
 
@@ -1119,6 +1125,10 @@ final class KeyboardMonitor {
                     onAnnounce?("visual")
                 }
             }
+            return nil
+
+        case 15 where flags.contains(.maskShift): // R — read document from caret
+            readDocumentFromCaret()
             return nil
 
         case 15: // r — read line (triple-click + speak)
@@ -1698,6 +1708,69 @@ final class KeyboardMonitor {
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, // a-r, roughly
         31, 32, 34, 35, 37, 38, 45, 46                              // o-z, roughly (minus k=40)
     ]
+
+    /// R — continuous reading: the focused element's FULL text from the
+    /// caret (or selection start) to the end, through the normal read
+    /// pipeline, so every reading-mode feature (motions, search, spell,
+    /// purple border) applies for free. Mirrors tryCreateVisualAXState's
+    /// extraction minus the settable-selection gate — reading needs no
+    /// writable selection. Apps without an AX text value (web areas,
+    /// canvas UIs) buzz and say so. Main-queue AX, 0.5s timeouts.
+    private func readDocumentFromCaret() {
+        DispatchQueue.main.async { [self] in
+            func noDocument(_ why: String) {
+                fputs("[keyboard] R: \(why)\n", stderr)
+                Earcon.error()
+                onAnnounce?("No readable document here.")
+            }
+            guard let app = NSWorkspace.shared.frontmostApplication else { return }
+            let axApp = AXUIElementCreateApplication(app.processIdentifier)
+            AXUIElementSetMessagingTimeout(axApp, 0.5)
+
+            var focusedRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                      axApp, kAXFocusedUIElementAttribute as CFString, &focusedRef
+                  ) == .success,
+                  let raw = focusedRef,
+                  CFGetTypeID(raw) == AXUIElementGetTypeID() else {
+                return noDocument("no focused element")
+            }
+            let element = raw as! AXUIElement
+            AXUIElementSetMessagingTimeout(element, 0.5)
+
+            var valueRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                      element, kAXValueAttribute as CFString, &valueRef
+                  ) == .success,
+                  let text = valueRef as? String, !text.isEmpty else {
+                return noDocument("focused element has no text value")
+            }
+
+            // Caret / selection start; missing or unreadable range → 0
+            var start = 0
+            var rangeRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(
+                   element, kAXSelectedTextRangeAttribute as CFString, &rangeRef
+               ) == .success,
+               let rr = rangeRef, CFGetTypeID(rr) == AXValueGetTypeID() {
+                var range = CFRange(location: 0, length: 0)
+                if AXValueGetValue(rr as! AXValue, .cfRange, &range) {
+                    start = max(0, range.location)
+                }
+            }
+
+            let ns = text as NSString
+            let remainder = ns.substring(from: min(start, ns.length))
+            guard !remainder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                fputs("[keyboard] R: nothing after the caret\n", stderr)
+                Earcon.error()
+                onAnnounce?("Nothing after the cursor to read.")
+                return
+            }
+            fputs("[keyboard] R: document read (\(remainder.count) of \(ns.length) chars)\n", stderr)
+            onSpeak?(remainder)
+        }
+    }
 
     /// The `r` command: triple-click selects the paragraph under the
     /// pointer, then read the selection. Shared by the NORMAL dispatch and

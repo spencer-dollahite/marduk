@@ -18,6 +18,8 @@ enum HelpText {
     static let commands = """
         Marduk commands. NORMAL mode: i, enter INSERT mode. r, select the \
         paragraph under the cursor, like a triple click, and read it. \
+        Capital R, read the whole document from the text cursor to the \
+        end, in apps that share their text, like Notes and Terminal. \
         v, visual selection. Capital V, select whole lines. t, speak the \
         time. t t, time and date. s, toggle speak under pointer. u, check \
         for updates and hear what's new. u u, install the update. \
@@ -100,6 +102,7 @@ enum HelpText {
         "In Firefox reader mode, n hands the reading to Firefox's own narrator: your music pauses, Marduk goes quiet, and Firefox reads the page. Press n again or Escape to bring the music back.",
         "On any article in Firefox, 8 does the whole ritual at once: opens reader mode, pauses your music, and starts Firefox narrating. 8 again closes it all back down.",
         "Vim keys work inside a read: open paren replays the sentence you just missed, b and w step by word, j and k by line, braces by paragraph, and slash searches the text. Wait, what did it just say? Open paren.",
+        "Capital R turns a Notes page or a Terminal window into an audiobook: it reads from your text cursor to the end, with every reading motion live. Press it mid-read to switch documents.",
     ]
 
     static let welcome = """

@@ -60,10 +60,6 @@ final class KeyboardMonitor {
     var commandEchoEnabled = true    // speak chars typed after ":"
     var speedKeysEnabled = false     // Option+Up/Down nudge speech rate (NORMAL/VISUAL)
     var toggleEarconEnabled = false  // Ctrl+Option+M bloops instead of speaking
-    // Injected by the daemon (AudioDucker.audibleMediaKeyClientExists):
-    // the media play/pause toggle is only sent when an app that will
-    // CLAIM it is the audio source — an unclaimed press launches Music
-    var isMediaKeyClientAudible: () -> Bool = { false }
     var onRateChange: ((Float) -> Void)?  // signed rate delta from the speed keys
 
     // Read motions (default ON, `:config readmotions off` disables): vim
@@ -148,13 +144,10 @@ final class KeyboardMonitor {
     private var commandAbsorbTail: [Character] = []
     private var didSpeakColonHint = false
 
-    // Speak-under-pointer state. The pause/resume work runs on a SERIAL queue
-    // so rapid toggles can't interleave (the global concurrent queue let two
-    // toggles race on didPauseMediaForSpeakUnderCursor and double-send the
-    // play/pause key, which is a toggle and would start playback).
-    private var speakUnderCursorActive = false
-    private var didPauseMediaForSpeakUnderCursor = false
-    private let mediaQueue = DispatchQueue(label: "com.marduk.keyboard.media")
+    // `s` — Marduk-native pointer hover speech (HoverSpeech, daemon-owned):
+    // the reading voice at the user's rate/pitch, replacing the macOS
+    // hover feature (whose separately-configured voice never matched)
+    var onHoverToggle: (() -> Void)?
 
     // Typing-burst rescue (NORMAL mode). Unmodified letter keyDowns are
     // withheld briefly instead of executing immediately; a quick burst that
@@ -1239,33 +1232,10 @@ final class KeyboardMonitor {
             }
             return nil
 
-        case 1: // s — toggle macOS "speak item under pointer" (Ctrl+Option+Cmd+P shortcut)
-            speakUnderCursorActive.toggle()
-            let active = speakUnderCursorActive
-            fputs("[keyboard] s → speak under pointer \(active ? "on" : "off")\n", stderr)
-            mediaQueue.async { [self] in
-                if active {
-                    // Pause media before enabling speak-under-pointer —
-                    // only when a media-key CLIENT is the audio source
-                    // (an unclaimed play/pause launches Music)
-                    if isMediaKeyClientAudible() {
-                        fputs("[keyboard] pausing media for speak under pointer\n", stderr)
-                        Self.sendMediaPlayPause()
-                        didPauseMediaForSpeakUnderCursor = true
-                        Thread.sleep(forTimeInterval: 0.1)
-                    }
-                    Self.postSpeakUnderPointerShortcut()
-                } else {
-                    // Disable speak-under-pointer, then resume media if we paused it
-                    Self.postSpeakUnderPointerShortcut()
-                    if didPauseMediaForSpeakUnderCursor {
-                        fputs("[keyboard] resuming media after speak under pointer\n", stderr)
-                        Thread.sleep(forTimeInterval: 0.3)
-                        Self.sendMediaPlayPause()
-                        didPauseMediaForSpeakUnderCursor = false
-                    }
-                }
-            }
+        case 1: // s — toggle Marduk's own pointer hover speech (HoverSpeech:
+                // the reading voice, rate, and pitch — the macOS hover
+                // feature and its shortcut setup are no longer involved)
+            DispatchQueue.main.async { [self] in onHoverToggle?() }
             return nil
 
         case 45 where isFirefoxFrontmost: // n — Firefox Reader narration handoff
@@ -1866,6 +1836,10 @@ final class KeyboardMonitor {
             if let pointerOffset = Self.textOffsetAtPointer(in: element) {
                 start = pointerOffset
                 fputs("[keyboard] R: starting at pointer\n", stderr)
+            } else if let estimate = Self.pointerRowEstimate(in: element,
+                                                            text: text as NSString) {
+                start = estimate
+                fputs("[keyboard] R: starting at pointer (row estimate)\n", stderr)
             } else {
                 var rangeRef: CFTypeRef?
                 if AXUIElementCopyAttributeValue(
@@ -1891,6 +1865,54 @@ final class KeyboardMonitor {
             fputs("[keyboard] R: document read (\(remainder.count) of \(ns.length) chars)\n", stderr)
             onSpeak?(remainder)
         }
+    }
+
+    /// Row-estimate fallback for pointer starts when the app doesn't
+    /// answer range-for-position (Terminal, empirically): the pointer's
+    /// vertical fraction of the element's frame picks a line inside the
+    /// VISIBLE character range. Terminal rows are uniform height, so this
+    /// is line-accurate — all a "start here" gesture needs (the wordStart
+    /// snap afterwards lands cleanly).
+    private static func pointerRowEstimate(in element: AXUIElement,
+                                           text: NSString) -> Int? {
+        var posRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        var visRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  element, kAXPositionAttribute as CFString, &posRef) == .success,
+              AXUIElementCopyAttributeValue(
+                  element, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              AXUIElementCopyAttributeValue(
+                  element, kAXVisibleCharacterRangeAttribute as CFString, &visRef) == .success,
+              let pr = posRef, CFGetTypeID(pr) == AXValueGetTypeID(),
+              let sr = sizeRef, CFGetTypeID(sr) == AXValueGetTypeID(),
+              let vr = visRef, CFGetTypeID(vr) == AXValueGetTypeID() else { return nil }
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        var visible = CFRange(location: 0, length: 0)
+        guard AXValueGetValue(pr as! AXValue, .cgPoint, &origin),
+              AXValueGetValue(sr as! AXValue, .cgSize, &size), size.height > 0,
+              AXValueGetValue(vr as! AXValue, .cfRange, &visible),
+              visible.length > 0 else { return nil }
+
+        // AX frames are top-left origin, same conversion as textOffsetAtPointer
+        let mouse = NSEvent.mouseLocation
+        let primaryHeight = NSScreen.screens.first?.frame.maxY ?? 0
+        let axY = primaryHeight - mouse.y
+        let fraction = max(0.0, min(1.0, (axY - origin.y) / size.height))
+
+        let visStart = max(0, min(visible.location, text.length))
+        let visEnd = max(visStart, min(visible.location + visible.length, text.length))
+        let visibleText = text.substring(
+            with: NSRange(location: visStart, length: visEnd - visStart))
+        let lines = visibleText.components(separatedBy: "\n")
+        guard !lines.isEmpty else { return nil }
+        let targetLine = min(lines.count - 1, Int(fraction * CGFloat(lines.count)))
+        var offset = visStart
+        for index in 0..<targetLine {
+            offset += (lines[index] as NSString).length + 1
+        }
+        return min(offset, text.length)
     }
 
     /// The text offset under the mouse pointer, via the parameterized
@@ -2447,64 +2469,11 @@ final class KeyboardMonitor {
         return selectedText as? String
     }
 
-    // MARK: - Speak Items Under Pointer (macOS Accessibility)
-
-    /// Post Ctrl+Option+Cmd+P to toggle "Speak items under the pointer".
-    /// Requires one-time setup: System Settings > Keyboard > Keyboard Shortcuts >
-    /// Accessibility > assign Ctrl+Option+Cmd+P to "Speak items under the pointer".
-    private static func postSpeakUnderPointerShortcut() {
-        guard let source = CGEventSource(stateID: .hidSystemState) else { return }
-
-        // keycode 35 = 'p'
-        let flags: CGEventFlags = [.maskControl, .maskAlternate, .maskCommand]
-
-        guard let down = CGEvent(keyboardEventSource: source, virtualKey: 35, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: 35, keyDown: false) else { return }
-
-        down.flags = flags
-        down.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
-        down.post(tap: .cghidEventTap)
-
-        up.flags = flags
-        up.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
-        up.post(tap: .cghidEventTap)
-    }
-
-    // (isAudioOutputRunning was removed: the device-level check couldn't
-    // tell a media app from a video call, and an unclaimed play/pause
-    // keypress launches Music — the daemon injects the client-aware
-    // isMediaKeyClientAudible instead.)
-
-    /// Send a system-wide media play/pause key event.
-    private static func sendMediaPlayPause() {
-        let keyType = 16 // NX_KEYTYPE_PLAY
-
-        let downEvent = NSEvent.otherEvent(
-            with: .systemDefined,
-            location: .zero,
-            modifierFlags: NSEvent.ModifierFlags(rawValue: 0xa00),
-            timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: 0,
-            context: nil,
-            subtype: 8,
-            data1: (keyType << 16) | (0x0a << 8),
-            data2: -1
-        )
-        downEvent?.cgEvent?.post(tap: .cghidEventTap)
-
-        let upEvent = NSEvent.otherEvent(
-            with: .systemDefined,
-            location: .zero,
-            modifierFlags: NSEvent.ModifierFlags(rawValue: 0xb00),
-            timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: 0,
-            context: nil,
-            subtype: 8,
-            data1: (keyType << 16) | (0x0b << 8),
-            data2: -1
-        )
-        upEvent?.cgEvent?.post(tap: .cghidEventTap)
-    }
+    // (The old macOS speak-under-pointer integration — the Ctrl+Option+
+    // Cmd+P shortcut post, the media pause/resume dance, and the
+    // isAudioOutputRunning device check — is gone: `s` now drives
+    // Marduk's own HoverSpeech, which uses the reading voice and needs
+    // neither Settings setup nor media pausing.)
 
     /// Fallback for apps where AX selected text isn't available (e.g. iMessage).
     /// Posts Cmd+C to copy selection, then reads from pasteboard.

@@ -132,6 +132,7 @@ final class DaemonServer {
     private var config: MardukConfig
     private let tutorial = Tutorial()
     private let dialogSentinel = DialogSentinel()
+    private let hoverSpeech = HoverSpeech()
     private let palette = CommandPalette()
     private var paletteEnabled: Bool
     // Palette state, main-queue-only: last buffer + its completion candidates
@@ -292,6 +293,10 @@ final class DaemonServer {
         dialogSentinel.enabled = config.keyboard?.dialogAlerts ?? true
         dialogSentinel.start()
 
+        // Pointer hover speech — Marduk's own, in the reading voice
+        hoverSpeech.speak = { [self] text in speech.hover(text) }
+        hoverSpeech.announce = { [self] text in speech.announce(text) }
+
         // Start keyboard monitor (Option+Escape → speak selection)
         keyboardMonitor = KeyboardMonitor()
         keyboardMonitor?.escapeHoldThreshold = escapeHoldThreshold
@@ -301,9 +306,7 @@ final class DaemonServer {
         keyboardMonitor?.commandEchoEnabled = config.keyboard?.commandEcho ?? true
         keyboardMonitor?.speedKeysEnabled = config.keyboard?.speedKeys ?? false
         keyboardMonitor?.readMotionsEnabled = config.keyboard?.readMotions ?? true
-        keyboardMonitor?.isMediaKeyClientAudible = { [self] in
-            ducker.audibleMediaKeyClientExists()
-        }
+        keyboardMonitor?.onHoverToggle = { [self] in hoverSpeech.toggle() }
         keyboardMonitor?.toggleEarconEnabled =
             (config.keyboard?.toggleSound ?? "speech") == "earcon"
         palette.positionMode = CommandPalette.PositionMode(
@@ -359,6 +362,7 @@ final class DaemonServer {
                 if !enabled {
                     tutorial.abort(silent: true)
                     palette.hide()
+                    hoverSpeech.deactivate()
                 }
             }
         }
@@ -542,6 +546,7 @@ final class DaemonServer {
         Self.setKarabinerVariable(up: false)
         deactivateKarabinerProfile()
         dialogSentinel.stop()
+        hoverSpeech.deactivate()
         keyboardMonitor?.stop()
         // Drain pending callbacks
         RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))

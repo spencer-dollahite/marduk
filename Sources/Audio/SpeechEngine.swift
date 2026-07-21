@@ -356,6 +356,22 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         echoSynthesizer.speak(utterance)
     }
 
+    /// Pointer hover speech: short element labels in the READING voice at
+    /// the user's rate and pitch — the whole point is that hover sounds
+    /// exactly like reads. Rides the echo synthesizer so an active read
+    /// is never disturbed; a new label cuts the previous one.
+    func hover(_ text: String) {
+        let sanitized = SpeechPreprocessor.sanitize(text)
+        guard !sanitized.isEmpty else { return }
+        stopEcho()
+        let utterance = AVSpeechUtterance(string: sanitized)
+        utterance.rate = rate
+        utterance.voice = voice
+        utterance.pitchMultiplier = pitch
+        utterance.volume = 1.0
+        echoSynthesizer.speak(utterance)
+    }
+
     /// A running spell-out (a sentence can take half a minute) must never
     /// talk over navigation or a resumed read — every jump/pause entry
     /// point cuts it.

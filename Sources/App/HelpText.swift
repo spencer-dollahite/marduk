@@ -25,7 +25,7 @@ enum HelpText {
         and control B turn pages, a number then capital G jumps to that \
         page, g g goes to page one, capital G to the last page. \
         v, visual selection. Capital V, select whole lines. t, speak the \
-        time. t t, time and date. s, toggle speak under pointer. u, check \
+        time. t t, time and date. s, speak what is under the mouse pointer as it moves, in your reading voice. u, check \
         for updates and hear what's new. u u, install the update. \
         n, in Firefox reader mode: pause your media and start Firefox's \
         own narration. n again, or Escape, brings the media back. n works \
@@ -102,7 +102,7 @@ enum HelpText {
         "In the colon command line, stop typing for a moment and Marduk speaks your options. Question mark does the same on demand. Arrows move through them, or control N and control P, vim style.",
         "You can shorten colon commands like vim: colon conf ra 230 is colon config rate 230.",
         "Long hex strings are shortened when read: an m d 5 hash becomes m d 5 ending in its last three characters. Turn that off with colon config hashes off.",
-        "The s command speaks whatever is under your mouse pointer. It needs a one-time shortcut assignment in System Settings, Keyboard, Accessibility.",
+        "The s command speaks whatever is under your mouse pointer as it moves, in your own reading voice at your rate and pitch. No setup, and it never interrupts a read. Press s again to stop.",
         "Press u in NORMAL mode to hear what updates are available. Press u twice, or u again within a minute, to install them.",
         "The r command selects the whole paragraph under the mouse cursor, like a triple click, then reads the selection.",
         "Media pauses during reads and resumes after, only if it was actually playing. Music apps get volume-ducked instead of paused.",

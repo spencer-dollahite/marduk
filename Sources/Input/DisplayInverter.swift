@@ -122,9 +122,13 @@ final class DisplayInverter: @unchecked Sendable {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+            guard let self,
+                  let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   let bundleID = app.bundleIdentifier else { return }
-            self?.scheduleActivation(bundleID, pid: app.processIdentifier)
+            // Raw stamp, BEFORE any dwell/settle filtering: a listed app's
+            // own activation churn renews its lease (see requestRevert)
+            if self.isListed(bundleID) { self.lastListedSeen = Date() }
+            self.scheduleActivation(bundleID, pid: app.processIdentifier)
         }
 
         // Check current foreground app immediately (handles daemon restart)
@@ -291,6 +295,7 @@ final class DisplayInverter: @unchecked Sendable {
             // Auto-measurement judges only unlisted apps. Reverts are
             // NEVER immediate: see requestRevert.
             if isListed(bundleID) {
+                lastListedSeen = Date()
                 cancelPendingRevert()
                 ensureInverted(true, reason: bundleID)
             } else if autoInvert, bundleID != Self.previewBundle || !previewDarkActive,
@@ -320,6 +325,14 @@ final class DisplayInverter: @unchecked Sendable {
     private var pendingRevert: DispatchWorkItem?
     private static let revertConfirmDelay: TimeInterval = 2.2
 
+    // The lease: field log showed the window signal PERSISTENTLY wrong for
+    // PT (claims Firefox while PT is front) and activation flapping — so
+    // instant samples can never be trusted to confirm a revert. But PT's
+    // churn fires a PT activation every second or two: the noise itself is
+    // the keepalive. No listed app seen for listedGrace = genuinely gone.
+    private var lastListedSeen = Date.distantPast
+    private static let listedGrace: TimeInterval = 3.0
+
     private func cancelPendingRevert() {
         pendingRevert?.cancel()
         pendingRevert = nil
@@ -332,6 +345,7 @@ final class DisplayInverter: @unchecked Sendable {
             guard let self else { return }
             self.pendingRevert = nil
             guard self.isInverted,
+                  Date().timeIntervalSince(self.lastListedSeen) > Self.listedGrace,
                   let front = self.resolveFront(),
                   front.bundleID == bundleID,
                   !self.isListed(front.bundleID) else { return }

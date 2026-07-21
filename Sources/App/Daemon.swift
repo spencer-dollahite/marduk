@@ -354,12 +354,16 @@ final class DaemonServer {
         // The buzz on an unmoved jump keeps edges audible — silence after a
         // keypress would read as a broken key.
         keyboardMonitor?.onReadJump = { [self] unit, direction, count in
-            if !speech.jump(unit, direction: direction, count: count) {
+            if speech.jump(unit, direction: direction, count: count) {
+                tutorial.handle(.readJumped)
+            } else {
                 Earcon.error()
             }
         }
         keyboardMonitor?.onReadJumpEdge = { [self] direction in
-            if !speech.jumpToEdge(direction) {
+            if speech.jumpToEdge(direction) {
+                tutorial.handle(.readJumped)
+            } else {
                 Earcon.error()
             }
         }
@@ -369,7 +373,9 @@ final class DaemonServer {
             }
         }
         keyboardMonitor?.onReadSpell = { [self] unit in
-            if !speech.spell(unit) {
+            if speech.spell(unit) {
+                tutorial.handle(.spelled)
+            } else {
                 Earcon.error()
             }
         }

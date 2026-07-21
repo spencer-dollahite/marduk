@@ -11,6 +11,8 @@ final class Tutorial {
         case readFinished          // a keyboard-originated read completed
         case pauseToggled          // Space pause/resume fired
         case announced(String)     // a monitor-originated announcement
+        case readJumped            // a reading-mode motion fired (b w ( ) gg …)
+        case spelled               // z/Z spelled a word or sentence
     }
 
     private struct Step {
@@ -65,7 +67,7 @@ final class Tutorial {
     // MARK: - Script
 
     private static let intro = """
-        Welcome to the Marduk tutorial. Six short lessons. The keys you press \
+        Welcome to the Marduk tutorial. Nine short lessons. The keys you press \
         act for real, so open a text editor with a few lines of text first. \
         To leave at any time, type colon tutorial again.
         """
@@ -127,6 +129,25 @@ final class Tutorial {
                  },
                  success: "That is the time. Press t twice quickly for time "
                     + "and date."),
+
+            Step(instruction: "Lesson seven. Reading mode. Press r to start "
+                    + "a read, then press open paren, that is shift nine, "
+                    + "to hear the sentence again. b steps back a word, "
+                    + "braces step paragraphs.",
+                 isComplete: { $0 == .readJumped },
+                 success: "That is a reading motion. They all work while "
+                    + "anything is being read."),
+
+            Step(instruction: "Lesson eight. While the read is going, press "
+                    + "z to spell the word being spoken. Press z again to "
+                    + "hear it phonetically.",
+                 isComplete: { $0 == .spelled },
+                 success: "z spells, capital Z spells the whole sentence."),
+
+            Step(instruction: "Lesson nine. Hold Escape for half a second "
+                    + "to end the read. A quick tap only pauses it.",
+                 isComplete: { $0 == .readFinished },
+                 success: "And that is reading mode."),
         ]
     }
 }

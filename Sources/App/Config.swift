@@ -33,6 +33,7 @@ struct MardukConfig: Codable {
                                                      // (Naga side button 12 = the = key)
         var dialogAlerts: Bool? = true   // LEGACY toggle — dialogLevel wins when present
         var dialogLevel: String? = "all" // all | system | off (system = only central OS prompts)
+        var follow: Bool? = true         // the view follows the read (Preview pages, web scroll)
     }
 
     struct OverlayConfig: Codable {

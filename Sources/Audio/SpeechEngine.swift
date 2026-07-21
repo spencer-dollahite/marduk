@@ -27,6 +27,17 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// Called with the character range being spoken (for word-level tracking)
     var onWordBoundary: ((NSRange) -> Void)?
 
+    // Visual follow hooks (Daemon wires them to KeyboardMonitor):
+    /// A paged read landed on a 1-based page (every page jump routes
+    /// through speakPage) — Preview turns to it via a synthetic gesture.
+    var onPageJump: ((Int) -> Void)?
+    /// A new content read replaced readText — stale follow anchors from a
+    /// previous web read must be dropped before this read speaks.
+    var onNewRead: (() -> Void)?
+    /// The read position moved (word boundaries and every respeak/jump).
+    /// Cheap to fire; consumers throttle.
+    var onPositionChange: ((Int) -> Void)?
+
     // The utterance that currently owns the duck state. Delegate callbacks for
     // any other utterance are stale (it was replaced by a newer speak()) and
     // must not unduck, or they would resume media mid-way through the
@@ -59,7 +70,9 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     // (announcements, SSML).
     private var readText: String?
     private var readBase = 0
-    private var readPosition = 0
+    private var readPosition = 0 {
+        didSet { if readPosition != oldValue { onPositionChange?(readPosition) } }
+    }
     // Page starts when the current read is a paged document (PDF) — pages
     // are respeak targets layered on the flat readText. Nil = not paged.
     private var readPaged: PagedText?
@@ -153,6 +166,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         }
         stop()
 
+        onNewRead?()
         readText = processed
         readPaged = nil  // plain read; speakPaged re-sets after this returns
         readBase = 0
@@ -307,6 +321,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         // distinct voice, and a pause-announce-resume dance costs latency
         echo("page \(index + 1)")
         respeak(from: paged.pageStarts[index])
+        onPageJump?(index + 1)
         return true
     }
 

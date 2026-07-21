@@ -37,6 +37,7 @@ final class DialogSentinel {
     private var observedPID: pid_t = -1
     private var lastAnnouncement = ""
     private var lastAnnouncedAt = Date.distantPast
+    private var suppressSheetsUntil = Date.distantPast
 
     /// Dialog-serving system processes → what to say when they take focus.
     static let systemAgents: [String: String] = [
@@ -112,8 +113,17 @@ final class DialogSentinel {
         observedPID = -1
     }
 
+    /// Marduk sometimes opens sheets itself (the visual-follow go-to-page
+    /// gesture in Preview) — announcing our own navigation would be noise.
+    /// Suppresses the sheet/dialog detector only; system agents still
+    /// announce (a password prompt during a follow window is still urgent).
+    func suppress(for seconds: TimeInterval) {
+        suppressSheetsUntil = Date().addingTimeInterval(seconds)
+    }
+
     private func handleAXNotification(element: AXUIElement, notification: String) {
         guard level == .all else { return }  // .system keeps app sheets silent
+        guard Date() >= suppressSheetsUntil else { return }  // our own sheet
         var subroleRef: CFTypeRef?
         _ = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString,
                                           &subroleRef)

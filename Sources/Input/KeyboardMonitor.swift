@@ -1959,10 +1959,16 @@ final class KeyboardMonitor {
         let isSafari = app.bundleIdentifier == "com.apple.Safari"
         fputs("[keyboard] R: web-area extraction\n", stderr)
         DispatchQueue.global(qos: .utility).async { [self] in
-            if let article = Self.webAreaVisibleText(pid: pid),
-               article.count > 200 {
-                fputs("[keyboard] R: web-area walk (\(article.count) chars)\n", stderr)
-                DispatchQueue.main.async { [self] in onSpeak?(article) }
+            if let harvest = Self.webAreaVisibleText(pid: pid),
+               harvest.text.count > 200 {
+                fputs("[keyboard] R: web-area walk (\(harvest.text.count) chars, "
+                    + "\(harvest.anchors.count) anchors)\n", stderr)
+                DispatchQueue.main.async { [self] in
+                    // onSpeak → speak() → onNewRead clears stale anchors,
+                    // THEN this read's anchors arm the scroll-follow
+                    onSpeak?(harvest.text)
+                    setWebReadAnchors(harvest.anchors)
+                }
                 return
             }
             guard isSafari else {
@@ -2020,7 +2026,8 @@ final class KeyboardMonitor {
     /// Budgeted: 0.25s per-element timeouts, capped node count and depth,
     /// so a pathological page can't wedge the walk. Runs OFF the main
     /// thread by design (a long walk on main would stall tap dispatch).
-    private static func webAreaVisibleText(pid: pid_t) -> String? {
+    private static func webAreaVisibleText(pid: pid_t)
+        -> (text: String, anchors: [AXUIElement])? {
         let axApp = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(axApp, 0.25)
         // The screen-reader nudges: browsers keep web AX trees minimal
@@ -2045,12 +2052,21 @@ final class KeyboardMonitor {
             of: rawWindow as! AXUIElement, role: "AXWebArea", depthBudget: 12
         ) else { return nil }
 
-        var parts: [String] = []
+        var parts: [(text: String, element: AXUIElement)] = []
         var nodeBudget = 3000
         collectText(from: webArea, into: &parts, nodeBudget: &nodeBudget, depth: 40)
-        let joined = parts.joined(separator: "\n")
+        let joined = parts.map(\.text).joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return joined.isEmpty ? nil : joined
+        guard !joined.isEmpty else { return nil }
+        // One anchor PER LINE of the joined text (a node's text can itself
+        // contain newlines), so line index → contributing element is exact
+        // before preprocessing and within a line or two after
+        var anchors: [AXUIElement] = []
+        for part in parts {
+            let lines = part.text.reduce(into: 1) { if $1 == "\n" { $0 += 1 } }
+            anchors.append(contentsOf: Array(repeating: part.element, count: lines))
+        }
+        return (joined, anchors)
     }
 
     private static func findDescendant(
@@ -2076,7 +2092,7 @@ final class KeyboardMonitor {
     }
 
     private static func collectText(
-        from element: AXUIElement, into parts: inout [String],
+        from element: AXUIElement, into parts: inout [(text: String, element: AXUIElement)],
         nodeBudget: inout Int, depth: Int
     ) {
         guard depth > 0, nodeBudget > 0 else { return }
@@ -2092,7 +2108,7 @@ final class KeyboardMonitor {
                ) == .success,
                let text = valueRef as? String,
                !text.trimmingCharacters(in: .whitespaces).isEmpty {
-                parts.append(text)
+                parts.append((text, element))
             }
             if role == "AXStaticText" { return } // leaves have no useful children
         }
@@ -2196,6 +2212,108 @@ final class KeyboardMonitor {
             up.setIntegerValueField(.mouseEventClickState, value: clickCount)
             up.post(tap: .cghidEventTap)
         }
+    }
+
+    // MARK: - Visual follow (the view tracks the read)
+
+    /// Master switch (`:config follow`, keyboard.follow). Gates both the
+    /// Preview go-to-page gesture and web scroll-follow.
+    var followEnabled = true
+
+    /// Go-to-page keyboard gestures per PDF viewer. v1 ships Preview
+    /// (Cmd+Option+G opens its Go to Page sheet); other viewers join once
+    /// their chords — and AXDocument exposure — are verified on hardware.
+    struct PageChord {
+        let keycode: CGKeyCode
+        let command: Bool
+        let option: Bool
+        let shift: Bool
+    }
+    static let pageChords: [String: PageChord] = [
+        "com.apple.Preview": PageChord(keycode: 5, command: true, option: true,
+                                       shift: false),  // Cmd+Option+G
+    ]
+
+    /// Fire the viewer's go-to-page gesture: chord, pause for the sheet,
+    /// digits, Return. Marker-tagged synthetic events pass our own tap
+    /// even during READING capture. Fire-and-forget — a missed gesture
+    /// never disturbs the read.
+    func postGoToPage(_ page: Int, chord: PageChord) {
+        guard followEnabled else { return }
+        postKey(keycode: chord.keycode, shift: chord.shift,
+                command: chord.command, option: chord.option)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [self] in
+            for code in Self.digitKeycodes(page) { postKey(keycode: code) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [self] in
+                postKey(keycode: 36)  // Return
+            }
+        }
+    }
+
+    /// ANSI number-row keycodes for a page number's digits, typing order.
+    static func digitKeycodes(_ n: Int) -> [CGKeyCode] {
+        let keys: [Character: CGKeyCode] = ["0": 29, "1": 18, "2": 19, "3": 20,
+                                            "4": 21, "5": 23, "6": 22, "7": 26,
+                                            "8": 28, "9": 25]
+        return String(max(0, n)).compactMap { keys[$0] }
+    }
+
+    // Web scroll-follow: anchors[i] = the AX element that contributed line
+    // i of the harvested article. As the read position crosses lines, the
+    // contributing element is asked to scroll itself visible — Reader
+    // articles track the voice like Firefox's own Narrate. Preprocessing
+    // can drop the odd line, so the index is clamped: ±1 paragraph drift
+    // is invisible at scroll granularity.
+    private var webReadAnchors: [AXUIElement] = []
+    private var followAnchorIndex = -1
+    private var followLastScroll = Date.distantPast
+    private var followScrollBroken = false
+
+    func setWebReadAnchors(_ anchors: [AXUIElement]) {
+        webReadAnchors = anchors
+        followAnchorIndex = -1
+        followLastScroll = .distantPast
+        followScrollBroken = false
+    }
+
+    func clearWebReadAnchors() {
+        webReadAnchors = []
+    }
+
+    /// Read position moved (Daemon relays SpeechEngine.onPositionChange
+    /// with the processed read text). Main queue, NEVER the tap callback —
+    /// the scroll is a synchronous AX call.
+    func followScroll(offset: Int, text: String) {
+        guard followEnabled, !webReadAnchors.isEmpty, !followScrollBroken else { return }
+        let line = Self.lineIndex(of: offset, in: text)
+        let anchorIndex = max(0, min(line, webReadAnchors.count - 1))
+        guard anchorIndex != followAnchorIndex,
+              Date().timeIntervalSince(followLastScroll) >= 0.8 else { return }
+        followAnchorIndex = anchorIndex
+        followLastScroll = Date()
+        let element = webReadAnchors[anchorIndex]
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        let err = AXUIElementPerformAction(element, "AXScrollToVisible" as CFString)
+        if err != .success {
+            // One log line, then stop trying for this read — support for
+            // the action is per-app and a dead one mustn't cost an AX
+            // round-trip every paragraph
+            followScrollBroken = true
+            fputs("[keyboard] follow: scroll action unsupported (\(err.rawValue))\n", stderr)
+        }
+    }
+
+    /// Newlines before `offset` — the line index the voice is on.
+    static func lineIndex(of offset: Int, in text: String) -> Int {
+        let ns = text as NSString
+        let end = max(0, min(offset, ns.length))
+        var count = 0
+        var i = 0
+        while i < end {
+            if ns.character(at: i) == 0x0A { count += 1 }
+            i += 1
+        }
+        return count
     }
 
     // MARK: - Synthetic Key Posting

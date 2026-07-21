@@ -296,6 +296,27 @@ final class DaemonServer {
             ?? ((config.keyboard?.dialogAlerts ?? true) ? .all : .off)
         dialogSentinel.start()
 
+        // Visual follow: the app's view tracks the read. Page jumps drive
+        // the viewer's go-to-page gesture (Preview); web reads scroll the
+        // contributing element into view as the voice crosses paragraphs.
+        keyboardMonitor?.followEnabled = config.keyboard?.follow ?? true
+        speech.onNewRead = { [self] in keyboardMonitor?.clearWebReadAnchors() }
+        speech.onPositionChange = { [self] offset in
+            guard let snapshot = speech.readSnapshot else { return }
+            keyboardMonitor?.followScroll(offset: offset, text: snapshot.text)
+        }
+        speech.onPageJump = { [self] page in
+            guard keyboardMonitor?.followEnabled == true,
+                  let bundle = keyboardMonitor?.frontmostApp else { return }
+            guard let chord = KeyboardMonitor.pageChords[bundle] else {
+                fputs("[keyboard] follow: no go-to-page gesture for \(bundle)\n", stderr)
+                return
+            }
+            // Our own Go-to-Page sheet must not be announced as a dialog
+            dialogSentinel.suppress(for: 3)
+            keyboardMonitor?.postGoToPage(page, chord: chord)
+        }
+
         // Pointer hover speech — Marduk's own, in the reading voice
         hoverSpeech.speak = { [self] text in speech.hover(text) }
         hoverSpeech.announce = { [self] text in speech.announce(text) }
@@ -1562,6 +1583,16 @@ final class DaemonServer {
                 speech.announce("Dialog alerts off.")
             }
 
+        case "follow":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            keyboardMonitor?.followEnabled = on
+            var kb = config.keyboard ?? .init()
+            kb.follow = on
+            config.keyboard = kb
+            ConfigLoader.save(config)
+            speech.announce(on ? "Follow along on. The view tracks the read."
+                               : "Follow along off.")
+
         case "readmotions":
             guard let on = toggle() else { return fail("Say on or off.") }
             keyboardMonitor?.readMotionsEnabled = on
@@ -1617,7 +1648,7 @@ final class DaemonServer {
                 fail("Unknown setting \(key). Settings are rate, pitch, level, hashes, identifiers, "
                     + "rescue, burst, escape hold, echo, command echo, palette, "
                     + "auto update, check hours, border, pointer, thickness, "
-                    + "speed keys, toggle sound, read motions, dialogs.")
+                    + "speed keys, toggle sound, read motions, dialogs, follow.")
             }
         }
     }
@@ -1660,6 +1691,7 @@ final class DaemonServer {
             "togglesound": (keyboardMonitor?.toggleEarconEnabled ?? false) ? "earcon" : "speech",
             "readmotions": (keyboardMonitor?.readMotionsEnabled ?? false) ? "on" : "off",
             "dialogs": dialogSentinel.level.rawValue,
+            "follow": (keyboardMonitor?.followEnabled ?? true) ? "on" : "off",
         ]
     }
 

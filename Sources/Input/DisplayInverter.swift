@@ -274,12 +274,15 @@ final class DisplayInverter: @unchecked Sendable {
                   let rawBar = menuBarRef,
                   CFGetTypeID(rawBar) == AXUIElementGetTypeID() else { return }
 
-            // Titles shift across macOS releases — search the whole menu
-            // bar for anything containing "dark mode" instead of pinning
-            // one exact string (still English-only, a Marduk-wide limit)
-            guard let item = Self.findMenuItem(containing: "dark mode",
-                                               under: rawBar as! AXUIElement,
-                                               depth: 6) else {
+            // Titles shift across macOS releases — macOS 26 says "Use
+            // Dark Appearance for PDF", older Previews "View in Dark
+            // Mode" — so search the menu bar for the first title carrying
+            // any known phrasing (English-only, a Marduk-wide limit)
+            let needles = ["dark appearance", "dark mode"]
+            guard let item = needles.lazy.compactMap({ needle in
+                Self.findMenuItem(containing: needle,
+                                  under: rawBar as! AXUIElement, depth: 6)
+            }).first else {
                 let viewCount = Self.child(of: rawBar as! AXUIElement, titled: "View")
                     .map { Self.children(of: $0).first.map { Self.children(of: $0).count } ?? 0 }
                 fputs("[display] Preview dark: no dark-mode menu item "

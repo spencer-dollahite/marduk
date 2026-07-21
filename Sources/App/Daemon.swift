@@ -313,6 +313,9 @@ final class DaemonServer {
         keyboardMonitor?.onEnabledChange = { [self] enabled in
             DispatchQueue.main.async { [self] in
                 modeOverlay?.setEnabled(enabled)
+                // Ctrl+Option+M off = "Marduk is down" to Karabiner rules
+                // (button routes fall back to the macOS speech shortcut)
+                Self.setKarabinerVariable(up: enabled)
                 if !enabled {
                     tutorial.abort(silent: true)
                     palette.hide()
@@ -476,6 +479,7 @@ final class DaemonServer {
 
         fputs("[marduk] Daemon running (PID \(pid))\n", stderr)
         fputs("[marduk] Socket: \(MardukDaemon.socketPath)\n", stderr)
+        Self.setKarabinerVariable(up: true)
 
         // Main RunLoop — needed for AVSpeechSynthesizer + CGEventTap callbacks
         while running {
@@ -483,6 +487,7 @@ final class DaemonServer {
         }
 
         // Stop event tap first to prevent callbacks during teardown
+        Self.setKarabinerVariable(up: false)
         keyboardMonitor?.stop()
         // Drain pending callbacks
         RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
@@ -1048,6 +1053,24 @@ final class DaemonServer {
             displays = Array(displays.prefix(6)) + ["and \(more) more"]
         }
         speech.speak("Options: " + displays.joined(separator: ", ") + ".")
+    }
+
+    /// Publish daemon liveness to Karabiner (fire-and-forget): rules can
+    /// route a button to Marduk's read chord (Ctrl+Option+Escape — the
+    /// Option+Escape handler already accepts extra modifiers) while up,
+    /// and to plain Option+Escape (macOS Speak Selection) while down —
+    /// automatic system fallback on the same button. Set on start and
+    /// enable, cleared on clean stop and disable. A hard crash can't
+    /// clear it — the fallback gap lasts until KeepAlive relaunches
+    /// (seconds). No Karabiner installed → silently skipped.
+    private static func setKarabinerVariable(up: Bool) {
+        let cli = "/Library/Application Support/org.pqrs/Karabiner-Elements/bin/karabiner_cli"
+        guard FileManager.default.isExecutableFile(atPath: cli) else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cli)
+        process.arguments = ["--set-variables", "{\"marduk_up\":\(up ? 1 : 0)}"]
+        try? process.run() // fire and forget — never block on Karabiner
+        fputs("[keyboard] karabiner marduk_up=\(up ? 1 : 0)\n", stderr)
     }
 
     /// Entering the ":voices" picker. When no premium English voice is

@@ -114,7 +114,7 @@ enum HelpText {
         "Was that m or n? During a read, z spells the current word letter by letter, and a second z spells it phonetically: Mike versus November. Capital Z spells the whole sentence.",
         "During a read, f plus any character hops forward to it, like vim: f q jumps to the next q. Capital F hunts backward, and period repeats the hop.",
         "Open a PDF in Preview and press capital R: Marduk reads the file itself, starting at the page you are looking at. Control F turns the page, twelve then capital G jumps to page twelve.",
-        "If selection reads sound doubled or use the wrong voice: macOS has its own Speak Selection feature on the same Option Escape shortcut. Turn it off in System Settings, Accessibility, Read and Speak Content, and Marduk owns the key.",
+        "If selection reads sound doubled or use the wrong voice: macOS has its own Speak Selection feature on the same Option Escape shortcut. Turn it off in System Settings, Accessibility, Read and Speak Content — or see the read me for a Karabiner rule that keeps it as an automatic fallback whenever Marduk is down.",
         "Apple's premium voices are a big upgrade and run entirely on your Mac, free, no account. Download one like Ava in System Settings, Accessibility, Read and Speak Content, System Voice, Manage Voices — then pick it with colon voices. Marduk will even prefer it automatically.",
     ]
 

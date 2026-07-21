@@ -136,7 +136,21 @@ These are deliberate trade-offs of the typing-rescue system, not bugs:
 - **A command followed quickly by `k` reads as typing** — protects words like "skip".
 - **Short reads pause your media briefly** even for a two-word utterance — pause/resume is deliberate (volume-ducking a browser can't stop a video, and lowering system volume would quiet Marduk itself).
 - **Reading a selection can overwrite your clipboard** in apps whose accessibility tree won't hand over the selected text (Firefox text boxes, iMessage) or when the selection is huge (Cmd+A on a long document): Marduk falls back to a synthetic Cmd+C and reads the pasteboard, so the clipboard ends up holding the text it just read.
-- **Selection reads sound doubled or use the wrong voice?** macOS's own *Speak Selection* feature defaults to the same Option+Escape shortcut, and its hotkey fires alongside Marduk's. Turn it off (or rebind it) in System Settings → Accessibility → Read and Speak Content, and Marduk owns the key — with its own voice, rate, and pitch (`:voices`, `:config rate`, `:config pitch`).
+- **Selection reads sound doubled or use the wrong voice?** macOS's own *Speak Selection* feature defaults to the same Option+Escape shortcut, and its hotkey fires alongside Marduk's. Two fixes:
+  - *Simple:* turn it off (or rebind it) in System Settings → Accessibility → Read and Speak Content — Marduk owns the key.
+  - *Keep macOS as a fallback for when Marduk is down:* Marduk publishes a Karabiner variable `marduk_up` (1 while running and enabled, 0 on stop/disable), and its read command also answers **Ctrl+Option+Escape**. Route your read button conditionally:
+
+    ```json
+    { "description": "Read button: Marduk when up, macOS Speak Selection when down",
+      "manipulators": [
+        { "type": "basic",
+          "from": { "key_code": "escape", "modifiers": { "mandatory": ["option"] } },
+          "conditions": [ { "type": "variable_if", "name": "marduk_up", "value": 1 } ],
+          "to": [ { "key_code": "escape", "modifiers": ["left_control", "left_option"] } ] }
+      ] }
+    ```
+
+    (Adapt `from` to whatever your read button sends. With `marduk_up` at 0 the rule doesn't fire, the plain Option+Escape goes through, and macOS speaks.) A hard crash can't clear the variable, so the fallback has a gap of a few seconds until launchd relaunches Marduk.
 - Hand-edits to config.json need a daemon restart — use `:config` from inside Marduk (or `marduk config rate`) for live changes.
 - **Upgrading from a pre-bundle install:** the first update converts Marduk into `Marduk.app` and announces it aloud. If keyboard commands stop afterwards, re-grant Accessibility to `Marduk.app`; the Automation prompt also re-asks once (now explaining why Marduk wants media control).
 

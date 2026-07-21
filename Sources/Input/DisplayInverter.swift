@@ -256,14 +256,32 @@ final class DisplayInverter: @unchecked Sendable {
         guard Date() >= settleUntil else { return }
         pendingActivation?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            // The activation was only the doorbell — the decision reads
-            // the actual window stack
-            guard let self, let front = Self.visuallyFrontmostApp() else { return }
+            guard let self, let front = self.resolveFront() else { return }
             self.handleAppActivated(front.bundleID, pid: front.pid)
         }
         pendingActivation = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.activationDwell,
                                       execute: work)
+    }
+
+    /// Who's front? Neither signal alone survived the field: activation
+    /// flaps (PT churn), and the window stack can miss PT entirely (Qt
+    /// windows aren't guaranteed layer-0 citizens — the build that trusted
+    /// it left PT uninverted). Consult BOTH, biased toward any LISTED app:
+    /// inverting eagerly is safe because reverts need two confirmed
+    /// strikes. Disagreements are logged — bundle IDs only.
+    func resolveFront() -> (bundleID: String, pid: pid_t)? {
+        let activationApp = NSWorkspace.shared.frontmostApplication
+        let activation: (bundleID: String, pid: pid_t)? = activationApp
+            .flatMap { app in app.bundleIdentifier.map { ($0, app.processIdentifier) } }
+        let visual = Self.visuallyFrontmostApp()
+        if let a = activation, let v = visual, a.bundleID != v.bundleID {
+            fputs("[display] front disagreement: activation=\(a.bundleID) "
+                + "window=\(v.bundleID)\n", stderr)
+        }
+        if let a = activation, isListed(a.bundleID) { return a }
+        if let v = visual, isListed(v.bundleID) { return v }
+        return visual ?? activation
     }
 
     private func handleAppActivated(_ bundleID: String, pid: pid_t) {
@@ -314,7 +332,7 @@ final class DisplayInverter: @unchecked Sendable {
             guard let self else { return }
             self.pendingRevert = nil
             guard self.isInverted,
-                  let front = Self.visuallyFrontmostApp(),
+                  let front = self.resolveFront(),
                   front.bundleID == bundleID,
                   !self.isListed(front.bundleID) else { return }
             self.ensureInverted(false, reason: "\(reason), confirmed")
@@ -400,7 +418,7 @@ final class DisplayInverter: @unchecked Sendable {
             guard let measured else { return }
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.invertEnabled, self.autoInvert,
-                      Self.visuallyFrontmostApp()?.bundleID == bundleID else { return }
+                      self.resolveFront()?.bundleID == bundleID else { return }
                 // Window captures come from the backing store, BEFORE the
                 // display-level inversion filter — the measurement is the
                 // app's true brightness either way. (The one observed

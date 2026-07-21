@@ -1407,8 +1407,8 @@ final class DaemonServer {
             }
             return
         }
-        let exec = LaunchAgent.resolvedBinaryPath()
-        guard let range = exec.range(of: "/Contents/MacOS/") else {
+        guard let exec = LaunchAgent.resolvedBinaryPath(),
+              let range = exec.range(of: "/Contents/MacOS/") else {
             // Bare binary without a repo — nothing we can safely swap
             if !silent {
                 failed("This copy of Marduk was installed from a release. "

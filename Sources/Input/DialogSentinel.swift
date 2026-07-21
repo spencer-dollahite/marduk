@@ -138,6 +138,13 @@ final class DialogSentinel {
                                           &titleRef)
         let title = (titleRef as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        // Qt apps (Packet Tracer) mass-produce untitled windows wearing the
+        // AXDialog subrole — every launch false-alarmed "a dialog needs
+        // attention" (field report). An untitled app DIALOG stays silent;
+        // real system prompts come from the system agents (detector 1),
+        // and sheets announce regardless — they're structurally real.
+        if isDialog && !isSheet && title.isEmpty { return }
         let appName = NSRunningApplication(processIdentifier: observedPID)?
             .localizedName ?? "the front app"
 

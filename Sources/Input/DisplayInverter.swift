@@ -343,7 +343,19 @@ final class DisplayInverter: @unchecked Sendable {
     }
 
     private func ensureInverted(_ wanted: Bool, reason: String) {
-        guard wanted != isInverted else { return }
+        guard wanted != isInverted else {
+            // Reality check: bookkeeping can go stale (a restart or crash
+            // mid-toggle) — if the system's own record disagrees with the
+            // state we think we're already in, act anyway
+            if Self.displayIsInverted() != wanted {
+                fputs("[display] state drift — reapplying \(wanted ? "invert" : "revert") "
+                    + "(\(reason))\n", stderr)
+                applyInversion(wanted)
+                beginSettleWindow()
+                verifyInversion(wanted, retryWithChord: Self.uaSetWhiteOnBlack != nil)
+            }
+            return
+        }
         applyInversion(wanted)
         isInverted = wanted
         beginSettleWindow()

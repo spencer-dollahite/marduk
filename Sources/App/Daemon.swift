@@ -1991,7 +1991,10 @@ final class DaemonServer {
                 restartOnce()
             }
             if silent {
-                restartOnce()
+                // Tiny courtesy, user-requested: the restart blips speech
+                // out for a moment, and for an assistive layer an
+                // unannounced gap reads as a failure. Two words, then go.
+                speech.announce("Updating.") { restartOnce() }
             } else {
                 speech.announce("Marduk \(tag) installed. Restarting.") { restartOnce() }
             }
@@ -2117,7 +2120,8 @@ final class DaemonServer {
                         + "bundle. If keyboard commands stop, grant "
                         + "Accessibility to Marduk again.") { restartOnce() }
                 } else if silent {
-                    restartOnce()
+                    // Tiny courtesy, user-requested: never blip out unannounced
+                    speech.announce("Updating.") { restartOnce() }
                 } else {
                     speech.announce("Update complete. Restarting.") { restartOnce() }
                 }

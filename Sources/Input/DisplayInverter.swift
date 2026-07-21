@@ -119,6 +119,17 @@ final class DisplayInverter: @unchecked Sendable {
             || Self.builtInInvertPrefixes.contains { bundleID.hasPrefix($0) }
     }
 
+    /// Apps whose activation events LIE (ghost blips while the user never
+    /// left) — reverts from these holders need the multi-sample envelope.
+    /// Well-behaved holders (Pages) revert instantly on the departure
+    /// event: the fog-of-war era blamed events for flicker that the
+    /// post-mortem pinned on the self-flickering private setter.
+    private static let flappyPrefixes = ["com.netacad.PacketTracer"]
+
+    private static func isFlappy(_ bundleID: String) -> Bool {
+        flappyPrefixes.contains { bundleID.hasPrefix($0) }
+    }
+
     init(invertApps: [String]) {
         self.invertApps = Set(invertApps)
     }
@@ -153,10 +164,16 @@ final class DisplayInverter: @unchecked Sendable {
                 self.applyPreviewDarkMode(pid: app.processIdentifier)
                 self.observePreviewWindows(pid: app.processIdentifier)
             } else if self.isInverted {
-                // A deliberate switch-away deserves a snappy revert: the
-                // event STARTS a fast multi-sample envelope — it never
-                // decides. The holder resurfacing (PT flap) aborts it.
-                self.beginFastRevertConfirm()
+                if let holder = self.invertHolder, !Self.isFlappy(holder) {
+                    // Trustworthy holder: the departure event IS the truth —
+                    // revert now (click, Karabiner jump, Cmd+Tab alike)
+                    self.ensureInverted(false, holder: nil,
+                                        reason: "left \(holder) for \(bundleID)")
+                } else {
+                    // Flappy holder (PT): the event only STARTS the fast
+                    // envelope — its ghost blips abort it by resurfacing
+                    self.beginFastRevertConfirm()
+                }
             }
             self.scheduleActivation(bundleID, pid: app.processIdentifier)
         }
@@ -310,10 +327,16 @@ final class DisplayInverter: @unchecked Sendable {
                 self.applyPreviewDarkMode(pid: app.processIdentifier)
                 self.observePreviewWindows(pid: app.processIdentifier)
             } else if self.isInverted {
-                // A deliberate switch-away deserves a snappy revert: the
-                // event STARTS a fast multi-sample envelope — it never
-                // decides. The holder resurfacing (PT flap) aborts it.
-                self.beginFastRevertConfirm()
+                if let holder = self.invertHolder, !Self.isFlappy(holder) {
+                    // Trustworthy holder: the departure event IS the truth —
+                    // revert now (click, Karabiner jump, Cmd+Tab alike)
+                    self.ensureInverted(false, holder: nil,
+                                        reason: "left \(holder) for \(bundleID)")
+                } else {
+                    // Flappy holder (PT): the event only STARTS the fast
+                    // envelope — its ghost blips abort it by resurfacing
+                    self.beginFastRevertConfirm()
+                }
             }
             self.scheduleActivation(bundleID, pid: app.processIdentifier)
         }

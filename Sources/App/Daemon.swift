@@ -452,6 +452,20 @@ final class DaemonServer {
             }
         }
         speech.frontmostAppProvider = { [self] in keyboardMonitor?.frontmostApp }
+        KeyboardMonitor.onAXRevoked = { [self] in
+            Earcon.error()  // audible even if the synthesizer is also down
+            fputs("[marduk] Accessibility permission revoked (kAXErrorAPIDisabled) "
+                + "— remove and re-add Marduk.app in Privacy & Security\n", stderr)
+            speech.announce("Marduk's Accessibility permission looks broken — "
+                + "this can happen after an update. In the Settings pane I'm "
+                + "opening, remove Marduk from the list, then add Marduk dot "
+                + "app again. Toggling it is not enough.")
+            let opener = Process()
+            opener.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            opener.arguments = ["x-apple.systempreferences:"
+                + "com.apple.preference.security?Privacy_Accessibility"]
+            try? opener.run()
+        }
         keyboardMonitor?.onCommandSubmit = { [self] raw in handleColonCommand(raw) }
         keyboardMonitor?.onCommandChange = { [self] buffer, canAutoAccept in
             handleCommandChange(buffer, canAutoAccept: canAutoAccept)

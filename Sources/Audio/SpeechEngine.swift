@@ -3,7 +3,7 @@ import AVFoundation
 /// Wraps AVSpeechSynthesizer with ducking integration.
 /// When speech starts, external audio ducks. When speech ends, it restores.
 final class SpeechEngine: NSObject, @unchecked Sendable {
-    private nonisolated(unsafe) let synthesizer = AVSpeechSynthesizer()
+    private nonisolated(unsafe) var synthesizer = AVSpeechSynthesizer()
     private let ducker: AudioDucker
 
     var rate: Float = AVSpeechUtteranceDefaultSpeechRate
@@ -539,11 +539,20 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         "y": "Yankee", "z": "Zulu",
     ]
 
+    // Speech-health watchdog: an utterance the synthesizer ACCEPTS but
+    // never STARTS (zero didStart — field: media paused, text delivered,
+    // total silence) means the synthesis service wedged. One automatic
+    // recovery per wedge: rebuild the synthesizer and respeak the read
+    // from its start; a second failure beeps and logs the manual cure.
+    private var sawStartForCurrent = false
+    private var wedgeRebuilt = false
+
     private func startSpeaking(_ utterance: AVSpeechUtterance, completion: (() -> Void)?) {
         if let completion {
             completions[ObjectIdentifier(utterance)] = completion
         }
         currentUtterance = utterance
+        sawStartForCurrent = false
         ducker.prepareToDuck()
         // Belt and braces against the paused-wedge (see stop())
         if synthesizer.isPaused {
@@ -557,6 +566,28 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         // didStart never arrives (field-diagnosed: reads audible over
         // music with zero didStart lines in the log).
         ducker.duck()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            guard let self, utterance === self.currentUtterance,
+                  !self.sawStartForCurrent else { return }
+            fputs("[speech] synthesizer accepted the utterance but never "
+                + "started it (4s)\n", stderr)
+            if !self.wedgeRebuilt {
+                self.wedgeRebuilt = true
+                fputs("[speech] rebuilding the synthesizer and retrying\n", stderr)
+                self.synthesizer.stopSpeaking(at: .immediate)
+                self.synthesizer = AVSpeechSynthesizer()
+                self.synthesizer.delegate = self
+                if self.readText != nil {
+                    self.respeak(from: self.readBase)
+                }
+            } else {
+                Earcon.error()
+                fputs("[speech] synthesizer still silent after rebuild — "
+                    + "try 'marduk restart', or killall speechsynthesisd, "
+                    + "or a reboot\n", stderr)
+            }
+        }
     }
 
     func stop() {
@@ -622,6 +653,8 @@ extension SpeechEngine: AVSpeechSynthesizerDelegate {
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
         fputs("[speech] didStart fired\n", stderr)
         guard utterance === currentUtterance else { return }
+        sawStartForCurrent = true
+        wedgeRebuilt = false  // healthy again — future wedges get a fresh retry
         ducker.duck()
     }
 

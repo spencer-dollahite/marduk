@@ -2702,6 +2702,19 @@ final class KeyboardMonitor {
         }
     }
 
+    /// Fired once per session when AX calls start failing with
+    /// kAXErrorAPIDisabled (-25211): the Accessibility grant broke (an
+    /// update's re-sign is the usual culprit) while the already-created
+    /// tap kept running — a uniquely confusing half-alive state.
+    nonisolated(unsafe) static var onAXRevoked: (() -> Void)?
+    private nonisolated(unsafe) static var axRevokedNoticed = false
+
+    static func noteAXError(_ code: Int32) {
+        guard code == -25211, !axRevokedNoticed else { return }
+        axRevokedNoticed = true
+        DispatchQueue.main.async { onAXRevoked?() }
+    }
+
     static func getSelectedText() -> String? {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
@@ -2716,6 +2729,7 @@ final class KeyboardMonitor {
               CFGetTypeID(focused) == AXUIElementGetTypeID() else {
             if focusErr != .success {
                 fputs("[keyboard] AX focused-element copy failed (\(focusErr.rawValue))\n", stderr)
+                noteAXError(focusErr.rawValue)
             }
             return nil
         }

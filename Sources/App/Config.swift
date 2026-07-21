@@ -100,6 +100,15 @@ enum ConfigLoader {
         guard FileManager.default.fileExists(atPath: configFile.path),
               let data = try? Data(contentsOf: configFile),
               let config = try? decoder.decode(MardukConfig.self, from: data) else {
+            // Never silently destroy a user's settings: an unreadable file
+            // is preserved beside the fresh defaults for hand-recovery
+            if FileManager.default.fileExists(atPath: configFile.path) {
+                let bad = configFile.path + ".bad"
+                try? FileManager.default.removeItem(atPath: bad)
+                try? FileManager.default.copyItem(atPath: configFile.path, toPath: bad)
+                fputs("[marduk] config.json unreadable — reset to defaults; "
+                    + "the original was saved as config.json.bad\n", stderr)
+            }
             let defaultConfig = MardukConfig()
             save(defaultConfig)
             return defaultConfig

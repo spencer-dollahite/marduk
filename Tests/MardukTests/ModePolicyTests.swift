@@ -232,6 +232,63 @@ final class ModePolicyTests: XCTestCase {
             "the last window must end the read")
     }
 
+    // MARK: - Document edges (gg / G)
+
+    /// THE regression: `G` was paged-aware and `gg` was not, so gg fell
+    /// through to a text offset of 0 — which on a WINDOWED read is the
+    /// start of the current window, not the document. In a 1,336-page
+    /// Terminal read opened at page 664 that read as a jump to a random
+    /// spot, and `0` then restarted a line there.
+    func testGgReachesPageOneOnAPagedRead() {
+        XCTAssertEqual(
+            ModePolicy.documentEdge(forward: false, isPaged: true, pageCount: 1336),
+            .page(1))
+    }
+
+    func testCapitalGReachesTheLastPage() {
+        XCTAssertEqual(
+            ModePolicy.documentEdge(forward: true, isPaged: true, pageCount: 1336),
+            .page(1336))
+    }
+
+    /// Both edges must be paged-aware or neither. The asymmetry IS the bug.
+    func testBothEdgesAgreeOnWhetherTheReadIsPaged() {
+        for pageCount in [1, 2, 1336] {
+            let back = ModePolicy.documentEdge(forward: false, isPaged: true,
+                                               pageCount: pageCount)
+            let forward = ModePolicy.documentEdge(forward: true, isPaged: true,
+                                                  pageCount: pageCount)
+            if case .textOffset = back {
+                XCTFail("gg fell through to a text offset on a paged read — "
+                        + "that lands at the start of the current WINDOW")
+            }
+            if case .textOffset = forward {
+                XCTFail("G fell through to a text offset on a paged read")
+            }
+        }
+    }
+
+    /// A plain read has no pages; both edges resolve in the text.
+    func testPlainReadsUseTextOffsetsAtBothEdges() {
+        XCTAssertEqual(
+            ModePolicy.documentEdge(forward: false, isPaged: false, pageCount: 0),
+            .textOffset)
+        XCTAssertEqual(
+            ModePolicy.documentEdge(forward: true, isPaged: false, pageCount: 0),
+            .textOffset)
+    }
+
+    /// A single-page paged read: both edges are page 1, and neither may
+    /// silently become a text offset.
+    func testSinglePageDocumentHasBothEdgesAtPageOne() {
+        XCTAssertEqual(
+            ModePolicy.documentEdge(forward: false, isPaged: true, pageCount: 1),
+            .page(1))
+        XCTAssertEqual(
+            ModePolicy.documentEdge(forward: true, isPaged: true, pageCount: 1),
+            .page(1))
+    }
+
     /// Exhaustive: stopRequested dominates every other input.
     func testStopAlwaysWins() {
         for isCurrent in [false, true] {

@@ -568,10 +568,21 @@ final class DaemonServer {
             }
         }
         keyboardMonitor?.onReadJumpEdge = { [self] direction in
-            // On a paged read, G means "last page", not "last paragraph"
-            let jumped = direction == .forward && speech.isPaged
-                ? speech.jumpToPage(speech.pageCount)
-                : speech.jumpToEdge(direction)
+            // On a paged read the edges are PAGES, not paragraphs — and
+            // both edges, symmetrically. `G` was special-cased and `gg`
+            // was not, so gg fell through to jumpToEdge, whose offset 0 is
+            // the start of the CURRENT WINDOW: in a 1,336-page Terminal
+            // read started at page 664, gg landed near page 655 instead of
+            // the top, and `0` then restarted a line there (field
+            // 2026-07-22 — "jumped to some random spot").
+            let edge = ModePolicy.documentEdge(forward: direction == .forward,
+                                               isPaged: speech.isPaged,
+                                               pageCount: speech.pageCount)
+            let jumped: Bool
+            switch edge {
+            case .page(let number): jumped = speech.jumpToPage(number)
+            case .textOffset: jumped = speech.jumpToEdge(direction)
+            }
             if jumped {
                 tutorial.handle(.readJumped)
             } else {

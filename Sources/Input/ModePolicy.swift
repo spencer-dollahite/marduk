@@ -108,4 +108,23 @@ enum ModePolicy {
                                      hasNextWindow: Bool) -> Bool {
         !stopRequested && isCurrentUtterance && hasNextWindow
     }
+
+    /// Where `gg` / `G` land.
+    ///
+    /// On a paged read the document edges are PAGES. On a plain read they
+    /// are text offsets. The two edges must be treated SYMMETRICALLY: `G`
+    /// was paged-aware and `gg` was not, so gg fell through to a text
+    /// offset of 0 — which on a windowed read is the start of the CURRENT
+    /// WINDOW, not the document. In a 1,336-page Terminal read opened at
+    /// page 664 that looked like a jump to a random spot.
+    enum DocumentEdge: Equatable {
+        case page(Int)      // 1-based
+        case textOffset     // let the navigator resolve it in the window
+    }
+
+    static func documentEdge(forward: Bool, isPaged: Bool,
+                             pageCount: Int) -> DocumentEdge {
+        guard isPaged else { return .textOffset }
+        return .page(forward ? pageCount : 1)
+    }
 }

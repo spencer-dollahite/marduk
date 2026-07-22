@@ -436,7 +436,7 @@ final class DaemonServer {
         keyboardMonitor?.start(
             onSpeak: { [self] text in
                 longReadGeneration += 1  // a new read beats an in-flight chunk
-                speech.speak(text) { [self] in tutorial.handle(.readFinished) }
+                speech.speak(text) { [self] in contentReadEnded(paged: false) }
             },
             onStop: { [self] in
                 longReadGeneration += 1  // a stop beats an in-flight chunk
@@ -602,7 +602,7 @@ final class DaemonServer {
             longReadGeneration += 1  // a new read beats an in-flight chunk
             speech.speakPaged(paged, startPage: startPage,
                               headings: headings) { [self] in
-                tutorial.handle(.readFinished)
+                contentReadEnded(paged: true)
             }
         }
         keyboardMonitor?.onSpeakDocument = { [self] text, start in
@@ -770,7 +770,7 @@ final class DaemonServer {
         let ns = text as NSString
         guard PagedText.exceedsWindow(ns.length) else {
             speech.speak(ns.substring(from: max(0, min(start, ns.length)))) { [self] in
-                tutorial.handle(.readFinished)
+                contentReadEnded(paged: false)
             }
             return
         }
@@ -783,9 +783,41 @@ final class DaemonServer {
                 guard generation == longReadGeneration else { return }
                 fputs("[speech] long read chunked: \(paged.pageCount) pages\n", stderr)
                 speech.speakPaged(paged, startPage: startPage, synthetic: true) { [self] in
-                    tutorial.handle(.readFinished)
+                    contentReadEnded(paged: true)
                 }
             }
+        }
+    }
+
+    /// Every content read routes its completion here: the tutorial event
+    /// first, then the progressive feature hints. A read's END is the one
+    /// reliably QUIET moment (offer's isSpeaking gate makes mid-read
+    /// moments ineligible — a paused synthesizer still reports speaking),
+    /// so the reading-family hints all queue here in priority order; the
+    /// engine's cooldown lets at most one surface per read end, spacing
+    /// the rest across future reads. Never during the tutorial — the tour
+    /// is already teaching.
+    private func contentReadEnded(paged: Bool) {
+        tutorial.handle(.readFinished)
+        guard !tutorial.isActive else { return }
+        // This completion runs INSIDE the synthesizer's didFinish delegate,
+        // where isSpeaking hasn't settled — offering here would fail the
+        // pacing gate's quiet check every time and no hint would ever
+        // surface. The beat also keeps a tip from treading on the read's
+        // last word, and lets a new read (r pressed immediately) win: it
+        // makes isSpeaking true again, so the offer stands down.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
+            guard !tutorial.isActive else { return }
+            if paged {
+                onboarding.offer("hint-page-keys", "Tip: long documents read "
+                    + "in pages. Control F and Control B turn them.")
+            }
+            onboarding.offer("hint-read-motions", "Tip: while reading, j and k "
+                + "move by line, and Space pauses.")
+            onboarding.offer("hint-continuous-read", "Tip: uppercase R reads "
+                + "the whole document, starting under the pointer.")
+            onboarding.offer("hint-spell", "Tip: while reading, z spells the "
+                + "current word.")
         }
     }
 
@@ -2147,7 +2179,19 @@ final class DaemonServer {
             config.speech.rate = rate
             ConfigLoader.save(config)
             // READ voice on purpose: the confirmation demos the new rate
-            speech.speak("Rate set to \(wpm) words per minute.")
+            speech.speak("Rate set to \(wpm) words per minute.") { [self] in
+                // The moment rate is on their mind — mention the live nudge
+                // (only while speed keys are off; the hint is the pointer).
+                // Deferred like the reading hints: this fires inside the
+                // synthesizer's delegate, where isSpeaking hasn't settled.
+                guard !(config.keyboard?.speedKeys ?? false) else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
+                    guard !tutorial.isActive else { return }
+                    onboarding.offer("hint-speed-keys", "Tip: colon config "
+                        + "speedkeys on lets Option up and down nudge the "
+                        + "rate live.")
+                }
+            }
 
         case "pitch":
             guard let percent = number() else {

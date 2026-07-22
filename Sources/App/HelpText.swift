@@ -172,21 +172,24 @@ enum HelpText {
         "When Marduk announces a dialog, it can also bring it to the front for you: press a for always, o for just this one, n for not now, or s to stop asking. And in Settings, Accessibility, Zoom, Advanced, follow keyboard focus makes your zoom pan straight to whatever Marduk focuses.",
     ]
 
+    /// First-run gateway: a brief orientation, then a one-key choice of
+    /// HOW to learn. Spoken once; the daemon arms a t / p / s capture when
+    /// it finishes (see Daemon first-run). Ends ON the question so the
+    /// prompt is the last thing heard before the keys go live.
     static let welcome = """
-        Welcome to Marduk. You are in NORMAL mode. Letters are commands, not \
-        typing. Press i to type. Hold Escape for half a second to come back to \
-        NORMAL. Press lowercase r to hear the paragraph under the cursor. Press Escape \
-        to stop speech. \
-        Marduk's signature is uppercase R: point the mouse at any document \
-        and it reads to the end like an audiobook, with vim keys to move \
-        through the text as it speaks. \
-        The most important key is colon, that is shift semicolon: it opens \
-        the command panel, which shows and speaks everything Marduk can do. \
-        From there, type h for help, or t u for the guided tour. To try a \
-        different voice any time, type colon voices, and type colon tip \
-        any time to learn one feature. \
-        I will point out a feature now and then as you go — say colon hints \
-        off to silence that, or colon tutorial for a guided tour. \
-        This message plays only once.
+        Welcome to Marduk. A quick orientation, then a choice. \
+        You are in NORMAL mode, where the letter keys are commands, not \
+        typing. Press i to type, and hold Escape for half a second to come \
+        back. Press colon — that is shift semicolon — any time to open the \
+        command panel, which shows and speaks everything Marduk can do. \
+        Marduk has a bit of a learning curve. It is modeled on the vim text \
+        editor, so the keys pay off once they are in your fingers — and it \
+        can teach you as you go. Three ways to learn; pick one with a single \
+        key. Press t for a guided tutorial right now. Press p to have Marduk \
+        point out features progressively over the next few days, as they \
+        naturally come up. Or press s to explore on your own — Marduk will \
+        stop pointing things out, and you can set your own settings. You can \
+        always type colon tutorial later, or colon hints on. \
+        Press t, p, or s.
         """
 }

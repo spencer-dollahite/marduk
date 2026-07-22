@@ -661,7 +661,15 @@ final class DaemonServer {
         if OnceMarker.firstTime("welcomed") {
             DispatchQueue.main.async { [self] in
                 fputs("[marduk] first-run welcome\n", stderr)
-                speech.speak(HelpText.welcome)
+                // Arm the t/p/s learning-mode choice only AFTER the welcome
+                // finishes reading (the welcome IS a read — reading capture
+                // holds the keyboard until it ends — so arming earlier would
+                // fight it, and the window would tick during the long pitch).
+                speech.speak(HelpText.welcome) { [self] in
+                    keyboardMonitor?.armQuestion(keys: ["t", "p", "s"]) { [self] answer in
+                        handleWelcomeChoice(answer)
+                    }
+                }
             }
         }
 
@@ -773,9 +781,9 @@ final class DaemonServer {
         // The window restarts when the spoken question ENDS — listening
         // to the full pitch must never eat the answer time
         speech.announce(text + " " + tail) { [weak keyboardMonitor] in
-            keyboardMonitor?.extendDialogQuestionWindow()
+            keyboardMonitor?.extendQuestionWindow()
         }
-        keyboardMonitor?.armDialogQuestion { [self] answer in
+        keyboardMonitor?.armQuestion(keys: ["a", "o", "n", "s"]) { [self] answer in
             guard let resolution = DialogFocus.resolve(answer: answer) else { return }
             if let setting = resolution.newSetting { setDialogFocus(setting) }
             speech.announce(resolution.ack)
@@ -788,6 +796,36 @@ final class DaemonServer {
                 speech.announce(hint)
             }
         }
+    }
+
+    /// First-run learning-mode choice (t/p/s). Escape / timeout / any
+    /// other key leaves progressive hints ON — the respectful default.
+    private func handleWelcomeChoice(_ answer: Character) {
+        switch answer {
+        case "t":
+            fputs("[onboarding] welcome choice: tutorial\n", stderr)
+            tutorial.start()
+        case "p":
+            fputs("[onboarding] welcome choice: progressive\n", stderr)
+            setHints(true)
+            speech.announce("Good. I will point out features as they come up. "
+                + "Say colon hints off any time.")
+        case "s":
+            fputs("[onboarding] welcome choice: on my own\n", stderr)
+            setHints(false)
+            speech.announce("Okay, you are on your own. Say colon tutorial or "
+                + "colon hints on whenever you like.")
+        default:
+            break
+        }
+    }
+
+    private func setHints(_ on: Bool) {
+        onboarding.hintsEnabled = on
+        var ob = config.onboarding ?? MardukConfig.OnboardingConfig()
+        ob.hints = on
+        config.onboarding = ob
+        ConfigLoader.save(config)
     }
 
     private func setDialogFocus(_ setting: DialogFocus.Setting) {
@@ -2060,11 +2098,7 @@ final class DaemonServer {
 
         case "hints":
             guard let on = toggle() else { return fail("Say on or off.") }
-            onboarding.hintsEnabled = on
-            var ob = config.onboarding ?? MardukConfig.OnboardingConfig()
-            ob.hints = on
-            config.onboarding = ob
-            ConfigLoader.save(config)
+            setHints(on)
             speech.announce(on ? "Onboarding hints on."
                                : "Onboarding hints off.")
 

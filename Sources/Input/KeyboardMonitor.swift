@@ -148,45 +148,45 @@ final class KeyboardMonitor {
     // announcement carries the a/o/n/s consent tail). Main-thread-only
     // like all tap state; answered/expired/superseded → the closure is
     // released, and with it the daemon's retained dialog target.
-    private var pendingDialogAnswer: ((Character) -> Void)?
-    private var dialogQuestionTimeout: DispatchWorkItem?
-    private static let dialogAnswerKeys: [Int64: Character] =
-        [0: "a", 31: "o", 45: "n", 1: "s"]
-    private static let dialogQuestionWindow: TimeInterval = 20
+    private var pendingQuestionAnswer: ((Character) -> Void)?
+    private var pendingQuestionKeys: Set<Character> = []
+    private var questionTimeout: DispatchWorkItem?
+    private static let questionWindow: TimeInterval = 20
 
-    /// Arm the a/o/n/s capture for one question. Main thread only. A new
-    /// question replaces an armed one; the timeout bounds how long the
-    /// answer keys shadow their NORMAL meanings (s = hover, Firefox n).
-    /// The daemon RESTARTS the window when the spoken question finishes
-    /// (extendDialogQuestionWindow) — the clock must not tick while the
-    /// instructions are still being read aloud (field report: the user
-    /// listened to the whole pitch before answering).
-    func armDialogQuestion(onAnswer: @escaping (Character) -> Void) {
-        cancelDialogQuestion()
-        pendingDialogAnswer = onAnswer
-        scheduleDialogTimeout()
+    /// Arm a one-key spoken-question capture (dialog-focus a/o/n/s, the
+    /// first-run t/p/s gateway, onboarding y/n). `keys` are lowercase
+    /// answer characters. Main thread only. A new question replaces an
+    /// armed one; the timeout bounds how long the answer keys shadow their
+    /// normal meanings. RESTART the window with extendQuestionWindow when
+    /// the spoken prompt finishes — the clock must not tick while the
+    /// prompt is still being read aloud (field: the user listened to the
+    /// whole pitch before answering).
+    func armQuestion(keys: Set<Character>, onAnswer: @escaping (Character) -> Void) {
+        cancelQuestion()
+        pendingQuestionKeys = keys
+        pendingQuestionAnswer = onAnswer
+        scheduleQuestionTimeout()
     }
 
-    /// Restart the answer window (no-op when nothing is armed) — called
-    /// when the spoken question completes, so the user always gets the
-    /// full window AFTER hearing the instructions.
-    func extendDialogQuestionWindow() {
-        guard pendingDialogAnswer != nil else { return }
-        scheduleDialogTimeout()
+    /// Restart the answer window (no-op when nothing is armed).
+    func extendQuestionWindow() {
+        guard pendingQuestionAnswer != nil else { return }
+        scheduleQuestionTimeout()
     }
 
-    private func scheduleDialogTimeout() {
-        dialogQuestionTimeout?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.cancelDialogQuestion() }
-        dialogQuestionTimeout = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.dialogQuestionWindow,
+    private func scheduleQuestionTimeout() {
+        questionTimeout?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.cancelQuestion() }
+        questionTimeout = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.questionWindow,
                                       execute: work)
     }
 
-    func cancelDialogQuestion() {
-        dialogQuestionTimeout?.cancel()
-        dialogQuestionTimeout = nil
-        pendingDialogAnswer = nil
+    func cancelQuestion() {
+        questionTimeout?.cancel()
+        questionTimeout = nil
+        pendingQuestionAnswer = nil
+        pendingQuestionKeys = []
     }
 
     // Firefox Reader narration handoff (`n` in NORMAL while Firefox is
@@ -564,8 +564,8 @@ final class KeyboardMonitor {
             readSearchBuffer = ""
             resetReadMotionState()
             readingCapture = false
-            // And an armed dialog-focus question (releases its AX target)
-            cancelDialogQuestion()
+            // And any armed spoken question (releases its retained target)
+            cancelQuestion()
             let state = isEnabled ? "ON (NORMAL)" : "OFF"
             fputs("[keyboard] Marduk \(state)\n", stderr)
             let word = isEnabled ? "Systems engaged" : "Systems disengaged"
@@ -601,25 +601,25 @@ final class KeyboardMonitor {
         // Marduk command (`:config …`), and a re-arming dialog eating its
         // a/o/s letters mangled the command (field 2026-07-22). Zero
         // effect when nothing is armed.
-        if pendingDialogAnswer != nil, mode != .command,
+        if pendingQuestionAnswer != nil, mode != .command,
            !hasCommand, !hasControl, !hasOption {
-            if let answer = Self.dialogAnswerKeys[keycode],
+            if let ch = Self.commandKeyChars[keycode], pendingQuestionKeys.contains(ch),
                !flags.contains(.maskShift) {
                 if isAutorepeat { return nil }
-                let respond = pendingDialogAnswer
-                cancelDialogQuestion()
-                fputs("[keyboard] dialog question answered: \(answer)\n", stderr)
-                DispatchQueue.main.async { respond?(answer) }
+                let respond = pendingQuestionAnswer
+                cancelQuestion()
+                fputs("[keyboard] question answered: \(ch)\n", stderr)
+                DispatchQueue.main.async { respond?(ch) }
                 return nil
             }
             if keycode == 53 {  // Escape — bail out of the question
                 if isAutorepeat { return nil }
-                cancelDialogQuestion()
-                fputs("[keyboard] dialog question dismissed\n", stderr)
+                cancelQuestion()
+                fputs("[keyboard] question dismissed\n", stderr)
                 DispatchQueue.main.async { Earcon.riseToNormal() }
                 return nil
             }
-            cancelDialogQuestion()  // moved on — key falls through to normal
+            cancelQuestion()  // moved on — key falls through to normal
         }
 
         // === Marduk disabled: pass everything through ===

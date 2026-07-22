@@ -602,6 +602,16 @@ final class DaemonServer {
                 Earcon.error()
             }
         }
+        keyboardMonitor?.onReadHeading = { [self] motion, count in
+            if speech.jumpHeading(motion, count: count) {
+                tutorial.handle(.readJumped)
+            } else {
+                Earcon.error()
+            }
+        }
+        keyboardMonitor?.onHarvestHeadings = { [self] lines in
+            speech.setReadHeadings(lines: lines)
+        }
         keyboardMonitor?.onReadSearchBegin = { [self] in
             if speech.isSpeaking, !speech.isPaused {
                 speech.pause()

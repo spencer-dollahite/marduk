@@ -105,6 +105,11 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     // Synthetic paging (huge plain text chunked into pages): same machinery,
     // but no viewer follows along — go-to-page gestures are suppressed.
     private var pagedSynthetic = false
+    // Heading jumps (]] [[ ][ [] ]u): positions in the current read where
+    // headings start, processed-text offsets, ascending. Armed after the
+    // read starts (web harvest → setReadHeadings), empty = no heading
+    // data → the motions buzz honestly via jumpHeading's false.
+    private var readHeadings: [ReadHeading] = []
 
     // Back-motion anchor: at fast speech rates the boundary callbacks race
     // ahead of comprehension — by the time a `b` lands, readPosition is
@@ -200,6 +205,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         readPaged = nil  // plain read; speakPaged re-sets after this returns
         pagedFull = nil
         pagedSynthetic = false
+        readHeadings = []  // stale headings die with the old read
         readBase = 0
         readPosition = 0
         segmentStartedAt = Date()
@@ -247,6 +253,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         readPaged = nil
         pagedFull = nil
         pagedSynthetic = false
+        readHeadings = []
     }
 
     func speakSSML(_ ssml: String) {
@@ -267,6 +274,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         readPaged = nil
         pagedFull = nil
         pagedSynthetic = false
+        readHeadings = []
     }
 
     // MARK: - Read motions (vim-style navigation within the current read)
@@ -463,6 +471,63 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         }
         respeak(from: ReadNavigator.wordStart(in: text, at: hit))
         return true
+    }
+
+    /// Arm heading jumps for the current read. Line indices are RAW-
+    /// harvest lines (newline-counted, same coordinates the scroll-follow
+    /// anchors use); converted once here against the processed text with
+    /// the same clamped ±1-line drift tolerance. Called AFTER speak(),
+    /// which cleared the previous read's headings.
+    func setReadHeadings(lines: [(line: Int, level: Int)]) {
+        guard readActive, let text = readText else { return }
+        readHeadings = ReadNavigator.headingOffsets(
+            lines: lines, lineStarts: ReadNavigator.lineStartOffsets(in: text))
+        fputs("[speech] headings armed: \(readHeadings.count)\n", stderr)
+    }
+
+    /// ]] [[ ][ [] ]u — heading jumps. A count applies the step repeatedly
+    /// (2]u = grandparent — uniform count semantics), stopping early when
+    /// exhausted; as far as possible beats a no-op. False when nothing
+    /// moved OR the read has no heading data — the single honesty point;
+    /// the caller buzzes. Landing is silent: the respeak simply starts at
+    /// the heading text, which announces itself.
+    @discardableResult
+    func jumpHeading(_ motion: HeadingMotion, count: Int = 1) -> Bool {
+        stopEcho()
+        guard readActive, readText != nil else { return false }
+        // Stage 2 (PDF outline): paged branch lands here, page-granular.
+        guard !readHeadings.isEmpty else { return false }
+        var position = readPosition
+        var moved = false
+        for _ in 0..<max(1, count) {
+            guard let next = Self.headingStep(motion, headings: readHeadings,
+                                              from: position) else { break }
+            position = next
+            moved = true
+        }
+        guard moved, position != readPosition else { return false }
+        respeak(from: position)
+        return true
+    }
+
+    private static func headingStep(_ motion: HeadingMotion,
+                                    headings: [ReadHeading], from position: Int) -> Int? {
+        switch motion {
+        case .next:
+            return ReadNavigator.headingTarget(headings: headings, from: position,
+                                               direction: .forward)
+        case .previous:
+            return ReadNavigator.headingTarget(headings: headings, from: position,
+                                               direction: .back)
+        case .nextSibling:
+            return ReadNavigator.siblingHeadingTarget(headings: headings, from: position,
+                                                      direction: .forward)
+        case .previousSibling:
+            return ReadNavigator.siblingHeadingTarget(headings: headings, from: position,
+                                                      direction: .back)
+        case .parent:
+            return ReadNavigator.parentHeadingTarget(headings: headings, from: position)
+        }
     }
 
     /// Vim 0: restart the current line. False at the line's start (or when

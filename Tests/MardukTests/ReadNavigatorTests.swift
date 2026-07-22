@@ -264,6 +264,116 @@ final class ReadNavigatorTests: XCTestCase {
         XCTAssertEqual(ReadNavigator.wordStart(in: "", at: 0), 0)
     }
 
+    // MARK: - Headings (]] [[ ][ [] ]u)
+
+    // A nested outline in ordinal space (offsets abstract — text offsets
+    // or page indices, the math is the same):
+    //   h1@0  h2@100  h3@200  h3@300  h2@400  h1@500  h2@600
+    private let nestedHeadings = [
+        ReadHeading(offset: 0, level: 1),
+        ReadHeading(offset: 100, level: 2),
+        ReadHeading(offset: 200, level: 3),
+        ReadHeading(offset: 300, level: 3),
+        ReadHeading(offset: 400, level: 2),
+        ReadHeading(offset: 500, level: 1),
+        ReadHeading(offset: 600, level: 2),
+    ]
+
+    func testHeadingForwardFindsNextHeading() {
+        XCTAssertEqual(ReadNavigator.headingTarget(headings: nestedHeadings, from: 150,
+                                                   direction: .forward), 200)
+        // From exactly ON a heading, forward is strictly past it
+        XCTAssertEqual(ReadNavigator.headingTarget(headings: nestedHeadings, from: 200,
+                                                   direction: .forward), 300)
+    }
+
+    func testHeadingBackFindsPreviousHeading() {
+        XCTAssertEqual(ReadNavigator.headingTarget(headings: nestedHeadings, from: 150,
+                                                   direction: .back), 100)
+        // From exactly ON a heading, back travels — no restart treadmill
+        XCTAssertEqual(ReadNavigator.headingTarget(headings: nestedHeadings, from: 100,
+                                                   direction: .back), 0)
+    }
+
+    func testHeadingDoesNotWrap() {
+        XCTAssertNil(ReadNavigator.headingTarget(headings: nestedHeadings, from: 650,
+                                                 direction: .forward))
+        XCTAssertNil(ReadNavigator.headingTarget(headings: nestedHeadings, from: 0,
+                                                 direction: .back))
+        XCTAssertNil(ReadNavigator.headingTarget(headings: [], from: 50,
+                                                 direction: .forward))
+    }
+
+    func testSiblingSkipsDeeperLevels() {
+        // In h2@100's body: next sibling hops over both h3s to h2@400
+        XCTAssertEqual(ReadNavigator.siblingHeadingTarget(headings: nestedHeadings,
+                                                          from: 120, direction: .forward), 400)
+        // And back from h2@400's body over the h3s to h2@100
+        XCTAssertEqual(ReadNavigator.siblingHeadingTarget(headings: nestedHeadings,
+                                                          from: 420, direction: .back), 100)
+    }
+
+    func testSiblingAbortsAtParentBoundary() {
+        // h2@400's next same-level heading is h2@600, but h1@500 sits
+        // between them — siblings share a parent, so this is nil
+        XCTAssertNil(ReadNavigator.siblingHeadingTarget(headings: nestedHeadings,
+                                                        from: 450, direction: .forward))
+    }
+
+    func testSiblingBeforeAnyHeadingIsNil() {
+        let late = [ReadHeading(offset: 10, level: 2), ReadHeading(offset: 20, level: 2)]
+        XCTAssertNil(ReadNavigator.siblingHeadingTarget(headings: late, from: 5,
+                                                        direction: .forward))
+    }
+
+    func testFlatDocumentSiblingEqualsNext() {
+        let flat = [ReadHeading(offset: 10, level: 2),
+                    ReadHeading(offset: 20, level: 2),
+                    ReadHeading(offset: 30, level: 2)]
+        XCTAssertEqual(ReadNavigator.siblingHeadingTarget(headings: flat, from: 12,
+                                                          direction: .forward), 20)
+        XCTAssertEqual(ReadNavigator.siblingHeadingTarget(headings: flat, from: 25,
+                                                          direction: .back), 10)
+    }
+
+    func testParentClimbsOneLevel() {
+        // In h3@200's body → its h2; in h2@400's body → the opening h1
+        XCTAssertEqual(ReadNavigator.parentHeadingTarget(headings: nestedHeadings,
+                                                         from: 250), 100)
+        XCTAssertEqual(ReadNavigator.parentHeadingTarget(headings: nestedHeadings,
+                                                         from: 450), 0)
+    }
+
+    func testParentAtTopLevelIsNil() {
+        XCTAssertNil(ReadNavigator.parentHeadingTarget(headings: nestedHeadings, from: 50))
+        // Before any heading there is nothing to climb from
+        let late = [ReadHeading(offset: 10, level: 1)]
+        XCTAssertNil(ReadNavigator.parentHeadingTarget(headings: late, from: 5))
+    }
+
+    func testLineStartOffsetsInvertNewlineCounting() {
+        // "a\nb\n\nc": lines start at 0, 2, 4 (the empty line), 5 —
+        // blank lines COUNT, unlike the content-run line motions
+        XCTAssertEqual(ReadNavigator.lineStartOffsets(in: "a\nb\n\nc"), [0, 2, 4, 5])
+        XCTAssertEqual(ReadNavigator.lineStartOffsets(in: ""), [0])
+    }
+
+    func testHeadingOffsetsClampAndDedup() {
+        let starts = [0, 2, 4, 5]
+        // Line 99 clamps to the last line; two entries collapsing onto
+        // the same offset keep the first
+        XCTAssertEqual(
+            ReadNavigator.headingOffsets(lines: [(line: 1, level: 2), (line: 99, level: 3)],
+                                         lineStarts: starts),
+            [ReadHeading(offset: 2, level: 2), ReadHeading(offset: 5, level: 3)])
+        XCTAssertEqual(
+            ReadNavigator.headingOffsets(lines: [(line: 3, level: 2), (line: 99, level: 3)],
+                                         lineStarts: starts),
+            [ReadHeading(offset: 5, level: 2)])
+        XCTAssertEqual(ReadNavigator.headingOffsets(lines: [(line: 0, level: 1)],
+                                                    lineStarts: []), [])
+    }
+
     func testSpellOutPlainAndPhonetic() {
         XCTAssertEqual(SpeechEngine.spellOut("Cat 9", nato: false),
                        "capital c, a, t, space, 9")

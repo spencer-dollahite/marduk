@@ -121,6 +121,7 @@ final class KeyboardMonitor {
         case search(String, ReadDirection)
         case find(Character, ReadDirection)
         case pageStep(Int)
+        case heading(HeadingMotion, Int)
     }
     var onReadPageStep: ((Int) -> Void)?      // Ctrl+F/Ctrl+B, ±count pages
     var onReadPageAbsolute: ((Int) -> Void)?  // 12G — page twelve
@@ -135,13 +136,23 @@ final class KeyboardMonitor {
     private var lastReadAction: ReadAction?
     var onReadFind: ((Character, ReadDirection) -> Void)?  // f/F + char
     private var pendingReadFind: ReadDirection?  // f pressed, awaiting the target char
+    var onReadHeading: ((HeadingMotion, Int) -> Void)?  // ]] [[ ][ [] ]u
+    // A lone ] or [ pends its pair vim-style (no timeout); any key that
+    // isn't the pair's second half clears it and acts normally.
+    private enum PendingBracket { case open, close }  // [ armed / ] armed
+    private var pendingReadBracket: PendingBracket?
+    // Harvested heading lines (raw line index → level) for the read that
+    // just started — the daemon relays them to SpeechEngine, which maps
+    // them onto the processed text.
+    var onHarvestHeadings: (([(line: Int, level: Int)]) -> Void)?
 
     /// Drop every half-entered read-motion state (count, pending gg,
-    /// armed find) — the exits, toggles, and read end all need this.
+    /// armed find/bracket) — the exits, toggles, and read end all need this.
     private func resetReadMotionState() {
         readMotionCount = 0
         pendingReadG = false
         pendingReadFind = nil
+        pendingReadBracket = nil
     }
 
     // Dialog-focus question (armed by the daemon when a dialog
@@ -828,11 +839,52 @@ final class KeyboardMonitor {
                 }
             }
 
+            // Armed ] or [ — resolve the bracket pair: ]] next heading,
+            // [[ previous, ][ next same-level sibling, [] previous
+            // sibling, ]u parent (vim-markdown's header family). Any
+            // other key clears the arm and falls through to its normal
+            // meaning (]j degrades to a line motion, Escape still
+            // pauses); shifted brackets never resolve — { } stay
+            // paragraph motions.
+            if let bracket = pendingReadBracket {
+                if isAutorepeat { return nil }
+                var motion: HeadingMotion?
+                if !hasShift {
+                    switch (bracket, keycode) {
+                    case (.close, 30): motion = .next             // ]]
+                    case (.open, 33):  motion = .previous         // [[
+                    case (.close, 33): motion = .nextSibling      // ][
+                    case (.open, 30):  motion = .previousSibling  // []
+                    case (.close, 32): motion = .parent           // ]u
+                    default: break
+                    }
+                }
+                pendingReadBracket = nil
+                if let motion {
+                    let count = max(1, readMotionCount)
+                    readMotionCount = 0
+                    lastReadAction = .heading(motion, count)
+                    DispatchQueue.main.async { [self] in
+                        onReadHeading?(motion, count)
+                    }
+                    return nil
+                }
+            }
+
             if keycode == 3 { // f / F — arm char-find forward / back
                 if isAutorepeat { return nil }
                 readMotionCount = 0
                 pendingReadG = false
                 pendingReadFind = hasShift ? .back : .forward
+                return nil
+            }
+
+            // ] or [ — arm the bracket pair. The pending count survives
+            // arming (it precedes the pair: 2]]).
+            if !hasShift, keycode == 30 || keycode == 33 {
+                if isAutorepeat { return nil }
+                pendingReadG = false
+                pendingReadBracket = keycode == 30 ? .close : .open
                 return nil
             }
 
@@ -1005,6 +1057,10 @@ final class KeyboardMonitor {
                     DispatchQueue.main.async { [self] in onReadFind?(char, direction) }
                 case .pageStep(let step):
                     DispatchQueue.main.async { [self] in onReadPageStep?(step) }
+                case .heading(let motion, let recorded):
+                    let n = pending > 0 ? pending : recorded
+                    lastReadAction = .heading(motion, n)
+                    DispatchQueue.main.async { [self] in onReadHeading?(motion, n) }
                 }
                 return nil
             }
@@ -2257,12 +2313,14 @@ final class KeyboardMonitor {
             if let harvest = Self.webAreaVisibleText(pid: pid),
                harvest.text.count > 200 {
                 fputs("[keyboard] R: web-area walk (\(harvest.text.count) chars, "
-                    + "\(harvest.anchors.count) anchors)\n", stderr)
+                    + "\(harvest.anchors.count) anchors, "
+                    + "\(harvest.headings.count) headings)\n", stderr)
                 DispatchQueue.main.async { [self] in
-                    // onSpeak → speak() → onNewRead clears stale anchors,
-                    // THEN this read's anchors arm the scroll-follow
+                    // onSpeak → speak() → onNewRead clears stale anchors
+                    // and headings, THEN this read's arm
                     onSpeak?(harvest.text)
                     setWebReadAnchors(harvest.anchors)
+                    onHarvestHeadings?(harvest.headings)
                 }
                 return
             }
@@ -2321,7 +2379,7 @@ final class KeyboardMonitor {
     /// so a pathological page can't wedge the walk. Runs OFF the main
     /// thread by design (a long walk on main would stall tap dispatch).
     private static func webAreaVisibleText(pid: pid_t)
-        -> (text: String, anchors: [AXUIElement])? {
+        -> (text: String, anchors: [AXUIElement], headings: [(line: Int, level: Int)])? {
         let axApp = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(axApp, 0.25)
         // The screen-reader nudges: browsers keep web AX trees minimal
@@ -2347,8 +2405,10 @@ final class KeyboardMonitor {
         ) else { return nil }
 
         var parts: [(text: String, element: AXUIElement)] = []
+        var headingMarks: [(partIndex: Int, level: Int)] = []
         var nodeBudget = 3000
-        collectText(from: webArea, into: &parts, nodeBudget: &nodeBudget, depth: 40)
+        collectText(from: webArea, into: &parts, headingMarks: &headingMarks,
+                    nodeBudget: &nodeBudget, depth: 40)
         let joined = parts.map(\.text).joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !joined.isEmpty else { return nil }
@@ -2356,11 +2416,19 @@ final class KeyboardMonitor {
         // contain newlines), so line index → contributing element is exact
         // before preprocessing and within a line or two after
         var anchors: [AXUIElement] = []
+        var lineOfPart: [Int] = []  // cumulative: first line index of part i
         for part in parts {
+            lineOfPart.append(anchors.count)
             let lines = part.text.reduce(into: 1) { if $1 == "\n" { $0 += 1 } }
             anchors.append(contentsOf: Array(repeating: part.element, count: lines))
         }
-        return (joined, anchors)
+        // Heading marks point at the first part their subtree appended;
+        // marks whose subtree appended nothing (empty heading) are dropped.
+        let headings = headingMarks.compactMap { mark -> (line: Int, level: Int)? in
+            guard mark.partIndex < lineOfPart.count else { return nil }
+            return (line: lineOfPart[mark.partIndex], level: mark.level)
+        }
+        return (joined, anchors, headings)
     }
 
     private static func findDescendant(
@@ -2387,6 +2455,7 @@ final class KeyboardMonitor {
 
     private static func collectText(
         from element: AXUIElement, into parts: inout [(text: String, element: AXUIElement)],
+        headingMarks: inout [(partIndex: Int, level: Int)],
         nodeBudget: inout Int, depth: Int
     ) {
         guard depth > 0, nodeBudget > 0 else { return }
@@ -2397,10 +2466,17 @@ final class KeyboardMonitor {
         if let role = roleRef as? String,
            role == "AXStaticText" || role == "AXHeading" {
             var valueRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(
-                   element, kAXValueAttribute as CFString, &valueRef
-               ) == .success,
-               let text = valueRef as? String,
+            let gotValue = AXUIElementCopyAttributeValue(
+                element, kAXValueAttribute as CFString, &valueRef) == .success
+            if role == "AXHeading" {
+                // A heading's text usually arrives via its child static-
+                // texts (WebKit keeps the integer LEVEL in AXValue), so
+                // the mark points at the first part its subtree appends.
+                headingMarks.append((partIndex: parts.count,
+                                     level: headingLevel(of: element,
+                                                         value: gotValue ? valueRef : nil)))
+            }
+            if gotValue, let text = valueRef as? String,
                !text.trimmingCharacters(in: .whitespaces).isEmpty {
                 parts.append((text, element))
             }
@@ -2413,8 +2489,21 @@ final class KeyboardMonitor {
               let children = childrenRef as? [AXUIElement] else { return }
         for child in children {
             guard nodeBudget > 0 else { return }
-            collectText(from: child, into: &parts, nodeBudget: &nodeBudget, depth: depth - 1)
+            collectText(from: child, into: &parts, headingMarks: &headingMarks,
+                        nodeBudget: &nodeBudget, depth: depth - 1)
         }
+    }
+
+    /// A web heading's level. WebKit publishes the integer in the
+    /// heading's AXValue; other engines may answer an AXLevel attribute
+    /// instead (verify per browser on hardware). Unknown → 2, a flat-but-
+    /// sane default: ]] and [[ still work, ][ degrades to ]], ]u buzzes.
+    private static func headingLevel(of element: AXUIElement, value: CFTypeRef?) -> Int {
+        if let n = value as? Int, (1...6).contains(n) { return n }
+        var levelRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, "AXLevel" as CFString, &levelRef) == .success,
+           let n = levelRef as? Int, (1...6).contains(n) { return n }
+        return 2
     }
 
     /// PDF fallback for R: the focused window's document path (standard

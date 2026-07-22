@@ -162,6 +162,7 @@ final class DisplayInverter: @unchecked Sendable {
         // user's (or a stranded pref), never ours to undo.
         isInverted = Self.displayIsInverted()
         weOwnInversion = false
+        fputs("[display] seeded: display inverted = \(isInverted)\n", stderr)
 
         observer = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
@@ -768,13 +769,19 @@ final class DisplayInverter: @unchecked Sendable {
         return Double(total) / Double(samples) / 255.0
     }
 
-    /// Ground truth from the same store Settings writes — no guessing
-    /// whether the chord landed.
+    /// Ground truth for Invert Colors — the PUBLIC, live AppKit signal.
+    ///
+    /// This used to read `com.apple.universalaccess/whiteOnBlack` via
+    /// CFPreferences. That key is NOT trustworthy: on macOS 26 it was
+    /// found reading TRUE with the display plainly NOT inverted (field
+    /// 2026-07-22 — we read another process's store through cfprefsd, and
+    /// the key survives as stale legacy state). Every symptom of that
+    /// week traces to it: seeded from it, `stop()` fired a "revert" that
+    /// INVERTED a dark-mode screen; then resyncing from it made Marduk
+    /// refuse to invert Pages at all, because it believed it already had.
+    /// NSWorkspace tracks the real accessibility display options live.
     static func displayIsInverted() -> Bool {
-        let domain = "com.apple.universalaccess" as CFString
-        CFPreferencesAppSynchronize(domain)
-        return (CFPreferencesCopyAppValue("whiteOnBlack" as CFString, domain)
-            as? Bool) ?? false
+        NSWorkspace.shared.accessibilityDisplayShouldInvertColors
     }
 
     // MARK: - Preview "View in Dark Mode"

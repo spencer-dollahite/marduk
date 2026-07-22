@@ -47,7 +47,8 @@ enum HelpText {
         mode: b and w step back and forward a word, h and l do the same. \
         Parentheses step a sentence. j and k step lines, zero restarts \
         the current line, and braces step paragraphs — blocks separated \
-        by blank lines. On web pages, right bracket twice jumps to the \
+        by blank lines. On web pages, PDFs with a table of contents, and \
+        styled notes, right bracket twice jumps to the \
         next heading and left bracket twice to the previous one. Right \
         bracket then left bracket hops to the next heading at the same \
         depth, left then right goes back one, and right bracket then u \
@@ -156,7 +157,7 @@ enum HelpText {
         "On any article in Firefox, 8 does the whole ritual at once: opens reader mode, pauses your music, and starts Firefox narrating. 8 again closes it all back down.",
         "Marduk's reading keys are vim's keys on purpose: b and w for words, parens for sentences, slash to search, dot to repeat. If you already know vim, everything carries over. If you don't, the choices may feel odd for a few days — then the muscle memory kicks in, and it pays off for good.",
         "Vim keys work inside a read: open paren replays the sentence you just missed, b and w step by word, j and k by line, braces by paragraph, and slash searches the text. Wait, what did it just say? Open paren.",
-        "Reading a web page? Right bracket twice jumps to the next heading, left bracket twice goes back one. Right bracket then u climbs to the section's parent heading.",
+        "Reading a web page, a PDF, or a styled note? Right bracket twice jumps to the next heading, left bracket twice goes back one. Right bracket then u climbs to the section's parent heading.",
         "Uppercase R turns a Notes page or a Terminal window into an audiobook: point the mouse where you want to start and it reads from there to the end, with every reading motion live. Press it mid-read to switch documents.",
         "Uppercase R reads web pages in Safari and Firefox with every reading motion live. Open the Reader view first — shift command R in Safari, the reader icon in Firefox — and the read is just the title and article, no site clutter.",
         "Was that m or n? During a read, z spells the current word letter by letter, and a second z spells it phonetically: Mike versus November. Capital Z spells the whole sentence.",

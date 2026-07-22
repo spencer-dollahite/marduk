@@ -146,6 +146,10 @@ final class KeyboardMonitor {
     // just started — the daemon relays them to SpeechEngine, which maps
     // them onto the processed text.
     var onHarvestHeadings: (([(line: Int, level: Int)]) -> Void)?
+    // The daemon's per-read generation (bumped on every new read) — the
+    // async rich-text heading harvest captures it at read start and
+    // drops its result if any newer read won meanwhile. Main-thread only.
+    var readGenerationProvider: (() -> Int)?
 
     /// Drop every half-entered read-motion state (count, pending gg,
     /// armed find/bracket) — the exits, toggles, and read end all need this.
@@ -2181,7 +2185,70 @@ final class KeyboardMonitor {
             // gets chunked into pages around the exact start offset, so
             // pre-caret text stays reachable (gg = the true top).
             onSpeakDocument?(text, start)
+            harvestRichTextHeadings(from: element, textLength: ns.length, start: start)
         }
+    }
+
+    /// Rich-text heading harvest — the rung that gives Notes and TextEdit
+    /// heading jumps (Pages historically answers no attributed strings
+    /// and degrades to zero headings: the honest buzz, no code path).
+    /// Fires AFTER the read dispatched, off-main, never blocking speech:
+    /// one parameterized attributed-string fetch over the whole value,
+    /// font runs → HeadingDetector (size-prominence, pure) → line
+    /// indices rebased to the spoken remainder (the plain document path
+    /// speaks substring(from: start)) → the same onHarvestHeadings
+    /// bridge the web path uses. Plain reads only: a document over one
+    /// window rides synthetic pages, whose global-offset mapping is a
+    /// future rung. Any fetch failure returns silently — motions buzz.
+    private func harvestRichTextHeadings(from element: AXUIElement,
+                                         textLength: Int, start: Int) {
+        guard textLength <= PagedText.windowBudget else {
+            fputs("[keyboard] R: heading harvest skipped (paged read)\n", stderr)
+            return
+        }
+        let generation = readGenerationProvider?() ?? 0
+        DispatchQueue.global(qos: .utility).async { [self] in
+            var range = CFRange(location: 0, length: textLength)
+            guard let rangeValue = AXValueCreate(.cfRange, &range) else { return }
+            var attrRef: CFTypeRef?
+            AXUIElementSetMessagingTimeout(element, 0.5)
+            guard AXUIElementCopyParameterizedAttributeValue(
+                      element,
+                      kAXAttributedStringForRangeParameterizedAttribute as CFString,
+                      rangeValue, &attrRef) == .success,
+                  let attributed = attrRef as? NSAttributedString,
+                  attributed.length > 0 else { return }
+            let found = HeadingDetector.headings(runs: Self.fontRuns(in: attributed))
+            guard !found.isEmpty else { return }
+            let text = attributed.string
+            let baseLine = Self.lineIndex(of: start, in: text)
+            let lines = found.filter { $0.offset >= start }.map {
+                (line: Self.lineIndex(of: $0.offset, in: text) - baseLine,
+                 level: $0.level)
+            }
+            guard !lines.isEmpty else { return }
+            fputs("[keyboard] R: rich-text headings (\(lines.count))\n", stderr)
+            DispatchQueue.main.async { [self] in
+                guard (readGenerationProvider?() ?? 0) == generation else { return }
+                onHarvestHeadings?(lines)
+            }
+        }
+    }
+
+    /// Font runs from an AX attributed string: the "AXFont" attribute is
+    /// a dictionary ({AXFontName, AXFontSize, …}) — size is all the
+    /// detector needs.
+    private static func fontRuns(in attributed: NSAttributedString)
+        -> [HeadingDetector.FontRun] {
+        var runs: [HeadingDetector.FontRun] = []
+        let full = NSRange(location: 0, length: attributed.length)
+        attributed.enumerateAttribute(NSAttributedString.Key("AXFont"), in: full) {
+            value, range, _ in
+            guard let dict = value as? [String: Any],
+                  let size = (dict["AXFontSize"] as? NSNumber)?.doubleValue else { return }
+            runs.append(HeadingDetector.FontRun(range: range, pointSize: size))
+        }
+        return runs
     }
 
     /// Row-estimate fallback for pointer starts when the app doesn't

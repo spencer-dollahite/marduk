@@ -160,6 +160,9 @@ final class DaemonServer {
     // Long-read chunking runs off-main; a newer read must win over a
     // stale chunk result landing late (R pressed twice on a huge doc).
     private var longReadGeneration = 0
+    // Bumped on EVERY new read (onNewRead) — the async rich-text heading
+    // harvest captures it at read start and drops stale deliveries
+    private var readGeneration = 0
 
     // ":voices" picker rows: installed English voices, best quality first,
     // enumerated once on first use (same filter/sort as `marduk voices`)
@@ -372,6 +375,7 @@ final class DaemonServer {
         // contributing element into view as the voice crosses paragraphs.
         keyboardMonitor?.followEnabled = config.keyboard?.follow ?? true
         speech.onNewRead = { [self] in
+            readGeneration += 1  // async heading harvests drop stale results
             keyboardMonitor?.clearWebReadAnchors()
             // Asking for a NEW read means "I want to listen" — reclaim the
             // capture even when the previous read was still playing under
@@ -613,6 +617,7 @@ final class DaemonServer {
         keyboardMonitor?.onHarvestHeadings = { [self] lines in
             speech.setReadHeadings(lines: lines)
         }
+        keyboardMonitor?.readGenerationProvider = { [self] in readGeneration }
         keyboardMonitor?.onReadSearchBegin = { [self] in
             if speech.isSpeaking, !speech.isPaused {
                 speech.pause()

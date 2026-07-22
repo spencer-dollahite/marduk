@@ -510,6 +510,11 @@ final class DaemonServer {
         keyboardMonitor?.onCommandHelp = { [self] in speakCommandOptions(explicit: true) }
         keyboardMonitor?.onCommandIdle = { [self] in speakCommandOptions(explicit: false) }
         keyboardMonitor?.onUpdateCheck = { [self] in handleUpdateKey() }
+        // dd — cut a patch release. The gesture only exists on a source
+        // install; elsewhere the flag stays false and d remains a plain
+        // letter (typing rescue untouched — zero surface for strangers).
+        keyboardMonitor?.releaseAvailable = projectDir != nil
+        keyboardMonitor?.onCutRelease = { [self] in handleReleaseKey() }
         // Speed keys: rate applies instantly per nudge; the announcement
         // and the config write debounce until the key is released, so a
         // held autorepeat doesn't spam speech or disk. (Arrives on main.)
@@ -1320,6 +1325,10 @@ final class DaemonServer {
 
     /// Single `u`: install if a check is armed, else check + speak notes.
     private func handleUpdateKey() {
+        guard !releaseInFlight else {
+            speech.announce("A release is running.")
+            return
+        }
         if let until = updateArmedUntil, Date() < until {
             updateArmedUntil = nil
             speech.announce("Update initiated")
@@ -1338,6 +1347,10 @@ final class DaemonServer {
     /// system says so and does nothing — the only typo protection that
     /// survives, by user choice.
     private func handleFastUpdateKey() {
+        guard !releaseInFlight else {
+            speech.announce("A release is running.")
+            return
+        }
         speech.announce("Update initiated")
         let armed = updateArmedUntil.map { Date() < $0 } ?? false
         if armed || updatesKnownAvailable {
@@ -1345,6 +1358,160 @@ final class DaemonServer {
             performUpdate()
         } else {
             checkForUpdates(origin: .express)
+        }
+    }
+
+    // MARK: - Cut release (dd)
+
+    // A release publishes to strangers' machines (auto-update installs
+    // it), so the gesture is the most consequential in Marduk: dd only
+    // ASKS — the armed y/n question does the releasing. Patch bumps
+    // only; minor/major are a human judgment and stay with the manual
+    // scripts/release.sh. The daemon SPAWNS release.sh (its guards are
+    // battle-tested: clean tree, ff-only, monotonic version, CI-green
+    // gate) and narrates the script's own "==>" stage lines.
+    private var releaseInFlight = false
+    private var releaseProcess: Process?
+    private var releaseWatchdog: DispatchWorkItem?
+    private var releaseLastStage = "starting"
+    private var releaseTimedOut = false
+
+    private func handleReleaseKey() {
+        guard let dir = projectDir else {
+            // Defense in depth — the keyboard gesture is already
+            // source-gated, but the socket/tests could reach here
+            Earcon.error()
+            speech.announce("Releases can only be cut from a source install.")
+            return
+        }
+        guard !releaseInFlight else {
+            speech.announce("A release is already running.")
+            return
+        }
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let tags = Self.shell("git", "tag", "--list", "v*",
+                                  "--sort=v:refname", cwd: dir)
+            let newest = tags.output.split(separator: "\n").last
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            guard tags.status == 0, let newest,
+                  let next = ReleaseCheck.nextPatch(after: newest) else {
+                fputs("[release] no usable version tag (status \(tags.status))\n", stderr)
+                DispatchQueue.main.async { [self] in
+                    Earcon.error()
+                    speech.announce("Could not work out the next version from the git tags.")
+                }
+                return
+            }
+            DispatchQueue.main.async { [self] in
+                guard !releaseInFlight else { return }
+                // The dialog-focus pattern: speak the question, extend the
+                // answer window when the speech finishes, one-key answer.
+                // Escape, any other key, or ~20s quietly cancels.
+                speech.announce("Cut release \(next)? Press y to release, "
+                    + "n to cancel.") { [weak keyboardMonitor] in
+                    keyboardMonitor?.extendQuestionWindow()
+                }
+                keyboardMonitor?.armQuestion(keys: ["y", "n"]) { [self] answer in
+                    if answer == "y" {
+                        startRelease(version: next, dir: dir)
+                    } else {
+                        speech.announce("Not releasing.")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Spawn scripts/release.sh and narrate its "==>" stages. Main-thread
+    /// entry; the process runs detached with a pipe reader. No blanket
+    /// fail-open: CI-wait and notarization are network-idle and the
+    /// keyboard must stay alive — the latency sentinel already fail-opens
+    /// dynamically if the release build starves the main thread.
+    private func startRelease(version: String, dir: String) {
+        releaseInFlight = true
+        releaseTimedOut = false
+        releaseLastStage = "starting"
+        fputs("[release] cutting \(version) via scripts/release.sh\n", stderr)
+        speech.announce("Cutting release \(version).")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["scripts/release.sh", version]
+        process.currentDirectoryURL = URL(fileURLWithPath: dir)
+        // The launchd daemon's PATH lacks Homebrew, and release.sh needs
+        // gh (git/swift/xcrun live in /usr/bin)
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:"
+            + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+        process.environment = env
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else {
+                return
+            }
+            for line in chunk.split(separator: "\n") {
+                let text = String(line)
+                fputs("[release] \(text)\n", stderr)
+                if let stage = ReleaseCheck.stageLine(text) {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.releaseLastStage = stage
+                        self?.speech.announce(stage + ".")
+                    }
+                }
+            }
+        }
+
+        process.terminationHandler = { [weak self] proc in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                pipe.fileHandleForReading.readabilityHandler = nil
+                self.releaseWatchdog?.cancel()
+                self.releaseWatchdog = nil
+                self.releaseProcess = nil
+                self.releaseInFlight = false
+                if proc.terminationStatus == 0 {
+                    fputs("[release] \(version) is live\n", stderr)
+                    self.speech.announce("Release \(version) is live.")
+                } else if self.releaseTimedOut {
+                    Earcon.error()
+                    self.speech.announce("Release timed out during "
+                        + "\(self.releaseLastStage). Check the log.")
+                } else {
+                    fputs("[release] failed (status \(proc.terminationStatus)) "
+                        + "during \(self.releaseLastStage)\n", stderr)
+                    Earcon.error()
+                    self.speech.announce("Release failed during "
+                        + "\(self.releaseLastStage). Check the log.")
+                }
+            }
+        }
+
+        // Watchdog: a locked keychain (codesign GUI prompt) or a hung
+        // notarization must not wedge silently — the osascript
+        // kill-on-timeout precedent, scaled to release length.
+        let watchdog = DispatchWorkItem { [weak self, weak process] in
+            guard let self, self.releaseInFlight else { return }
+            fputs("[release] watchdog: 45 minutes — terminating\n", stderr)
+            self.releaseTimedOut = true
+            process?.terminate()
+        }
+        releaseWatchdog = watchdog
+        DispatchQueue.main.asyncAfter(deadline: .now() + 45 * 60, execute: watchdog)
+
+        do {
+            try process.run()
+            releaseProcess = process
+        } catch {
+            releaseInFlight = false
+            releaseWatchdog?.cancel()
+            releaseWatchdog = nil
+            fputs("[release] failed to launch release.sh: \(error)\n", stderr)
+            Earcon.error()
+            speech.announce("Could not start the release script.")
         }
     }
 
@@ -1371,6 +1538,12 @@ final class DaemonServer {
 
     /// Fetches origin/main off the main thread and reports what's new.
     private func checkForUpdates(origin: UpdateCheckOrigin) {
+        guard !releaseInFlight else {
+            // release.sh owns the repo right now — a concurrent pull or
+            // build would collide with it. Periodic ticks retry next cycle.
+            if origin != .periodic { speech.announce("A release is running.") }
+            return
+        }
         guard let dir = projectDir else {
             // No repo above the binary = installed from a release or via
             // Homebrew — git-based updates don't apply, but the latest
@@ -2527,6 +2700,10 @@ final class DaemonServer {
 
     /// (failures log only; success restarts without a word).
     private func performUpdate(silent: Bool = false) {
+        guard !releaseInFlight else {  // backstop for the armed/socket paths
+            if !silent { speech.announce("A release is running.") }
+            return
+        }
         updatesKnownAvailable = false
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             func failed() {

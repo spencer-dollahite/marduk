@@ -33,4 +33,27 @@ enum ReleaseCheck {
     static func parseLatestTag(_ json: String) -> String? {
         parseLatestRelease(json)?.tag
     }
+
+    /// The next PATCH version after a semver string — the only bump the
+    /// dd release gesture is allowed to make ("0.4.9" → "0.4.10"; minor
+    /// and major bumps are a human judgment and stay with the manual
+    /// release.sh). Accepts a leading "v" (tag input). Nil on anything
+    /// that isn't three dot-separated integers.
+    static func nextPatch(after version: String) -> String? {
+        let bare = version.hasPrefix("v") ? String(version.dropFirst()) : version
+        let parts = bare.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3,
+              let major = Int(parts[0]), major >= 0,
+              let minor = Int(parts[1]), minor >= 0,
+              let patch = Int(parts[2]), patch >= 0 else { return nil }
+        return "\(major).\(minor).\(patch + 1)"
+    }
+
+    /// release.sh narrates its stages as "==> Stage name" lines — the
+    /// speakable stage, or nil for ordinary tool output.
+    static func stageLine(_ line: String) -> String? {
+        guard line.hasPrefix("==> ") else { return nil }
+        let stage = line.dropFirst(4).trimmingCharacters(in: .whitespaces)
+        return stage.isEmpty ? nil : stage
+    }
 }

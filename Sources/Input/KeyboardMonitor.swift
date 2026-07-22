@@ -66,6 +66,14 @@ final class KeyboardMonitor {
     var onCommandHelp: (() -> Void)?    // "?" — speak options, even when none
     var onCommandIdle: (() -> Void)?    // typing pause — speak options if any
     var onUpdateCheck: (() -> Void)?    // single u — check + speak release notes
+    // dd — cut a patch release (source installs only). On release/Homebrew
+    // machines the gesture DOES NOT EXIST: releaseAvailable stays false,
+    // the burst branch never fires, and double-d words ("add", "buddy")
+    // keep their typing-rescue behavior — zero new surface for strangers
+    // (the Firefox-n precedent: a command letter only where it means
+    // something).
+    var onCutRelease: (() -> Void)?
+    var releaseAvailable = false
     private var commandIdleTimer: DispatchWorkItem?
     var typingEchoEnabled = false    // speak chars typed in INSERT
     var commandEchoEnabled = true    // speak chars typed after ":"
@@ -1878,6 +1886,25 @@ final class KeyboardMonitor {
                     // (the field incident) can never install anything.
                     fputs("[keyboard] uu → express update\n", stderr)
                     onUpdate?()
+                }
+                return .swallow
+            }
+
+            // dd: cut a patch release — same double-tap resolution as
+            // tt/uu, but ONLY on a source install (releaseAvailable);
+            // everywhere else d stays an ordinary letter and this branch
+            // is invisible. The daemon asks a spoken y/n before anything
+            // irreversible happens.
+            if releaseAvailable, keycode == 2,
+               burstBuffer.last?.getIntegerValueField(.keyboardEventKeycode) == 2 {
+                var events = takeBurst()
+                events.removeLast() // the first d of the pair — consumed by dd
+                for ev in events {
+                    if redispatch(ev) != nil { enqueueReplay(ev) }
+                }
+                DispatchQueue.main.async { [self] in
+                    fputs("[keyboard] dd → cut release\n", stderr)
+                    onCutRelease?()
                 }
                 return .swallow
             }

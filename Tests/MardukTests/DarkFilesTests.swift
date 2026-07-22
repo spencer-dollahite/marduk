@@ -65,8 +65,11 @@ final class DarkFilesTests: XCTestCase {
         for failure in [ReleaseUpdater.Failure.download, .mount,
                         .verification, .install] {
             XCTAssertFalse(failure.spoken.isEmpty)
-            XCTAssertTrue(failure.spoken.hasSuffix("."),
-                          "spoken lines are sentences")
+            // Spoken lines end in terminal punctuation so the synthesizer
+            // gives them a falling close rather than running on.
+            XCTAssertTrue(failure.spoken.hasSuffix(".")
+                            || failure.spoken.hasSuffix("?"),
+                          "'\(failure.spoken)' does not end a sentence")
         }
     }
 

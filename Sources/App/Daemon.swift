@@ -896,7 +896,19 @@ final class DaemonServer {
         AXValueGetValue(posVal as! AXValue, .cgPoint, &pos)
         AXValueGetValue(sizeVal as! AXValue, .cgSize, &size)
         let center = CGPoint(x: pos.x + size.width / 2, y: pos.y + size.height / 2)
+        // CGWarp moves the logical cursor but emits NO move event, so zoom
+        // (which pans on mouse-move) doesn't react until the next physical
+        // nudge (field: the view jumps only when the user jiggles the
+        // mouse). Post a synthetic move at the warped point to kick zoom
+        // NOW; zero the source's suppression so CGWarp's ~250ms HID
+        // suppression doesn't swallow it. Our event tap is keyboard-only,
+        // so it never sees this mouse event.
+        let source = CGEventSource(stateID: .hidSystemState)
+        source?.localEventsSuppressionInterval = 0
         CGWarpMouseCursorPosition(center)
+        CGEvent(mouseEventSource: source, mouseType: .mouseMoved,
+                mouseCursorPosition: center, mouseButton: .left)?
+            .post(tap: .cghidEventTap)
         fputs("[sentinel] focus: pointer warped to dialog center\n", stderr)
     }
 

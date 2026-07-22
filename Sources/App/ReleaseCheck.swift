@@ -68,6 +68,24 @@ enum ReleaseCheck {
         return (new.0, new.1, new.2) > (old.0, old.1, old.2)
     }
 
+    /// Newest tag from `git tag --list 'v*' --sort=v:refname` output.
+    /// Git has already ordered them, so the newest is the LAST non-empty
+    /// line — but the list can be empty (a repo with no releases yet) and
+    /// lines can carry whitespace, and this feeds `nextPatch`, whose
+    /// answer becomes a real git tag.
+    static func newestTag(fromTagList output: String) -> String? {
+        output.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .last { !$0.isEmpty }
+    }
+
+    /// The version `dd` would cut: newest tag → next patch. Nil when the
+    /// tag list yields nothing usable, which must ABORT the gesture rather
+    /// than guess a version.
+    static func nextVersion(fromTagList output: String) -> String? {
+        newestTag(fromTagList: output).flatMap { nextPatch(after: $0) }
+    }
+
     /// release.sh narrates its stages as "==> Stage name" lines — the
     /// speakable stage, or nil for ordinary tool output.
     static func stageLine(_ line: String) -> String? {

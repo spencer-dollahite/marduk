@@ -1496,26 +1496,27 @@ final class DaemonServer {
     private var releaseTimedOut = false
 
     private func handleReleaseKey() {
-        guard let dir = projectDir else {
+        switch ReleaseFlow.onCutReleaseKey(hasProjectDir: projectDir != nil,
+                                           inFlight: releaseInFlight,
+                                           stage: releaseLastStage) {
+        case .refuseNotSource:
             // Defense in depth — the keyboard gesture is already
             // source-gated, but the socket/tests could reach here
             Earcon.error()
             speech.announce("Releases can only be cut from a source install.")
             return
-        }
-        guard !releaseInFlight else {
-            // dd mid-release = the status poke: quiet by default, answers
-            // with the current stage when asked
-            speech.announce("Release in progress. \(releaseLastStage).")
+        case .statusPoke(let stage):
+            speech.announce("Release in progress. \(stage).")
             return
+        case .askToCut:
+            break
         }
+        guard let dir = projectDir else { return }
         DispatchQueue.global(qos: .utility).async { [self] in
             let tags = Self.shell("git", "tag", "--list", "v*",
                                   "--sort=v:refname", cwd: dir)
-            let newest = tags.output.split(separator: "\n").last
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            guard tags.status == 0, let newest,
-                  let next = ReleaseCheck.nextPatch(after: newest) else {
+            guard tags.status == 0,
+                  let next = ReleaseCheck.nextVersion(fromTagList: tags.output) else {
                 fputs("[release] no usable version tag (status \(tags.status))\n", stderr)
                 DispatchQueue.main.async { [self] in
                     Earcon.error()
@@ -1533,9 +1534,10 @@ final class DaemonServer {
                     keyboardMonitor?.extendQuestionWindow()
                 }
                 keyboardMonitor?.armQuestion(keys: ["y", "n"]) { [self] answer in
-                    if answer == "y" {
+                    switch ReleaseFlow.onAnswer(answer) {
+                    case .start:
                         startRelease(version: next, dir: dir)
-                    } else {
+                    case .decline:
                         speech.announce("Not releasing.")
                     }
                 }
@@ -1598,20 +1600,22 @@ final class DaemonServer {
                 self.releaseWatchdog = nil
                 self.releaseProcess = nil
                 self.releaseInFlight = false
-                if proc.terminationStatus == 0 {
+                let outcome = ReleaseFlow.outcome(status: proc.terminationStatus,
+                                                  timedOut: self.releaseTimedOut,
+                                                  version: version,
+                                                  stage: self.releaseLastStage)
+                switch outcome {
+                case .live:
                     fputs("[release] \(version) is live\n", stderr)
-                    self.speech.announce("Release \(version) is live.")
-                } else if self.releaseTimedOut {
+                case .timedOut(let stage):
+                    fputs("[release] timed out during \(stage)\n", stderr)
                     Earcon.error()
-                    self.speech.announce("Release timed out during "
-                        + "\(self.releaseLastStage). Check the log.")
-                } else {
+                case .failed(let stage):
                     fputs("[release] failed (status \(proc.terminationStatus)) "
-                        + "during \(self.releaseLastStage)\n", stderr)
+                        + "during \(stage)\n", stderr)
                     Earcon.error()
-                    self.speech.announce("Release failed during "
-                        + "\(self.releaseLastStage). Check the log.")
                 }
+                self.speech.announce(ReleaseFlow.spoken(outcome))
             }
         }
 

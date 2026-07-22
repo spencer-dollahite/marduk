@@ -1170,10 +1170,15 @@ final class KeyboardMonitor {
             // keyboard. Covers letters, shifted digits, punctuation,
             // Return, Tab, Delete. Non-typing keys — arrows, F-keys,
             // media, Naga button codes — pass through untouched.
+            // Space (49) belongs here too: the pause branch above requires
+            // an UNSHIFTED Space, so Shift+Space fell through this test and
+            // returned `pass` — typing a space into the user's document
+            // mid-read, which is exactly what this block exists to prevent.
             if Self.alphaKeyCodes.contains(keycode) || keycode == 40 // K
                 || Self.digitKeyCodes[keycode] != nil
                 || Self.typingPunctuationKeys.contains(keycode)
-                || keycode == 36 || keycode == 48 || keycode == 51 {
+                || keycode == 36 || keycode == 48 || keycode == 51
+                || keycode == 49 {
                 readMotionCount = 0
                 if !isAutorepeat {
                     DispatchQueue.main.async { Earcon.error() }
@@ -1488,8 +1493,14 @@ final class KeyboardMonitor {
 
         // === NORMAL mode ===
 
-        // Always pass through Cmd and Ctrl combos (system shortcuts like Cmd+C)
-        if hasCommand || hasControl {
+        // Always pass through Cmd, Ctrl, and Option combos (system and app
+        // shortcuts like Cmd+C — and the user's zoom keys, which ride on
+        // Option). Option was missing here while COMMAND mode passed it
+        // through deliberately for exactly that reason, so Option+r,
+        // Option+s and friends fired Marduk's bare command in NORMAL and
+        // never reached the app. Speed keys (Option+Up/Down) are handled
+        // earlier, so they still work.
+        if hasCommand || hasControl || hasOption {
             return pass
         }
 

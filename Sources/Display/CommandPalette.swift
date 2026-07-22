@@ -20,13 +20,18 @@ final class CommandPalette {
         var padding: CGFloat = 14
         var headerHeight: CGFloat = 26   // logo block + prompt line, in points
         var rowCount = 0
+        /// Index of the first VISIBLE candidate. The list scrolls once it
+        /// exceeds maxRows, and `onRowClick` is consumed as an index into
+        /// the FULL candidate list — so a click must be offset by this or
+        /// it selects a different command than the one under the cursor.
+        var firstRow = 0
         var onRowClick: ((Int) -> Void)?
 
         override func mouseDown(with event: NSEvent) {
             let point = convert(event.locationInWindow, from: nil)
             let fromTop = bounds.height - padding - point.y
             let row = Int(floor((fromTop - headerHeight) / lineHeight))
-            if row >= 0 && row < rowCount { onRowClick?(row) }
+            if row >= 0 && row < rowCount { onRowClick?(firstRow + row) }
         }
     }
 
@@ -83,6 +88,23 @@ final class CommandPalette {
         "╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝  ╚═════╝ ╚═╝  ╚═╝",
     ]
 
+    /// Which slice of the candidate list is on screen, given the selection.
+    ///
+    /// Pure so the renderer and the click-row mapping can be proven to agree
+    /// — they must, or a click lands on a different command than the one the
+    /// user sees highlighted. Keeps the selection inside the window by
+    /// scrolling the minimum distance, like a terminal pager.
+    static func visibleWindow(selected: Int, count: Int, maxRows: Int) -> Range<Int> {
+        guard count > 0, maxRows > 0 else { return 0..<0 }
+        guard count > maxRows else { return 0..<count }
+        let selected = max(0, min(selected, count - 1))
+        // Scroll only far enough to bring the selection back into view.
+        var first = min(selected, count - maxRows)
+        if selected >= first + maxRows { first = selected - maxRows + 1 }
+        first = max(0, min(first, count - maxRows))
+        return first..<(first + maxRows)
+    }
+
     func update(buffer: String, candidates: [CommandCompleter.Candidate], selected: Int) {
         DispatchQueue.main.async { [self] in
             let visible = min(candidates.count, maxRows)
@@ -94,7 +116,10 @@ final class CommandPalette {
             let rowLines = visible + (overflow > 0 ? 1 : 0)
             let contentHeight = headerHeight + CGFloat(rowLines) * lineHeight
             layoutAndShow(text: text, contentHeight: contentHeight,
-                          headerHeight: headerHeight, rowCount: visible)
+                          headerHeight: headerHeight, rowCount: visible,
+                          firstRow: Self.visibleWindow(selected: selected,
+                                                       count: candidates.count,
+                                                       maxRows: maxRows).lowerBound)
             // Real prompt text + caret-at-end. setSelectedRange on a focused
             // view fires the AX caret notification zoom follows.
             if let prompt = promptView {
@@ -155,7 +180,15 @@ final class CommandPalette {
             string: "\n",
             attributes: [.font: font, .paragraphStyle: promptStyle]))
 
-        for (index, candidate) in candidates.prefix(maxRows).enumerated() {
+        // SCROLL the visible slice to follow the selection. Previously this
+        // rendered a fixed `prefix(maxRows)` while the daemon wrapped the
+        // selection modulo the FULL candidate count, so arrowing past row 15
+        // — routine in the voice picker — highlighted nothing on screen
+        // while the selection kept moving invisibly behind "… and N more".
+        let window = Self.visibleWindow(selected: selected, count: candidates.count,
+                                        maxRows: maxRows)
+        for (offset, candidate) in candidates[window].enumerated() {
+            let index = window.lowerBound + offset
             var attributes: [NSAttributedString.Key: Any] = [.font: font,
                                                              .paragraphStyle: rowStyle]
             if candidate.completion == nil {
@@ -181,7 +214,8 @@ final class CommandPalette {
     }
 
     private func layoutAndShow(text: NSAttributedString, contentHeight: CGFloat,
-                               headerHeight: CGFloat, rowCount: Int) {
+                               headerHeight: CGFloat, rowCount: Int,
+                               firstRow: Int) {
         let (panel, field) = ensurePanel()
         field.attributedStringValue = text
         let height = padding * 2 + contentHeight
@@ -216,6 +250,7 @@ final class CommandPalette {
         paletteView?.padding = padding
         paletteView?.headerHeight = headerHeight
         paletteView?.rowCount = rowCount   // excludes any "… and N more" row
+        paletteView?.firstRow = firstRow   // the list scrolls; clicks offset by it
         // Overlay the real prompt view on its spacer line
         promptView?.frame = NSRect(x: padding, y: height - padding - headerHeight,
                                    width: width - padding * 2, height: lineHeight)

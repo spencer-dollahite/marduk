@@ -369,6 +369,16 @@ final class DaemonServer {
                 + "matching your dark system theme. This happens "
                 + "automatically. Say colon config p d f dark off to stop.")
         }
+        // A denied Automation grant makes every inversion a silent no-op —
+        // say so and put the user in the right pane (field 2026-07-22:
+        // discovered as "the screen stayed bright"; the hint had only
+        // been logged)
+        displayInverter?.onAutomationDenied = { [self] in
+            speech.announce("Marduk lost permission to control System Events, "
+                + "so display inversion can't work. Opening Automation "
+                + "settings — find Marduk and turn System Events back on.")
+            openURL("x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
+        }
 
         // Visual follow: the app's view tracks the read. Page jumps drive
         // the viewer's go-to-page gesture (Preview); web reads scroll the

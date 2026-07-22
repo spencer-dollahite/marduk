@@ -47,6 +47,11 @@ final class DisplayInverter: @unchecked Sendable {
     /// Fired (main queue) the first time a dark-appearance press succeeds
     /// this run — the Daemon speaks the one-time onboarding explanation.
     var onDarkApplied: (() -> Void)?
+    /// Fired (main queue, once per session) when System Events refuses
+    /// our Apple events (-1743): the Automation grant is denied and
+    /// inversion silently can't work — the Daemon speaks it and opens
+    /// the Automation pane.
+    var onAutomationDenied: (() -> Void)?
     /// auto (default) follows the system appearance: dark theme → dark
     /// PDFs, light theme → untouched. on/off are explicit overrides.
     var pdfDarkStyle: PDFDarkStyle = .auto
@@ -547,7 +552,7 @@ final class DisplayInverter: @unchecked Sendable {
         // one even when the script completes (field: keys arriving
         // pre-chorded, Cmd+Q dead, apps seemingly frozen). The watchdog
         // cleanup below stays for the killed-mid-gesture case.
-        scriptQueue.async {
+        scriptQueue.async { [weak self] in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
             process.arguments = ["-e", "tell application \"System Events\"",
@@ -555,6 +560,13 @@ final class DisplayInverter: @unchecked Sendable {
                                  "-e", "key up shift", "-e", "key up command",
                                  "-e", "key up option", "-e", "key up control",
                                  "-e", "end tell"]
+            // Capture stderr: a DENIED Automation grant surfaces here as
+            // -1743, and it must be SPOKEN, not just logged — the field
+            // discovery mode was "the screen stayed bright" (2026-07-22;
+            // TCC dropped the grant after the release re-sign + update
+            // swap churned the bundle signature twice in one session)
+            let errPipe = Pipe()
+            process.standardError = errPipe
             guard (try? process.run()) != nil else {
                 fputs("[display] osascript launch failed\n", stderr)
                 return
@@ -571,7 +583,26 @@ final class DisplayInverter: @unchecked Sendable {
                     + "modifiers\n", stderr)
                 Self.releaseStuckModifiers()
             }
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            if let err = String(data: errData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !err.isEmpty {
+                fputs("[display] invert osascript: \(err)\n", stderr)
+                if err.contains("-1743") || err.contains("Not authorized") {
+                    DispatchQueue.main.async { self?.reportAutomationDenied() }
+                }
+            }
         }
+    }
+
+    /// The Automation grant (Marduk → System Events) is DENIED — every
+    /// inversion is a silent no-op until the user re-allows it. Speak it
+    /// once per session and let the daemon open the right Settings pane;
+    /// a lost permission must introduce itself (the pdfdark principle).
+    private var automationDeniedReported = false
+    private func reportAutomationDenied() {
+        guard !automationDeniedReported else { return }
+        automationDeniedReported = true
+        onAutomationDenied?()
     }
 
     /// A killed keystroke script can leave shift/command logically held —

@@ -52,16 +52,7 @@ enum LaunchAgent {
         // (marduk stop) stays stopped until next login or kickstart.
         // AbandonProcessGroup: a future migration helper must not be
         // SIGKILLed with the daemon's process group when the job exits.
-        let plist: [String: Any] = [
-            "Label": label,
-            "ProgramArguments": [binaryPath, "start", "--foreground"],
-            "RunAtLoad": true,
-            "KeepAlive": ["SuccessfulExit": false],
-            "StandardOutPath": logPath,
-            "StandardErrorPath": logPath,
-            "ProcessType": "Interactive",
-            "AbandonProcessGroup": true,
-        ]
+        let plist = plistDictionary(binaryPath: binaryPath)
         do {
             let data = try PropertyListSerialization.data(
                 fromPropertyList: plist, format: .xml, options: 0)
@@ -93,11 +84,10 @@ enum LaunchAgent {
     /// The program path the installed plist currently points at — the
     /// migration detector (bare binary vs bundle executable).
     static func installedProgramPath() -> String? {
-        guard let data = FileManager.default.contents(atPath: plistPath),
-              let plist = try? PropertyListSerialization.propertyList(
-                  from: data, format: nil) as? [String: Any],
-              let args = plist["ProgramArguments"] as? [String] else { return nil }
-        return args.first
+        guard let data = FileManager.default.contents(atPath: plistPath) else {
+            return nil
+        }
+        return programPath(fromPlistData: data)
     }
 
     /// Migration helper: rebootstraps the service from OUTSIDE the daemon.
@@ -169,14 +159,47 @@ enum LaunchAgent {
     static func state() -> String? {
         let result = launchctl("print", serviceTarget)
         guard result.status == 0 else { return nil }
-        // launchctl print repeats "state =" for sub-components — keep only
-        // the first state and pid lines.
-        let lines = result.output
+        return summarize(printOutput: result.output)
+    }
+
+    /// The one line `marduk status` prints for the agent. Pure, because a
+    /// parse regression here reads as "everything is fine" while the
+    /// daemon is dead — the output is indented, repeats `state =` for
+    /// sub-components, and may carry no pid at all when merely loaded.
+    static func summarize(printOutput output: String) -> String {
+        let lines = output
             .split(separator: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
         let parts = [lines.first { $0.hasPrefix("state = ") },
                      lines.first { $0.hasPrefix("pid = ") }].compactMap { $0 }
         return parts.isEmpty ? "loaded" : parts.joined(separator: ", ")
+    }
+
+    /// The launchd job description. Every key here is load-bearing: drop
+    /// `--foreground` and the agent spawns a process that exits instantly,
+    /// forever; drop `KeepAlive` and a crash never relaunches; drop
+    /// `AbandonProcessGroup` and the migration helper is SIGKILLed with
+    /// the daemon it is trying to replace.
+    static func plistDictionary(binaryPath: String) -> [String: Any] {
+        [
+            "Label": label,
+            "ProgramArguments": [binaryPath, "start", "--foreground"],
+            "RunAtLoad": true,
+            "KeepAlive": ["SuccessfulExit": false],
+            "StandardOutPath": logPath,
+            "StandardErrorPath": logPath,
+            "ProcessType": "Interactive",
+            "AbandonProcessGroup": true,
+        ]
+    }
+
+    /// The migration detector's parse half — a wrong nil sends the daemon
+    /// down the detached-relaunch path unnecessarily.
+    static func programPath(fromPlistData data: Data) -> String? {
+        guard let plist = try? PropertyListSerialization.propertyList(
+                  from: data, format: nil) as? [String: Any],
+              let args = plist["ProgramArguments"] as? [String] else { return nil }
+        return args.first
     }
 
     /// Start the log fresh — called on every successful update, right

@@ -33,6 +33,34 @@ enum ReleaseUpdater {
     static let requirement = "=identifier \"com.marduk.daemon\" and anchor apple generic "
         + "and certificate leaf[subject.OU] = X56UYJ5NDJ"
 
+    /// The asset URL for a tag. VERSIONED, never the floating `latest`
+    /// link — the swap must install exactly the tag that was checked and
+    /// announced, and `latest` could move between the two.
+    ///
+    /// Pure and separate so it can be pinned: this is the one input an
+    /// attacker-influenced release feed controls, and a tag carrying `..`
+    /// or `/` must not be able to walk the path somewhere else.
+    static func assetURL(tag: String) -> String? {
+        // A release tag is three integers; anything else is refused rather
+        // than interpolated. Also rejects a `v` prefix arriving twice,
+        // which would silently 404.
+        guard ReleaseCheck.components(tag) != nil, !tag.hasPrefix("v") else {
+            return nil
+        }
+        return "https://github.com/\(repoSlug)/releases/download/v\(tag)/Marduk.dmg"
+    }
+
+    /// The three gates the STAGED copy must pass before anything is
+    /// swapped. A table so a test can assert none of them silently
+    /// disappears in a refactor — nothing else in the repo would notice.
+    static func verificationGates(staging: String) -> [[String]] {
+        [
+            ["/usr/bin/codesign", "--verify", "--strict", "--deep", staging],
+            ["/usr/bin/codesign", "--verify", "-R=" + requirement, staging],
+            ["/usr/sbin/spctl", "--assess", "--type", "execute", staging],
+        ]
+    }
+
     /// Full pipeline: download v<tag>'s DMG → mount → stage → verify →
     /// atomic swap at `liveBundlePath` (the Bundler aside-then-in idiom;
     /// a running daemon keeps its inode). Returns the installed bundle's
@@ -53,7 +81,10 @@ enum ReleaseUpdater {
 
         // Versioned asset URL, never the floating latest link — the swap
         // must install exactly the tag that was checked and announced.
-        let url = "https://github.com/\(repoSlug)/releases/download/v\(tag)/Marduk.dmg"
+        guard let url = assetURL(tag: tag) else {
+            fputs("[update] refusing to build an asset URL for tag \(tag)\n", stderr)
+            return .failure(.download)
+        }
         fputs("[update] Downloading \(url)\n", stderr)
         let dl = run("/usr/bin/curl", "-fsSL", "-m", "300", "-o", dmg, url)
         guard dl.status == 0, fm.fileExists(atPath: dmg) else {
@@ -81,11 +112,7 @@ enum ReleaseUpdater {
         }
 
         // Verify the STAGED copy — all three gates, before any swap
-        for gate in [
-            ["/usr/bin/codesign", "--verify", "--strict", "--deep", staging],
-            ["/usr/bin/codesign", "--verify", "-R=" + requirement, staging],
-            ["/usr/sbin/spctl", "--assess", "--type", "execute", staging],
-        ] {
+        for gate in verificationGates(staging: staging) {
             let check = run(gate)
             guard check.status == 0 else {
                 fputs("[update] VERIFICATION FAILED (\(gate[0]) \(gate[1])): "

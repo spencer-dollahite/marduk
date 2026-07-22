@@ -91,9 +91,18 @@ enum Codesign {
     private static func findIdentity() -> String? {
         let result = run("/usr/bin/security", "find-identity", "-v", "-p", "codesigning")
         guard result.status == 0 else { return nil }
+        return firstIdentity(inSecurityOutput: result.output)
+    }
 
+    /// Pick the best signing identity out of `security find-identity`
+    /// output. Pure, because the PREFERENCE ORDER is load-bearing and
+    /// invisible: only a Developer ID Application certificate can produce
+    /// a build that satisfies `ReleaseUpdater.requirement`, so picking an
+    /// Apple Development identity when a Developer ID exists silently
+    /// makes releases unverifiable.
+    static func firstIdentity(inSecurityOutput output: String) -> String? {
         // Lines look like:   1) ABCD1234... "Apple Development: Your Name (TEAMID)"
-        let names = result.output.split(separator: "\n").compactMap { line -> String? in
+        let names = output.split(separator: "\n").compactMap { line -> String? in
             guard let start = line.firstIndex(of: "\""),
                   let end = line.lastIndex(of: "\""), start < end else { return nil }
             return String(line[line.index(after: start)..<end])

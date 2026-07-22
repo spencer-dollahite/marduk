@@ -229,7 +229,11 @@ final class ModeOverlay {
     }
 
     /// "#RRGGBB" → NSColor; "" or "none" → nil (mode shows nothing).
-    private static func parseColor(_ raw: String) -> NSColor? {
+    /// `#RRGGBB` → a color; `""` or `"none"` → nil, meaning that mode
+    /// shows NOTHING. Internal so a test can pin it: a parse regression
+    /// makes a mode invisible, and telling NORMAL from INSERT at a glance
+    /// is the overlay's entire job.
+    static func parseColor(_ raw: String) -> NSColor? {
         var hex = raw.trimmingCharacters(in: .whitespaces).lowercased()
         if hex.isEmpty || hex == "none" { return nil }
         if hex.hasPrefix("#") { hex.removeFirst() }

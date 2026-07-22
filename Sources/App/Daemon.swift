@@ -1318,6 +1318,15 @@ final class DaemonServer {
 
     private enum UpdateCheckOrigin { case manual, periodic, express }
 
+    /// How much an update run SAYS. `.full` = the announced u-flow;
+    /// `.errorsOnly` = uu (user-final: zero success chatter — the
+    /// restart blip IS the feedback for a gesture the user just typed —
+    /// while failures, the up-to-date guard, and the one-time migration
+    /// notice still speak); `.silent` = the periodic auto path (courtesy
+    /// two-word "Updating." before the blip — an assistive layer must
+    /// never vanish unannounced when the user did NOT ask for it).
+    private enum UpdateVoice { case full, errorsOnly, silent }
+
     /// Single `u`: install if a check is armed, else check + speak notes.
     private func handleUpdateKey() {
         if let until = updateArmedUntil, Date() < until {
@@ -1329,17 +1338,18 @@ final class DaemonServer {
         checkForUpdates(origin: .manual)
     }
 
-    /// Fast `uu`: JUST INSTALL (user-final semantics — twice insisted).
-    /// Never reads the notes: already-known updates install immediately;
-    /// otherwise a quiet check runs and installs whatever it finds,
-    /// announcing only the count. An up-to-date system says so and does
+    /// Fast `uu`: JUST INSTALL, SAYING NOTHING (user-final semantics —
+    /// twice insisted on the gesture, then a third ruling silenced it
+    /// completely). Never reads the notes, never counts, never announces
+    /// the restart — the restart blip is the feedback. Failures still
+    /// speak (a wordless wait for a restart that never comes would read
+    /// as a wedge), and an up-to-date system still says so and does
     /// nothing — the only typo protection that survives, by user choice.
     private func handleFastUpdateKey() {
         let armed = updateArmedUntil.map { Date() < $0 } ?? false
         if armed || updatesKnownAvailable {
             updateArmedUntil = nil
-            speech.announce("Update initiated")
-            performUpdate()
+            performUpdate(voice: .errorsOnly)
         } else {
             checkForUpdates(origin: .express)
         }
@@ -1431,8 +1441,7 @@ final class DaemonServer {
                     if origin != .periodic { speech.announce("Marduk is up to date.") }
                 } else if origin == .express {
                     updatesKnownAvailable = true
-                    speech.announce("Installing Marduk \(release.tag).")
-                    performReleaseUpdate(silent: false)
+                    performReleaseUpdate(voice: .errorsOnly)  // uu: wordless
                 } else if origin == .manual {
                     updatesKnownAvailable = true
                     updateArmedUntil = Date(timeIntervalSinceNow: 60)
@@ -1452,7 +1461,7 @@ final class DaemonServer {
                     } else {
                         fputs("[update] auto-installing release \(release.tag)\n", stderr)
                         DispatchQueue.global(qos: .userInitiated).async { [self] in
-                            performReleaseUpdate(silent: true)
+                            performReleaseUpdate(voice: .silent)
                         }
                     }
                 } else if lastAnnouncedRelease != release.tag {
@@ -1507,10 +1516,7 @@ final class DaemonServer {
         fputs("[update] \(subjects.count) update(s) available, checks: \(checks)\n", stderr)
         switch origin {
         case .express:
-            speech.announce(subjects.count == 1
-                ? "Installing one update."
-                : "Installing \(subjects.count) updates.")
-            performUpdate()
+            performUpdate(voice: .errorsOnly)  // uu: wordless install
         case .manual:
             // Release notes = commit subjects since the running build.
             // Arm BEFORE speaking so a quick second u installs immediately.
@@ -1553,7 +1559,7 @@ final class DaemonServer {
                     }
                 } else {
                     fputs("[update] auto-installing silently\n", stderr)
-                    performUpdate(silent: true)
+                    performUpdate(voice: .silent)
                 }
             } else if lastAnnouncedRemote != remote {
                 // Announce each new remote head exactly once — no nagging
@@ -2418,7 +2424,7 @@ final class DaemonServer {
     /// keeps the bundle path, so the exit-75 relaunch applies unchanged.
     /// A verification failure is a SECURITY event — it's announced even
     /// on the silent path, once per tag (a retrying timer must not nag).
-    private func performReleaseUpdate(silent: Bool) {
+    private func performReleaseUpdate(voice: UpdateVoice) {
         func failed(_ spoken: String) {
             DispatchQueue.main.async { [self] in
                 Earcon.error()
@@ -2432,11 +2438,11 @@ final class DaemonServer {
                                 cwd: "/tmp")
         guard result.status == 0,
               let release = ReleaseCheck.parseLatestRelease(result.output) else {
-            if !silent { failed("Update check failed. Is the network up?") }
+            if voice != .silent { failed("Update check failed. Is the network up?") }
             return
         }
         guard release.tag != Marduk.version else {
-            if !silent {
+            if voice != .silent {
                 DispatchQueue.main.async { [self] in
                     speech.announce("Marduk is up to date.")
                 }
@@ -2446,7 +2452,7 @@ final class DaemonServer {
         guard let exec = LaunchAgent.resolvedBinaryPath(),
               let range = exec.range(of: "/Contents/MacOS/") else {
             // Bare binary without a repo — nothing we can safely swap
-            if !silent {
+            if voice != .silent {
                 failed("This copy of Marduk was installed from a release. "
                     + releaseUpdateHint)
             }
@@ -2464,25 +2470,25 @@ final class DaemonServer {
                     failed(failure.spoken)
                 }
             case .install:
-                if !silent { failed(failure.spoken + " " + releaseUpdateHint) }
+                if voice != .silent { failed(failure.spoken + " " + releaseUpdateHint) }
             case .download, .mount:
-                if !silent { failed(failure.spoken) }
+                if voice != .silent { failed(failure.spoken) }
             }
         case .success(let newExec):
-            finishReleaseUpdate(newExec: newExec, tag: release.tag, silent: silent)
+            finishReleaseUpdate(newExec: newExec, tag: release.tag, voice: voice)
         }
     }
 
-    /// Announce (unless silent), then restart into the swapped bundle —
+    /// Announce (per voice), then restart into the swapped bundle —
     /// the same completion-or-12s-failsafe shape as the source channel's
     /// restart, minus migration (the bundle path never changed).
-    private func finishReleaseUpdate(newExec: String, tag: String, silent: Bool) {
+    private func finishReleaseUpdate(newExec: String, tag: String, voice: UpdateVoice) {
         let installed = LaunchAgent.isInstalled
         let restart = { [self] in
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.5) { [self] in
                 LaunchAgent.truncateLog(breadcrumb:
                     "log reset — restarting after release update to \(tag)"
-                    + (silent ? " (silent auto-update)" : ""))
+                    + (voice == .silent ? " (silent auto-update)" : ""))
                 if installed {
                     DispatchQueue.main.async { [self] in
                         pendingExitCode = 75  // launchd relaunches the new bytes
@@ -2510,29 +2516,31 @@ final class DaemonServer {
                 }
                 restartOnce()
             }
-            if silent {
+            switch voice {
+            case .silent:
                 // Tiny courtesy, user-requested: the restart blips speech
                 // out for a moment, and for an assistive layer an
                 // unannounced gap reads as a failure. Two words, then go.
                 speech.announce("Updating.") { restartOnce() }
-            } else {
+            case .errorsOnly:
+                restartOnce()  // uu: the user asked; the blip IS the answer
+            case .full:
                 speech.announce("Marduk \(tag) installed. Restarting.") { restartOnce() }
             }
         }
     }
 
-    /// (failures log only; success restarts without a word).
-    private func performUpdate(silent: Bool = false) {
+    private func performUpdate(voice: UpdateVoice = .full) {
         updatesKnownAvailable = false
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             func failed() {
-                guard !silent else { return }
+                guard voice != .silent else { return }
                 DispatchQueue.main.async { [self] in speech.announce("Update failed") }
             }
 
             guard let dir = projectDir else {
                 fputs("[update] No project directory — release self-update\n", stderr)
-                performReleaseUpdate(silent: silent)
+                performReleaseUpdate(voice: voice)
                 return
             }
 
@@ -2591,7 +2599,7 @@ final class DaemonServer {
                     // so update-failure diagnostics survive)
                     LaunchAgent.truncateLog(breadcrumb:
                         "log reset — restarting after source update"
-                        + (silent ? " (silent auto-update)" : ""))
+                        + (voice == .silent ? " (silent auto-update)" : ""))
                     if migration {
                         if LaunchAgent.writePlist(binaryPath: bundleExec) {
                             LaunchAgent.relaunchDetached()
@@ -2620,15 +2628,17 @@ final class DaemonServer {
                 }
             }
 
-            // Announce success (unless silent), wait for speech + unduck to
+            // Announce success (per voice), wait for speech + unduck to
             // finish, then restart. The completion is tied to this specific
             // utterance and fires on finish or cancel, so the restart can't
             // be lost to a stale didCancel or an Escape mid-announcement.
-            // A migration is a one-time structural event — it speaks even
-            // on the silent periodic path. FAILSAFE: a wedged speech engine
-            // (whose completions never fire) once stranded fully-built
-            // updates — the restart also fires on a 12s timer, whichever
-            // comes first.
+            // A migration is a one-time structural event — it speaks on
+            // EVERY voice, uu included (it carries the re-grant
+            // instruction; losing the keyboard wordlessly is worse than a
+            // sentence the user didn't order). FAILSAFE: a wedged speech
+            // engine (whose completions never fire) once stranded
+            // fully-built updates — the restart also fires on a 12s
+            // timer, whichever comes first.
             DispatchQueue.main.async { [self] in
                 var restarted = false
                 let restartOnce = {
@@ -2646,10 +2656,15 @@ final class DaemonServer {
                     speech.announce("Update complete. Marduk is now an app "
                         + "bundle. If keyboard commands stop, grant "
                         + "Accessibility to Marduk again.") { restartOnce() }
-                } else if silent {
+                    return
+                }
+                switch voice {
+                case .silent:
                     // Tiny courtesy, user-requested: never blip out unannounced
                     speech.announce("Updating.") { restartOnce() }
-                } else {
+                case .errorsOnly:
+                    restartOnce()  // uu: the user asked; the blip IS the answer
+                case .full:
                     speech.announce("Update complete. Restarting.") { restartOnce() }
                 }
             }

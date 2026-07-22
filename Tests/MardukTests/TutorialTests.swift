@@ -55,8 +55,11 @@ final class TutorialTests: XCTestCase {
     /// updating that line makes the tour lie to a first-time user.
     func testTheTourHasExactlyTheElevenLessonsItPromises() {
         completeEveryLesson()
-        // start() speaks intro+lesson1, then one line per completed lesson
-        XCTAssertEqual(spoken.count, 11,
+        // start() speaks intro + lesson 1; each completed lesson then speaks
+        // its success line plus the next instruction. So 1 + 11 lines means
+        // exactly eleven lessons ran.
+        let promisedLessons = 11
+        XCTAssertEqual(spoken.count, promisedLessons + 1,
                        "lesson count drifted from the eleven the intro promises")
         XCTAssertTrue(spoken.first?.contains("Eleven short lessons") == true)
         XCTAssertTrue(spoken.last?.contains("Tutorial complete") == true)

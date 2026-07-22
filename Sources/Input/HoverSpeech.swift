@@ -9,19 +9,30 @@ import ApplicationServices
 /// complaint). No Settings shortcut setup, no media pausing — labels
 /// are short and ride the echo channel, never disturbing a read.
 ///
-/// Dwell model: pointer movement arms a short timer; when the pointer
-/// settles, the element under it is fetched (AX element-at-position)
-/// and its NAME is spoken — title, else description, else value —
-/// minimal verbosity by design ("Submit", not "Submit, button, in
-/// toolbar"). Same element or same label repeats stay silent. Marduk's
-/// own windows are skipped. Main-thread-only.
+/// Dwell model: the pointer is POLLED (NSEvent.mouseLocation, ~8Hz,
+/// only while active); when it settles somewhere new, the element under
+/// it is fetched (AX element-at-position) and its NAME is spoken —
+/// title, else description, else value — minimal verbosity by design
+/// ("Submit", not "Submit, button, in toolbar"). Same element or same
+/// label repeats stay silent. Marduk's own windows are skipped.
+/// Main-thread-only.
+///
+/// Polling, not events, ON PURPOSE (field 2026-07-22): the original
+/// NSEvent global mouse-move monitor INSTALLED cleanly and then
+/// delivered ZERO events to the background daemon — hover spoke once at
+/// toggle time and went deaf to movement. Reading the pointer position
+/// is permission-free and has no delivery path to break; a dwell
+/// feature only needs "has the pointer settled somewhere new". Do not
+/// switch back to NSEvent monitors or add a second event tap for this.
 final class HoverSpeech {
     var speak: ((String) -> Void)?      // → SpeechEngine.hover (echo channel)
     var announce: ((String) -> Void)?   // toggle feedback
     private(set) var active = false
 
-    private var mouseMonitor: Any?
-    private var dwellTimer: DispatchWorkItem?
+    private var pollTimer: Timer?
+    private var lastPoint = NSPoint(x: -1, y: -1)
+    private var settledSince = Date()
+    private var spokenAtRest = true
     private var lastLabel = ""
     private var lastElement: AXUIElement?
 
@@ -50,45 +61,54 @@ final class HoverSpeech {
         movedEvents = 0; dwellFires = 0; axFailures = 0
         skipOwnWindow = 0; skipSameElement = 0; skipNoLabel = 0
         skipSameLabel = 0; spokeCount = 0
-        mouseMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged]
-        ) { [weak self] _ in
-            self?.pointerMoved()
+        lastPoint = NSEvent.mouseLocation
+        settledSince = Date()
+        spokenAtRest = true  // the immediate speak below covers this rest
+        let timer = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in
+            self?.poll()
         }
-        // A nil monitor is a MISSING PERMISSION (NSEvent global monitors
-        // return nil ungranted) — the exact "speaks once at toggle, then
-        // dead to movement" failure: the immediate speak below still
-        // works, movement never arrives.
-        fputs(mouseMonitor == nil
-            ? "[keyboard] hover: mouse monitor FAILED — permission missing?\n"
-            : "[keyboard] hover: mouse monitor installed\n", stderr)
+        RunLoop.main.add(timer, forMode: .common)
+        pollTimer = timer
+        fputs("[keyboard] hover: pointer polling started\n", stderr)
         speakUnderPointer() // whatever it's already on speaks immediately
     }
 
     /// Public: teardown and Ctrl+Option+M disable also land here.
     func deactivate() {
         active = false
-        if let monitor = mouseMonitor { NSEvent.removeMonitor(monitor) }
-        mouseMonitor = nil
-        dwellTimer?.cancel()
+        pollTimer?.invalidate()
+        pollTimer = nil
         lastElement = nil
         lastLabel = ""
-        fputs("[keyboard] hover session: \(movedEvents) moves, "
+        fputs("[keyboard] hover session: \(movedEvents) movements, "
             + "\(dwellFires) dwells, \(spokeCount) spoken, "
             + "\(skipSameElement) same-element, \(skipSameLabel) same-label, "
             + "\(skipNoLabel) unlabeled, \(axFailures) AX failures, "
             + "\(skipOwnWindow) own-window\n", stderr)
     }
 
-    private func pointerMoved() {
-        movedEvents += 1
-        if movedEvents == 1 {
-            fputs("[keyboard] hover: first move event arrived\n", stderr)
+    /// One poll tick: movement resets the dwell clock; a pointer that
+    /// has settled somewhere new for ~0.3s speaks once. Slow deliberate
+    /// gliding (under the movement threshold) counts as settled — a
+    /// low-vision user creeping across a toolbar WANTS the names.
+    private func poll() {
+        guard active else { return }
+        let p = NSEvent.mouseLocation
+        if abs(p.x - lastPoint.x) > 3 || abs(p.y - lastPoint.y) > 3 {
+            movedEvents += 1
+            if movedEvents == 1 {
+                fputs("[keyboard] hover: first movement detected\n", stderr)
+            }
+            lastPoint = p
+            settledSince = Date()
+            spokenAtRest = false
+            return
         }
-        dwellTimer?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.speakUnderPointer() }
-        dwellTimer = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+        lastPoint = p
+        if !spokenAtRest, Date().timeIntervalSince(settledSince) >= 0.3 {
+            spokenAtRest = true
+            speakUnderPointer()
+        }
     }
 
     private func speakUnderPointer() {

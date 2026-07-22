@@ -857,9 +857,8 @@ final class DaemonServer {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.5)
         // App frontmost first (a bare .activate() doesn't always take on a
-        // system agent), then make the dialog the main + FOCUSED window so
-        // follow-keyboard-focus zoom pans to it — the step a raise alone
-        // skips. Raise last to settle z-order.
+        // system agent), then make the dialog the main + FOCUSED window and
+        // raise it. Raise last to settle z-order.
         let front = AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString,
                                                  kCFBooleanTrue)
         let main = AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString,
@@ -870,6 +869,35 @@ final class DaemonServer {
         NSRunningApplication(processIdentifier: pid)?.activate()
         fputs("[sentinel] focus: frontmost=\(ok(front)) main=\(ok(main)) "
             + "focused=\(ok(focused)) raise=\(ok(raise))\n", stderr)
+        warpPointerToDialog(window)
+    }
+
+    /// Pan a zoomed viewport to the dialog by moving the POINTER onto it.
+    /// Zoom reliably tracks the pointer (Marduk's zoom-proof lesson —
+    /// follow-keyboard-focus ignores our programmatic focus: field showed
+    /// focused=ok with no pan), and landing the cursor on the dialog also
+    /// puts it where the user must click. Warps to the window CENTER (the
+    /// message area, not a button — a stray click there does nothing).
+    private func warpPointerToDialog(_ window: AXUIElement) {
+        var posRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString,
+                                            &posRef) == .success,
+              AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString,
+                                            &sizeRef) == .success,
+              let posVal = posRef, let sizeVal = sizeRef,
+              CFGetTypeID(posVal) == AXValueGetTypeID(),
+              CFGetTypeID(sizeVal) == AXValueGetTypeID() else {
+            fputs("[sentinel] focus: no window frame for pointer warp\n", stderr)
+            return
+        }
+        var pos = CGPoint.zero
+        var size = CGSize.zero
+        AXValueGetValue(posVal as! AXValue, .cgPoint, &pos)
+        AXValueGetValue(sizeVal as! AXValue, .cgSize, &size)
+        let center = CGPoint(x: pos.x + size.width / 2, y: pos.y + size.height / 2)
+        CGWarpMouseCursorPosition(center)
+        fputs("[sentinel] focus: pointer warped to dialog center\n", stderr)
     }
 
     // MARK: - Client Handling

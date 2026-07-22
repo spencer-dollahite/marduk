@@ -172,6 +172,15 @@ final class AudioDucker {
         unduck()  // same serial queue: ordered after the flag clears
     }
 
+    /// Teardown variant: quitting mid-narration-handoff would otherwise
+    /// strand the user's music paused — the async release queued at exit
+    /// dies with the process before the resume fires. The restore runs
+    /// inside the queued block, so an empty sync barrier waits it out.
+    func releaseHoldAndUnduckSync() {
+        releaseHoldAndUnduck()
+        queue.sync {}
+    }
+
     func unduck() {
         queue.async { [self] in
             log("unduck() called, duckedTargets=\(duckedTargets.map { $0.displayName })")

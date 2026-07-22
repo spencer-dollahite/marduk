@@ -2901,6 +2901,10 @@ final class DaemonServer {
         displayInverter?.stop()
         keyboardMonitor?.stop()
         speech.stop()
+        // A Firefox narration handoff pins the duck (holdActive) and is only
+        // released by keyboard gestures — quitting mid-handoff would strand
+        // the user's music paused forever. Idempotent when nothing is held.
+        ducker.releaseHoldAndUnduckSync()
         close(serverFD)
         unlink(MardukDaemon.socketPath)
         unlink(MardukDaemon.pidPath)

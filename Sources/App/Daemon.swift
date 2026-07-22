@@ -760,8 +760,8 @@ final class DaemonServer {
             .fileExists(atPath: Self.dialogFocusExplainedMarker.path)
         let zoomFollows = DialogFocus.zoomFollowsFocus()
         guard let tail = DialogFocus.promptTail(
-            setting: .ask, explained: explained, zoomFollowsFocus: zoomFollows,
-            inInsert: keyboardMonitor?.mode == .insert) else {
+            setting: .ask, explained: explained,
+            zoomFollowsFocus: zoomFollows) else {
             speech.announce(text)
             return
         }

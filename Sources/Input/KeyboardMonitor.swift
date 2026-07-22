@@ -586,6 +586,38 @@ final class KeyboardMonitor {
             return nil
         }
 
+        // === Interactive question (any mode) ===
+        // While Marduk awaits an answer to a spoken question (dialog-focus
+        // consent), the valid keys ARE the answer and Escape bails — no
+        // mode ceremony, because a dialog interrupts whatever the user was
+        // doing. This sits BEFORE every mode gate AND the typing-rescue
+        // burst so the answer is taken instantly wherever they are — which
+        // is also exactly what keeps a/o/n/s OUT of the dialog's own fields
+        // (the field incident: o/n landed in a password username box).
+        // Any other unmodified key means "not answering" — the question
+        // evaporates and the key does its normal thing. Cmd/Ctrl/Option
+        // combos skip this entirely (Cmd+C mid-question keeps the question;
+        // the timeout bounds it). Zero effect when nothing is armed.
+        if pendingDialogAnswer != nil, !hasCommand, !hasControl, !hasOption {
+            if let answer = Self.dialogAnswerKeys[keycode],
+               !flags.contains(.maskShift) {
+                if isAutorepeat { return nil }
+                let respond = pendingDialogAnswer
+                cancelDialogQuestion()
+                fputs("[keyboard] dialog question answered: \(answer)\n", stderr)
+                DispatchQueue.main.async { respond?(answer) }
+                return nil
+            }
+            if keycode == 53 {  // Escape — bail out of the question
+                if isAutorepeat { return nil }
+                cancelDialogQuestion()
+                fputs("[keyboard] dialog question dismissed\n", stderr)
+                DispatchQueue.main.async { Earcon.riseToNormal() }
+                return nil
+            }
+            cancelDialogQuestion()  // moved on — key falls through to normal
+        }
+
         // === Marduk disabled: pass everything through ===
         guard isEnabled else { return pass }
 
@@ -1336,26 +1368,6 @@ final class KeyboardMonitor {
             }
         }
 
-        // Armed dialog question: a/o/n/s answer it; any other key means
-        // the user moved on — disarm silently and let the key act normally
-        // (vim pendingReadG style). Sits AFTER the burst layer on purpose:
-        // rescue-withheld letters only re-enter via the flush, and a burst
-        // that resolved to typing replays in INSERT where this never runs —
-        // a burst-resolved keystroke can never answer a consent question
-        // (the double-u field lesson).
-        if pendingDialogAnswer != nil {
-            if let answer = Self.dialogAnswerKeys[keycode],
-               !flags.contains(.maskShift) {
-                if isAutorepeat { return nil }
-                let respond = pendingDialogAnswer
-                cancelDialogQuestion()
-                fputs("[keyboard] dialog question answered: \(answer)\n", stderr)
-                DispatchQueue.main.async { respond?(answer) }
-                return nil
-            }
-            cancelDialogQuestion()  // disarm; the key keeps its meaning
-        }
-
         // One-shot commands must not re-fire on key autorepeat: a held `i`
         // would otherwise type "iii" after entering INSERT, a held `s` would
         // toggle speak-under-pointer repeatedly, a held `u` would launch
@@ -1650,17 +1662,9 @@ final class KeyboardMonitor {
     /// n (45) is a command ONLY while Firefox is frontmost (Reader
     /// narration handoff) — everywhere else it stays a plain letter, so
     /// typing rescue keeps treating all-command-plus-n words ("sun",
-    /// "runs") as typing. The dialog-question answer keys (a o n s) are
-    /// command-shaped the same dynamic way while a question is armed:
-    /// without this, rescue declared a double-tapped answer TYPING and
-    /// replayed it into the focused dialog — a password field's username
-    /// box, in the field incident (2026-07-22). A burst already holding a
-    /// real non-command letter still resolves to typing, so genuine words
-    /// keep their rescue.
+    /// "runs") as typing.
     private func isCommandLetter(_ keycode: Int64) -> Bool {
-        Self.commandLetterKeys.contains(keycode)
-            || (keycode == 45 && isFirefoxFrontmost)
-            || (pendingDialogAnswer != nil && Self.dialogAnswerKeys[keycode] != nil)
+        Self.commandLetterKeys.contains(keycode) || (keycode == 45 && isFirefoxFrontmost)
     }
 
     // MARK: - Firefox Reader narration handoff

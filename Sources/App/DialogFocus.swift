@@ -20,21 +20,16 @@ enum DialogFocus {
     /// The question tail appended to a dialog announcement — nil when no
     /// question should ride it (always/off). The full pitch speaks once
     /// ever (the `explained` marker); after that, undecided users get the
-    /// terse form so every dialog isn't a lecture. `inInsert`: announced
-    /// into INSERT, the keys would type into the app (often the dialog's
-    /// own password field — INSERT never inspects letters, by design), so
-    /// the wording routes through the held Escape first (field incident
-    /// 2026-07-22: o/n landed in a username box).
+    /// terse form so every dialog isn't a lecture. The answer keys work in
+    /// ANY mode (Marduk captures them before its mode/typing layers while
+    /// a question is armed), so no mode instructions are needed — just
+    /// press the letter, Escape to dismiss.
     static func promptTail(setting: Setting, explained: Bool,
-                           zoomFollowsFocus: Bool?, inInsert: Bool) -> String? {
+                           zoomFollowsFocus: Bool?) -> String? {
         guard setting == .ask else { return nil }
-        if explained {
-            return inInsert ? "Focus? Hold Escape, then a, o, n, or s."
-                            : "Focus? a, o, n, or s."
-        }
-        var pitch = "Marduk can focus these dialogs for you. "
-            + (inInsert ? "Hold Escape, then press a" : "Press a")
-            + " to always focus, o to focus just this one, n for not now, "
+        if explained { return "Focus? a, o, n, or s." }
+        var pitch = "Marduk can focus these dialogs for you. Press a to "
+            + "always focus, o to focus just this one, n for not now, "
             + "or s to stop asking."
         if zoomFollowsFocus == true {
             pitch += " Your zoom follows keyboard focus, so a focused "

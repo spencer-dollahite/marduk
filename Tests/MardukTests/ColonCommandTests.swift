@@ -338,6 +338,7 @@ final class ColonCommandTests: XCTestCase {
         "tip — a random feature tip",
         "config — change a setting",
         "voices — choose the reading voice",
+        "invertapps — choose which apps invert the display",
         "pronunciation — open the system pronunciation editor",
         "typing — open the system typing feedback settings",
         "quit — stop Marduk",
@@ -355,10 +356,16 @@ final class ColonCommandTests: XCTestCase {
     }
 
     func testPartialCommandFilters() {
-        XCTAssertEqual(completions("c"), [commandDisplays[1], commandDisplays[4]])
-        XCTAssertEqual(completions("tu"), [commandDisplays[2]])
-        XCTAssertEqual(completions("t"), [commandDisplays[2], commandDisplays[3],
-                                          commandDisplays[7]])  // + typing
+        // By name, not by index — inserting a command used to silently
+        // shift every one of these assertions
+        func display(_ name: String) -> String {
+            commandDisplays.first { $0.hasPrefix("\(name) —") } ?? "missing \(name)"
+        }
+        XCTAssertEqual(completions("c"), [display("commands"), display("config")])
+        XCTAssertEqual(completions("tu"), [display("tutorial")])
+        XCTAssertEqual(completions("t"), [display("tutorial"), display("tip"),
+                                          display("typing")])
+        XCTAssertEqual(completions("i"), [display("invertapps")])
         XCTAssertEqual(completions("z"), [])
     }
 

@@ -59,7 +59,9 @@ enum HelpText {
         restarts from the top, capital G jumps to the last paragraph. A number \
         then the percent sign jumps that far through the document, so fifty \
         percent starts halfway. Control G says where you are: the page and \
-        the percent. Slash searches forward, question mark searches \
+        the percent. Jumped somewhere and want to get back? Control O \
+        returns you to where you jumped from, and again to the one before \
+        that; Control I walks forward again. Slash searches forward, question mark searches \
         back: the read pauses while you type, Return jumps to the match, \
         Escape resumes where you were. Period repeats the last motion or \
         search, so period after a search hops match to match. f then any \
@@ -182,6 +184,7 @@ enum HelpText {
         "Want every key you type spoken, in every app? macOS already does that: colon typing opens the typing feedback settings. Marduk is happy to be your front desk for the accessibility features Apple already built.",
         "Marduk mispronouncing a name? Colon pronunciation opens the system pronunciation editor. Add the word there, typed or spoken, and Marduk says it your way from the very next read — including entries you scope to a single app.",
         "Lost in a long read? Control G is vim's ruler: it says the page and how far through you are, without stopping the voice. A number then the percent sign jumps — fifty percent starts halfway through the document.",
+        "Jumping around a long document is safe: Control O takes you back to where you jumped from, however far you went, and Control I walks forward again. It is vim's jumplist — so g g to the top, or fifty percent, is never a one-way trip.",
         "When Marduk announces a dialog, it can also bring it to the front for you: press a for always, o for just this one, n for not now, or s to stop asking. And in Settings, Accessibility, Zoom, Advanced, follow keyboard focus makes your zoom pan straight to whatever Marduk focuses.",
     ]
 

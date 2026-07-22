@@ -869,7 +869,40 @@ final class DaemonServer {
         NSRunningApplication(processIdentifier: pid)?.activate()
         fputs("[sentinel] focus: frontmost=\(ok(front)) main=\(ok(main)) "
             + "focused=\(ok(focused)) raise=\(ok(raise))\n", stderr)
+        // Hands-off pan attempt: follow-keyboard-focus zoom tracks a
+        // focused ELEMENT change — setting the WINDOW focused didn't pan
+        // (field: focused=ok, no pan), but a focused button fires the
+        // kAXFocusedUIElementChanged the zoom mode actually watches. If it
+        // works, the view moves with no mouse nudge.
+        if let button = dialogButton(window) {
+            let bf = AXUIElementSetAttributeValue(button, kAXFocusedAttribute as CFString,
+                                                  kCFBooleanTrue)
+            fputs("[sentinel] focus: dialog button focused=\(ok(bf))\n", stderr)
+        } else {
+            fputs("[sentinel] focus: no button to focus\n", stderr)
+        }
         warpPointerToDialog(window)
+    }
+
+    /// A focusable button in the dialog: the default button if exposed,
+    /// else the first AXButton among the window's children.
+    private func dialogButton(_ window: AXUIElement) -> AXUIElement? {
+        var defRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(window, kAXDefaultButtonAttribute as CFString,
+                                         &defRef) == .success,
+           let def = defRef, CFGetTypeID(def) == AXUIElementGetTypeID() {
+            return (def as! AXUIElement)
+        }
+        var kidsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXChildrenAttribute as CFString,
+                                            &kidsRef) == .success,
+              let kids = kidsRef as? [AXUIElement] else { return nil }
+        for child in kids {
+            var roleRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &roleRef)
+            if roleRef as? String == "AXButton" { return child }
+        }
+        return nil
     }
 
     /// Pan a zoomed viewport to the dialog by moving the POINTER onto it.
@@ -896,19 +929,13 @@ final class DaemonServer {
         AXValueGetValue(posVal as! AXValue, .cgPoint, &pos)
         AXValueGetValue(sizeVal as! AXValue, .cgSize, &size)
         let center = CGPoint(x: pos.x + size.width / 2, y: pos.y + size.height / 2)
-        // CGWarp moves the logical cursor but emits NO move event, so zoom
-        // (which pans on mouse-move) doesn't react until the next physical
-        // nudge (field: the view jumps only when the user jiggles the
-        // mouse). Post a synthetic move at the warped point to kick zoom
-        // NOW; zero the source's suppression so CGWarp's ~250ms HID
-        // suppression doesn't swallow it. Our event tap is keyboard-only,
-        // so it never sees this mouse event.
-        let source = CGEventSource(stateID: .hidSystemState)
-        source?.localEventsSuppressionInterval = 0
+        // Warp the cursor onto the dialog. This does NOT pan zoom on its
+        // own — zoom pans only on real HARDWARE pointer deltas (synthetic
+        // .mouseMoved confirmed useless, field 2026-07-22, matching the
+        // palette's own note) — but it lands the cursor at the dialog so
+        // the user's next tiny nudge pans to the RIGHT place, with the
+        // cursor already on the dialog to click Allow/Don't Allow.
         CGWarpMouseCursorPosition(center)
-        CGEvent(mouseEventSource: source, mouseType: .mouseMoved,
-                mouseCursorPosition: center, mouseButton: .left)?
-            .post(tap: .cghidEventTap)
         fputs("[sentinel] focus: pointer warped to dialog center\n", stderr)
     }
 

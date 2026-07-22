@@ -1338,18 +1338,24 @@ final class KeyboardMonitor {
                     self.escapeHoldFired = true
                     // Leave typing — and when a read is still playing, the
                     // read reclaims the keyboard first: hold Escape climbs
-                    // INSERT → READING → NORMAL, one level per hold
-                    if self.readMotionsEnabled, self.isEnabled,
-                       self.isReadActive() {
+                    // INSERT → READING → NORMAL, one level per hold.
+                    // The rung is chosen by the pure ModePolicy.
+                    switch ModePolicy.escapeHoldDestination(
+                        mode: .insert, readActive: self.isReadActive(),
+                        readMotionsEnabled: self.readMotionsEnabled,
+                        enabled: self.isEnabled
+                    ) {
+                    case .reclaimReading:
                         self.readingCapture = true
                         fputs("[keyboard] escape held → READING (read reclaimed)\n",
                               stderr)
                         Earcon.riseToReading()  // middle rung — ends lower than NORMAL
                         return
+                    case .normal, .passToApp:
+                        self.mode = .normal
+                        fputs("[keyboard] escape held → NORMAL\n", stderr)
+                        Earcon.riseToNormal()
                     }
-                    self.mode = .normal
-                    fputs("[keyboard] escape held → NORMAL\n", stderr)
-                    Earcon.riseToNormal()
                 }
                 pendingEscapeHold?.cancel() // shouldn't happen, but never stack two
                 pendingEscapeHold = work

@@ -204,6 +204,9 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
             return
         }
         stop()
+        // A NEW read supersedes any prior stop request. Cleared after
+        // stop() precisely because stop() is what sets it.
+        stopRequested = false
 
         onNewRead?()
         readText = processed
@@ -719,6 +722,12 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     private var sawStartForCurrent = false
     private var wedgeRebuilt = false
 
+    /// The user asked for silence. Set by `stop()`, cleared whenever a new
+    /// read begins. Paged window continuation consults THIS rather than
+    /// the delegate callback, because a stopped utterance can arrive as
+    /// didFinish (see `stop()`).
+    private var stopRequested = false
+
     private func startSpeaking(_ utterance: AVSpeechUtterance, completion: (() -> Void)?) {
         if let completion {
             completions[ObjectIdentifier(utterance)] = completion
@@ -763,6 +772,15 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     }
 
     func stop() {
+        // INTENT, recorded explicitly. Window continuation used to key off
+        // didFinish-vs-didCancel, but that discriminator is a lie: a
+        // synthesizer stopped while PAUSED (and the continueSpeaking below
+        // makes that the normal case) reports didFinish. So every held
+        // Escape on a windowed read dropped to NORMAL, then the "window
+        // ended naturally" branch immediately loaded the next window and
+        // re-entered READING — the user could not get out of a 1309-page
+        // Terminal read at all (field 2026-07-22).
+        stopRequested = true
         stopEcho() // a running spell-out dies with the read
         // Un-wedge first: a synthesizer stopped WHILE PAUSED can stay stuck
         // in the paused state, silently queueing every future utterance —
@@ -838,10 +856,13 @@ extension SpeechEngine: AVSpeechSynthesizerDelegate {
         // must precede finish(), while currentUtterance still points at
         // the finishing utterance so loadPageWindow carries its completion
         // and the skipped teardown keeps media ducked across the boundary.
-        if utterance === currentUtterance, let window = readPaged,
-           let full = pagedFull,
+        if let window = readPaged, let full = pagedFull,
            let next = full.nextWindowStart(afterWindowFirst: pagedWindowFirst,
-                                           windowPageCount: window.pageCount) {
+                                           windowPageCount: window.pageCount),
+           ModePolicy.shouldContinueWindow(
+               stopRequested: stopRequested,
+               isCurrentUtterance: utterance === currentUtterance,
+               hasNextWindow: true) {
             fputs("[speech] window ended — continuing at page \(next + 1) "
                 + "of \(full.pageCount)\n", stderr)
             if loadPageWindow(atGlobalPage: next) { return }

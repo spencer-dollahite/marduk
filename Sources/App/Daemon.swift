@@ -1678,7 +1678,11 @@ final class DaemonServer {
                     }
                     return
                 }
-                if release.tag == Marduk.version {
+                // Strictly newer, never merely different: every signature
+                // check passes for an older signed build too, so an
+                // equal-or-older "latest" is treated as up to date rather
+                // than walked backwards onto a known-bad version.
+                if !ReleaseCheck.isNewer(release.tag, than: Marduk.version) {
                     updatesKnownAvailable = false
                     if origin != .periodic { speech.announce("Marduk is up to date.") }
                 } else if origin == .express {
@@ -2700,7 +2704,13 @@ final class DaemonServer {
             if !silent { failed("Update check failed. Is the network up?") }
             return
         }
-        guard release.tag != Marduk.version else {
+        // Anti-rollback: the codesign + pinned-requirement + spctl gates all
+        // pass for a legitimately signed OLDER release, so the only thing
+        // standing between a manipulated "latest" and a downgrade is this
+        // strictly-newer check. An unparseable tag refuses too.
+        guard ReleaseCheck.isNewer(release.tag, than: Marduk.version) else {
+            fputs("[update] latest is not newer than \(Marduk.version) — "
+                + "no install\n", stderr)
             if !silent {
                 DispatchQueue.main.async { [self] in
                     speech.announce("Marduk is up to date.")

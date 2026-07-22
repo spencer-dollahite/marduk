@@ -40,13 +40,32 @@ enum ReleaseCheck {
     /// release.sh). Accepts a leading "v" (tag input). Nil on anything
     /// that isn't three dot-separated integers.
     static func nextPatch(after version: String) -> String? {
+        guard let (major, minor, patch) = components(version) else { return nil }
+        return "\(major).\(minor).\(patch + 1)"
+    }
+
+    /// Semver components, leading "v" tolerated. Nil unless the string is
+    /// exactly three non-negative dot-separated integers.
+    static func components(_ version: String) -> (Int, Int, Int)? {
         let bare = version.hasPrefix("v") ? String(version.dropFirst()) : version
         let parts = bare.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 3,
               let major = Int(parts[0]), major >= 0,
               let minor = Int(parts[1]), minor >= 0,
               let patch = Int(parts[2]), patch >= 0 else { return nil }
-        return "\(major).\(minor).\(patch + 1)"
+        return (major, minor, patch)
+    }
+
+    /// Is `candidate` strictly newer than `current`? The anti-ROLLBACK gate
+    /// on release-channel installs: the signature checks pass for ANY
+    /// legitimately signed build, including an OLDER one, so a manipulated
+    /// "latest" could otherwise walk a user back to a known-bad version.
+    /// Unparseable either side = false: refuse the install rather than
+    /// guess (a real release tag always parses; release.sh enforces it).
+    static func isNewer(_ candidate: String, than current: String) -> Bool {
+        guard let new = components(candidate),
+              let old = components(current) else { return false }
+        return (new.0, new.1, new.2) > (old.0, old.1, old.2)
     }
 
     /// release.sh narrates its stages as "==> Stage name" lines — the

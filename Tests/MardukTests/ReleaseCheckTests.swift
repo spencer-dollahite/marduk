@@ -64,6 +64,45 @@ final class ReleaseCheckTests: XCTestCase {
         XCTAssertNil(ReleaseCheck.nextPatch(after: "release-candidate"))
     }
 
+    // MARK: - isNewer (anti-rollback gate on release installs)
+
+    func testIsNewerAcrossEveryComponent() {
+        XCTAssertTrue(ReleaseCheck.isNewer("0.4.11", than: "0.4.10"))
+        XCTAssertTrue(ReleaseCheck.isNewer("0.5.0", than: "0.4.99"))
+        XCTAssertTrue(ReleaseCheck.isNewer("1.0.0", than: "0.99.99"))
+    }
+
+    func testIsNewerRejectsEqualAndOlder() {
+        XCTAssertFalse(ReleaseCheck.isNewer("0.4.10", than: "0.4.10"))
+        XCTAssertFalse(ReleaseCheck.isNewer("0.4.9", than: "0.4.10"))
+        XCTAssertFalse(ReleaseCheck.isNewer("0.4.99", than: "0.5.0"))
+        XCTAssertFalse(ReleaseCheck.isNewer("0.99.99", than: "1.0.0"))
+    }
+
+    /// Numeric compare, never lexicographic — "0.4.9" vs "0.4.10" is the
+    /// case a string comparison gets backwards.
+    func testIsNewerIsNumericNotLexicographic() {
+        XCTAssertTrue(ReleaseCheck.isNewer("0.4.10", than: "0.4.9"))
+        XCTAssertFalse(ReleaseCheck.isNewer("0.4.9", than: "0.4.10"))
+        XCTAssertTrue(ReleaseCheck.isNewer("0.10.0", than: "0.9.0"))
+    }
+
+    func testIsNewerToleratesTagPrefix() {
+        XCTAssertTrue(ReleaseCheck.isNewer("v0.4.11", than: "0.4.10"))
+        XCTAssertTrue(ReleaseCheck.isNewer("0.4.11", than: "v0.4.10"))
+        XCTAssertFalse(ReleaseCheck.isNewer("v0.4.10", than: "v0.4.10"))
+    }
+
+    /// Unparseable either side must REFUSE (false) — never install on a
+    /// tag we can't reason about.
+    func testIsNewerRefusesUnparseable() {
+        XCTAssertFalse(ReleaseCheck.isNewer("garbage", than: "0.4.10"))
+        XCTAssertFalse(ReleaseCheck.isNewer("0.4.11", than: "garbage"))
+        XCTAssertFalse(ReleaseCheck.isNewer("", than: "0.4.10"))
+        XCTAssertFalse(ReleaseCheck.isNewer("0.4", than: "0.4.10"))
+        XCTAssertFalse(ReleaseCheck.isNewer("0.4.11.1", than: "0.4.10"))
+    }
+
     // MARK: - stageLine (release.sh "==>" narration)
 
     func testStageLineStripsMarker() {

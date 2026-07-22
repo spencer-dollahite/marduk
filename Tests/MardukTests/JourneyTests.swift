@@ -96,7 +96,10 @@ final class JourneyTests: XCTestCase {
     func testTerminalScrollbackJumpAndReturn() throws {
         let text = terminalScrollback(chars: 300_000)
         let ns = text as NSString
-        let pointerStart = ns.length / 2          // R started under the pointer
+        // A fifth of the way in, NOT half: starting at 50% would make the
+        // `50%` jump a no-op onto the same page, which JumpList correctly
+        // dedupes — and the journey would then have only one entry to walk.
+        let pointerStart = ns.length / 5          // R started under the pointer
         let (full, startPage) = PagedText.chunking(text, from: pointerStart)
         XCTAssertGreaterThan(full.pageCount, 20, "fixture must actually window")
 
@@ -113,6 +116,7 @@ final class JourneyTests: XCTestCase {
             s.goToPage(target + 1)
         }
         let halfway = s.globalPage
+        XCTAssertNotEqual(halfway, began, "the 50% jump must actually move")
 
         // gg — BOTH edges are pages on a paged read (the second field bug)
         s.jump { s in

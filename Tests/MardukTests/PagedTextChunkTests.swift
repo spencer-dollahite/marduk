@@ -261,6 +261,38 @@ final class PagedTextChunkTests: XCTestCase {
                        "paragraph targets land on real paragraph starts")
     }
 
+    // MARK: - Percent navigation ({count}% and Ctrl+G)
+
+    func testPercentMath() {
+        XCTAssertEqual(ReadNavigator.percent(0, of: 0), 0)      // no division
+        XCTAssertEqual(ReadNavigator.percent(0, of: 200), 0)
+        XCTAssertEqual(ReadNavigator.percent(50, of: 200), 25)
+        XCTAssertEqual(ReadNavigator.percent(1, of: 3), 33)     // rounds
+        XCTAssertEqual(ReadNavigator.percent(2, of: 3), 67)
+        XCTAssertEqual(ReadNavigator.percent(200, of: 200), 100)
+        XCTAssertEqual(ReadNavigator.percent(999, of: 200), 100)  // clamps
+        XCTAssertEqual(ReadNavigator.percent(-5, of: 200), 0)
+    }
+
+    func testUTF16LengthMatchesTextWithoutScanning() {
+        let chunked = PagedText.chunking(
+            String(repeating: "line here\n", count: 3_000), from: 42).paged
+        XCTAssertEqual(chunked.utf16Length, (chunked.text as NSString).length)
+        let pdfStyle = PagedText(pages: ["page one 😀", "page two", ""])
+        XCTAssertEqual(pdfStyle.utf16Length, (pdfStyle.text as NSString).length)
+        XCTAssertEqual(PagedText(pages: []).utf16Length, 0)
+    }
+
+    func testPercentTargetsLandOnSensiblePages() {
+        let doc = PagedText.chunking(
+            String(repeating: "word content line\n", count: 10_000), from: 0).paged
+        let mid = doc.pageIndex(at: 50 * doc.utf16Length / 100)
+        XCTAssertGreaterThan(mid, doc.pageCount / 3)
+        XCTAssertLessThan(mid, 2 * doc.pageCount / 3)
+        XCTAssertEqual(doc.pageIndex(at: doc.utf16Length), doc.pageCount - 1,
+                       "100 percent is the last page")
+    }
+
     // MARK: - Deterministic property sweep
 
     func testChunkPropertySweep() {

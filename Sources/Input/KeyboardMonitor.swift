@@ -124,6 +124,8 @@ final class KeyboardMonitor {
     }
     var onReadPageStep: ((Int) -> Void)?      // Ctrl+F/Ctrl+B, ±count pages
     var onReadPageAbsolute: ((Int) -> Void)?  // 12G — page twelve
+    var onReadPercent: ((Int) -> Void)?       // 50% — jump to N percent
+    var onReadPosition: (() -> Void)?         // Ctrl+G — where am I
     var onSpeakPaged: ((PagedText, Int) -> Void)?  // PDF read (paged, 1-based start)
     // Full-document read: complete text + UTF-16 start offset. The daemon
     // decides plain vs synthetic-paged (huge text chunks into pages, so
@@ -694,9 +696,9 @@ final class KeyboardMonitor {
         if readingCapture, !isReadActive() {
             readingCapture = false  // engine state is the truth; heal drift
         }
-        // Ctrl+F / Ctrl+B — vim page scroll, THE one exception to the
-        // Ctrl-passthrough rule, and only here: during a captured read the
-        // app receives no keys anyway, so the carve-out steals nothing.
+        // Ctrl+F / Ctrl+B — vim page scroll, the capture-only exception to
+        // the Ctrl-passthrough rule, and only here: during a captured read
+        // the app receives no keys anyway, so the carve-out steals nothing.
         // Counts apply (3 Ctrl+F = three pages, vim semantics); autorepeat
         // allowed like the motions; buzzes via the daemon on unpaged
         // reads. Every other Ctrl combo still passes through everywhere.
@@ -707,6 +709,17 @@ final class KeyboardMonitor {
             let step = keycode == 3 ? count : -count
             lastReadAction = .pageStep(step)
             DispatchQueue.main.async { [self] in onReadPageStep?(step) }
+            return nil
+        }
+        // Ctrl+G — vim's file-info: where am I? Same capture-only carve-
+        // out as Ctrl+F/B. One-shot; consumes a pending count (count
+        // Ctrl+G is vim's full-path variant — no audio meaning).
+        if readingCapture, hasControl, !hasCommand, !hasOption,
+           burstBuffer.isEmpty, keycode == 5 {
+            if isAutorepeat { return nil }
+            readMotionCount = 0
+            pendingReadG = false
+            DispatchQueue.main.async { [self] in onReadPosition?() }
             return nil
         }
         if readingCapture, !hasCommand, !hasControl, !hasOption,
@@ -866,6 +879,21 @@ final class KeyboardMonitor {
             // Bare 0 — vim line start: restart the current line
             if !hasShift, keycode == 29 {
                 DispatchQueue.main.async { [self] in onReadLineStart?() }
+                return nil
+            }
+
+            // {count}% — vim percent-of-file navigation: 50% respeaks
+            // from halfway through the document. Bare % stays vim-honest
+            // (match-paren has no audio meaning) and buzzes.
+            if hasShift, keycode == 23 {
+                if isAutorepeat { return nil }
+                let count = readMotionCount
+                readMotionCount = 0
+                if count > 0 {
+                    DispatchQueue.main.async { [self] in onReadPercent?(count) }
+                } else {
+                    DispatchQueue.main.async { Earcon.error() }
+                }
                 return nil
             }
 

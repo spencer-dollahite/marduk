@@ -388,6 +388,52 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
 
     var pageCount: Int { pagedFull?.pageCount ?? 0 }
 
+    /// Ctrl+G — where am I: percent through the whole document (vim's
+    /// file-info ruler), plus page info on paged reads. Speaks over the
+    /// read on the echo channel like the page echo; never pauses or
+    /// moves the read. Works on any active read, speaking or paused.
+    @discardableResult
+    func speakPosition() -> Bool {
+        stopEcho()
+        guard readActive, let text = readText else { return false }
+        if let window = readPaged, let full = pagedFull {
+            let page = pagedWindowFirst + window.pageIndex(at: readPosition)
+            // Window-local processed offset against raw page starts — the
+            // same accepted drift as the page tracker; invisible at
+            // whole-percent granularity.
+            let global = full.pageStarts[pagedWindowFirst] + readPosition
+            let pct = ReadNavigator.percent(global, of: full.utf16Length)
+            fputs("[speech] position: page \(page + 1) of \(full.pageCount), "
+                + "\(pct)%\n", stderr)
+            echo("page \(page + 1) of \(full.pageCount), \(pct) percent")
+        } else {
+            let pct = ReadNavigator.percent(readPosition, of: text.utf16.count)
+            fputs("[speech] position: \(pct)%\n", stderr)
+            echo("\(pct) percent")
+        }
+        return true
+    }
+
+    /// {count}% — vim percent navigation: respeak from N percent through
+    /// the document (clamped 1-100). Page-granular on paged reads (the
+    /// page containing that point, echoed like any page jump); word-
+    /// snapped respeak on plain reads.
+    @discardableResult
+    func jumpToPercent(_ percent: Int) -> Bool {
+        stopEcho()
+        guard readActive, let text = readText else { return false }
+        let pct = max(1, min(100, percent))
+        if let full = pagedFull {
+            let target = full.pageIndex(at: pct * full.utf16Length / 100)
+            return speakPage(globalIndex: target)
+        }
+        let ns = text as NSString
+        guard ns.length > 0 else { return false }
+        let raw = min(ns.length * pct / 100, ns.length - 1)
+        respeak(from: ReadNavigator.wordStart(in: text, at: raw))
+        return true
+    }
+
     private func speakPage(globalIndex: Int) -> Bool {
         guard let window = readPaged, let full = pagedFull else { return false }
         fputs("[speech] page \(globalIndex + 1) of \(full.pageCount)\n", stderr)

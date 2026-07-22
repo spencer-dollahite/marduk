@@ -31,7 +31,8 @@ enum HelpText {
         like Notes and Terminal. On \
         a PDF, uppercase R reads the file itself, page aware: control F \
         and control B turn pages, a number then capital G jumps to that \
-        page, g g goes to page one, capital G to the last page. \
+        page, g g goes to page one, capital G to the last page. Long \
+        documents of any kind page the same way, however big. \
         v, visual selection. Capital V, select whole lines. t, speak the \
         time. t t, time and date. s, speak what is under the mouse pointer as it moves, in your reading voice. u, check \
         for updates and hear what's new; u again within a minute installs. \
@@ -47,7 +48,10 @@ enum HelpText {
         Parentheses step a sentence. j and k step lines, zero restarts \
         the current line, and braces step paragraphs — blocks separated \
         by blank lines. Numbers repeat, like 3 then open paren. g g \
-        restarts from the top, capital G jumps to the last paragraph. Slash searches forward, question mark searches \
+        restarts from the top, capital G jumps to the last paragraph. A number \
+        then the percent sign jumps that far through the document, so fifty \
+        percent starts halfway. Control G says where you are: the page and \
+        the percent. Slash searches forward, question mark searches \
         back: the read pauses while you type, Return jumps to the match, \
         Escape resumes where you were. Period repeats the last motion or \
         search, so period after a search hops match to match. f then any \
@@ -160,6 +164,7 @@ enum HelpText {
         "If Marduk ever misbehaves, Control Option Delete is the panic chord: Karabiner itself force-kills Marduk, so it works even when Marduk is stuck — and the launch agent brings back a fresh one in seconds. Control Option M turns Marduk off gently; colon quit or marduk stop in Terminal keep it stopped. Colon config dock on adds Marduk to the Dock and the Force Quit window.",
         "Want every key you type spoken, in every app? macOS already does that: colon typing opens the typing feedback settings. Marduk is happy to be your front desk for the accessibility features Apple already built.",
         "Marduk mispronouncing a name? Colon pronunciation opens the system pronunciation editor. Add the word there, typed or spoken, and Marduk says it your way from the very next read — including entries you scope to a single app.",
+        "Lost in a long read? Control G is vim's ruler: it says the page and how far through you are, without stopping the voice. A number then the percent sign jumps — fifty percent starts halfway through the document.",
     ]
 
     static let welcome = """

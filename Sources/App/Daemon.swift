@@ -540,6 +540,18 @@ final class DaemonServer {
                 Earcon.error()
             }
         }
+        keyboardMonitor?.onReadPercent = { [self] percent in
+            if speech.jumpToPercent(percent) {
+                tutorial.handle(.readJumped)
+            } else {
+                Earcon.error()
+            }
+        }
+        keyboardMonitor?.onReadPosition = { [self] in
+            if !speech.speakPosition() {
+                Earcon.error()
+            }
+        }
         keyboardMonitor?.onSpeakPaged = { [self] paged, startPage in
             longReadGeneration += 1  // a new read beats an in-flight chunk
             speech.speakPaged(paged, startPage: startPage) { [self] in

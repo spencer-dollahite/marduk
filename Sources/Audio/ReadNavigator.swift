@@ -93,6 +93,13 @@ enum ReadNavigator {
         unitStarts(in: text, unit: .paragraph).last ?? 0
     }
 
+    /// Whole-number percent (0-100) of a position through a length —
+    /// the number vim's Ctrl+G ruler shows, rounded and clamped.
+    static func percent(_ position: Int, of length: Int) -> Int {
+        guard length > 0 else { return 0 }
+        return max(0, min(100, Int((Double(position) * 100 / Double(length)).rounded())))
+    }
+
     /// Vim f/F: the next/previous occurrence of `char` strictly after/
     /// before `position` — case-sensitive, like vim. Nil when the
     /// direction is exhausted (no wrap, same as search).

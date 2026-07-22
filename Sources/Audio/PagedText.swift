@@ -32,6 +32,14 @@ struct PagedText: Equatable {
 
     var pageCount: Int { pageStarts.count }
 
+    /// Total UTF-16 length of `text` without scanning it — a per-
+    /// keystroke query (Ctrl+G, {count}%) must never walk a 9M-char
+    /// document. Last page start + last page length, O(last page).
+    var utf16Length: Int {
+        guard let lastStart = pageStarts.last, let last = pages.last else { return 0 }
+        return lastStart + last.utf16.count
+    }
+
     init(pages: [String], joiner: String = "\n\n") {
         var joined = ""
         var starts: [Int] = []

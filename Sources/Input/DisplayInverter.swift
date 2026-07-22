@@ -56,7 +56,9 @@ final class DisplayInverter: @unchecked Sendable {
     /// so with `invert` off, Pages would invert and NOTHING could ever
     /// hand the display back. That stranded inversion is what later got
     /// toggled onto a normal screen and blinded the user.
-    var inversionActive: Bool { invertEnabled || autoInvert }
+    var inversionActive: Bool {
+        InversionPolicy.isActive(invertEnabled: invertEnabled, autoInvert: autoInvert)
+    }
     /// Fired (main queue) the first time a dark-appearance press succeeds
     /// this run — the Daemon speaks the one-time onboarding explanation.
     var onDarkApplied: (() -> Void)?
@@ -318,7 +320,9 @@ final class DisplayInverter: @unchecked Sendable {
         // firing it on a believed-but-false inversion turns a dark screen
         // blinding white, which is exactly what this did in the field on
         // 2026-07-22 — believing a seeded flag it had never earned.
-        guard weOwnInversion, isInverted, Self.displayIsInverted() else {
+        guard InversionPolicy.shouldRevertOnExit(believed: isInverted,
+                                                 actual: Self.displayIsInverted(),
+                                                 owned: weOwnInversion) else {
             if isInverted && !weOwnInversion {
                 fputs("[display] inverted but not by us — leaving it alone\n",
                       stderr)
@@ -334,7 +338,9 @@ final class DisplayInverter: @unchecked Sendable {
 
     /// Live `:config invert off` mid-invert must hand the display back.
     func revertIfInverted() {
-        guard isInverted, weOwnInversion, Self.displayIsInverted() else { return }
+        guard InversionPolicy.shouldRevertOnExit(believed: isInverted,
+                                                 actual: Self.displayIsInverted(),
+                                                 owned: weOwnInversion) else { return }
         lastToggleAt = Date()
         applyInversion(false)
         isInverted = false
@@ -581,39 +587,47 @@ final class DisplayInverter: @unchecked Sendable {
 
     private func ensureInverted(_ wanted: Bool, holder: String?, reason: String) {
         if wanted { invertHolder = holder }
-        // Never act on the display unless the user opted in. The built-in
-        // app list is inert until `:config invert on`.
-        guard inversionActive else {
+        // THE TOGGLE IS BLIND: it flips whatever the display is ACTUALLY
+        // doing, not what we believe — so reality is read up front and the
+        // whole judgment lives in the pure InversionPolicy, where every
+        // permutation is exercised by InversionPolicyTests. Reading the
+        // state even when we turn out to be inactive is a trivial
+        // NSWorkspace property read.
+        let actual = Self.displayIsInverted()
+        let decision = InversionPolicy.resolve(
+            wanted: wanted, believed: isInverted, actual: actual,
+            active: inversionActive,
+            sinceLastToggle: Date().timeIntervalSince(lastToggleAt),
+            lockout: Self.toggleLockout)
+
+        switch decision {
+        case .inactive:
             fputs("[display] want \(wanted ? "invert" : "revert") (\(reason)) "
                 + "but both invert and autoinvert are OFF — run: "
                 + "marduk config invert on\n", stderr)
             return
-        }
-        // The lockout stands even with a sticking mechanism: one change,
-        // then silence — deferred wants converge via the heartbeat
-        guard Date().timeIntervalSince(lastToggleAt) >= Self.toggleLockout else {
+        case .lockedOut:
+            // One change, then silence — deferred wants converge via the
+            // heartbeat, which re-ensures every beat
             fputs("[display] want \(wanted ? "invert" : "revert") (\(reason)) "
                 + "deferred by the toggle lockout\n", stderr)
             return
-        }
-        // THE TOGGLE IS BLIND: it flips whatever the display is ACTUALLY
-        // doing, not what we believe. So re-read the truth before deciding
-        // — a stale flag otherwise makes the toggle do the exact opposite
-        // of the intent (field 2026-07-22: a "revert" fired on a believed
-        // -but-false inversion INVERTED a dark-mode screen). We are past
-        // the lockout here, so the pref has settled and this is a
-        // precondition check, not the forbidden verify-retry chord.
-        let actual = Self.displayIsInverted()
-        if actual != isInverted {
-            fputs("[display] resync: believed \(isInverted), actually \(actual)\n",
-                  stderr)
-            isInverted = actual
-            if !actual { weOwnInversion = false }
-        }
-        guard wanted != isInverted else {
-            fputs("[display] \(reason): already "
-                + "\(isInverted ? "inverted" : "normal"), nothing to do\n", stderr)
-            return
+        case .noChange(let effective), .fire(let effective):
+            // Reality wins over belief in BOTH outcomes — adopting it here
+            // is what stops a stale flag from surviving to fire a toggle
+            // in the wrong direction later.
+            if effective != isInverted {
+                fputs("[display] resync: believed \(isInverted), "
+                    + "actually \(effective)\n", stderr)
+                isInverted = effective
+                if !effective { weOwnInversion = false }
+            }
+            if case .noChange = decision {
+                fputs("[display] \(reason): already "
+                    + "\(isInverted ? "inverted" : "normal"), nothing to do\n",
+                    stderr)
+                return
+            }
         }
         lastToggleAt = Date()
         applyInversion(wanted)

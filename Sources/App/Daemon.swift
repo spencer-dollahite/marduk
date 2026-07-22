@@ -441,7 +441,7 @@ final class DaemonServer {
             onSpeak: { [self] text in
                 longReadGeneration += 1  // a new read beats an in-flight chunk
                 startingRead(paged: false) { [self] in
-                    speech.speak(text) { [self] in contentReadEnded(paged: false) }
+                    speech.speak(text) { [self] in contentReadEnded() }
                 }
             },
             onStop: { [self] in
@@ -609,7 +609,7 @@ final class DaemonServer {
             startingRead(paged: true) { [self] in
                 speech.speakPaged(paged, startPage: startPage,
                                   headings: headings) { [self] in
-                    contentReadEnded(paged: true)
+                    contentReadEnded()
                 }
             }
         }
@@ -779,7 +779,7 @@ final class DaemonServer {
         guard PagedText.exceedsWindow(ns.length) else {
             startingRead(paged: false) { [self] in
                 speech.speak(ns.substring(from: max(0, min(start, ns.length)))) { [self] in
-                    contentReadEnded(paged: false)
+                    contentReadEnded()
                 }
             }
             return
@@ -795,7 +795,7 @@ final class DaemonServer {
                 startingRead(paged: true) { [self] in
                     speech.speakPaged(paged, startPage: startPage,
                                       synthetic: true) { [self] in
-                        contentReadEnded(paged: true)
+                        contentReadEnded()
                     }
                 }
             }

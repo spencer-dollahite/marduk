@@ -201,7 +201,8 @@ struct PagedText: Equatable {
         -> (paged: PagedText, headings: [(page: Int, level: Int)])? {
         guard let document = PDFDocument(url: url), !document.isLocked,
               document.pageCount > 0 else {
-            fputs("[keyboard] PDF load failed or locked: \(url.lastPathComponent)\n", stderr)
+            // Filename is user content — the log is pasted into public issues
+            fputs("[keyboard] PDF load failed or locked\n", stderr)
             return nil
         }
         let pages = (0..<document.pageCount).map {
@@ -210,8 +211,8 @@ struct PagedText: Equatable {
         guard pages.contains(where: {
             !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }) else {
-            fputs("[keyboard] PDF has no extractable text (scanned?): "
-                + "\(url.lastPathComponent)\n", stderr)
+            fputs("[keyboard] PDF has no extractable text (scanned?), "
+                + "\(document.pageCount) pages\n", stderr)
             return nil
         }
         let headings = document.outlineRoot.map { root in

@@ -127,7 +127,8 @@ final class KeyboardMonitor {
     var onReadPageAbsolute: ((Int) -> Void)?  // 12G — page twelve
     var onReadPercent: ((Int) -> Void)?       // 50% — jump to N percent
     var onReadPosition: (() -> Void)?         // Ctrl+G — where am I
-    var onSpeakPaged: ((PagedText, Int) -> Void)?  // PDF read (paged, 1-based start)
+    // PDF read: paged text, 1-based start page, outline headings (page, level)
+    var onSpeakPaged: ((PagedText, Int, [(page: Int, level: Int)]) -> Void)?
     // Full-document read: complete text + UTF-16 start offset. The daemon
     // decides plain vs synthetic-paged (huge text chunks into pages, so
     // the whole document is reachable). Anchored web reads stay on onSpeak
@@ -2543,14 +2544,14 @@ final class KeyboardMonitor {
 
         fputs("[keyboard] R: PDF \(url.lastPathComponent), starting page \(startPage)\n", stderr)
         DispatchQueue.global(qos: .utility).async { [self] in
-            let paged = PagedText.load(url: url)
+            let loaded = PagedText.load(url: url)
             DispatchQueue.main.async { [self] in
-                guard let paged else {
+                guard let loaded else {
                     Earcon.error()
                     onAnnounce?("No readable document here.")
                     return
                 }
-                onSpeakPaged?(paged, startPage)
+                onSpeakPaged?(loaded.paged, startPage, loaded.headings)
             }
         }
         return true

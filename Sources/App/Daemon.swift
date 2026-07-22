@@ -576,9 +576,10 @@ final class DaemonServer {
                 Earcon.error()
             }
         }
-        keyboardMonitor?.onSpeakPaged = { [self] paged, startPage in
+        keyboardMonitor?.onSpeakPaged = { [self] paged, startPage, headings in
             longReadGeneration += 1  // a new read beats an in-flight chunk
-            speech.speakPaged(paged, startPage: startPage) { [self] in
+            speech.speakPaged(paged, startPage: startPage,
+                              headings: headings) { [self] in
                 tutorial.handle(.readFinished)
             }
         }

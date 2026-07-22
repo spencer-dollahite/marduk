@@ -1,4 +1,5 @@
 import XCTest
+import PDFKit
 @testable import marduk
 
 final class ReadNavigatorTests: XCTestCase {
@@ -356,6 +357,44 @@ final class ReadNavigatorTests: XCTestCase {
         // blank lines COUNT, unlike the content-run line motions
         XCTAssertEqual(ReadNavigator.lineStartOffsets(in: "a\nb\n\nc"), [0, 2, 4, 5])
         XCTAssertEqual(ReadNavigator.lineStartOffsets(in: ""), [0])
+    }
+
+    func testFlattenOutlineDepthsSkipsAndOrder() {
+        let pageA = PDFPage(), pageB = PDFPage(), pageC = PDFPage()
+        let index = [ObjectIdentifier(pageA): 0,
+                     ObjectIdentifier(pageB): 3,
+                     ObjectIdentifier(pageC): 7]
+        func entry(_ page: PDFPage?) -> PDFOutline {
+            let node = PDFOutline()
+            if let page {
+                node.destination = PDFDestination(page: page, at: NSPoint(x: 0, y: 0))
+            }
+            return node
+        }
+        let root = PDFOutline()          // container — never a heading
+        let chapter = entry(pageA)       // depth 1
+        let section = entry(pageB)       // depth 2, nested under chapter
+        let broken = entry(nil)          // no destination — skipped
+        let late = entry(pageC)          // depth 1
+        root.insertChild(chapter, at: 0)
+        chapter.insertChild(section, at: 0)
+        chapter.insertChild(broken, at: 1)
+        root.insertChild(late, at: 1)
+        let flat = PagedText.flattenOutline(root) { index[ObjectIdentifier($0)] }
+        XCTAssertEqual(flat.map(\.page), [0, 3, 7])
+        XCTAssertEqual(flat.map(\.level), [1, 2, 1])
+    }
+
+    func testPageOrdinalHeadingMath() {
+        // Pages ride the same helpers as text offsets: h1@p0, h2@p3, h2@p7
+        let pages = [ReadHeading(offset: 0, level: 1),
+                     ReadHeading(offset: 3, level: 2),
+                     ReadHeading(offset: 7, level: 2)]
+        XCTAssertEqual(ReadNavigator.headingTarget(headings: pages, from: 1,
+                                                   direction: .forward), 3)
+        XCTAssertEqual(ReadNavigator.siblingHeadingTarget(headings: pages, from: 4,
+                                                          direction: .forward), 7)
+        XCTAssertEqual(ReadNavigator.parentHeadingTarget(headings: pages, from: 8), 0)
     }
 
     func testHeadingOffsetsClampAndDedup() {

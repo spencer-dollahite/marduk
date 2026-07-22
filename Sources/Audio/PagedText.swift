@@ -192,10 +192,13 @@ struct PagedText: Equatable {
         return (paged, startPage)
     }
 
-    /// Load a PDF's text, one entry per page. Nil for missing files,
-    /// password-locked documents, and image-only scans (no text on any
-    /// page — OCR is future work).
-    static func load(url: URL) -> PagedText? {
+    /// Load a PDF's text, one entry per page, plus its outline (table of
+    /// contents) flattened to heading pages — the PDF rung of the heading
+    /// motions. Nil for missing files, password-locked documents, and
+    /// image-only scans (no text on any page — OCR is future work). A
+    /// PDF without an outline gets an empty headings array, never nil.
+    static func load(url: URL)
+        -> (paged: PagedText, headings: [(page: Int, level: Int)])? {
         guard let document = PDFDocument(url: url), !document.isLocked,
               document.pageCount > 0 else {
             fputs("[keyboard] PDF load failed or locked: \(url.lastPathComponent)\n", stderr)
@@ -211,8 +214,38 @@ struct PagedText: Equatable {
                 + "\(url.lastPathComponent)\n", stderr)
             return nil
         }
-        fputs("[keyboard] PDF loaded: \(pages.count) pages\n", stderr)
-        return PagedText(pages: pages)
+        let headings = document.outlineRoot.map { root in
+            flattenOutline(root) { page in
+                let index = document.index(for: page)
+                return index >= 0 && index < document.pageCount ? index : nil
+            }
+        } ?? []
+        fputs("[keyboard] PDF loaded: \(pages.count) pages, "
+            + "\(headings.count) outline headings\n", stderr)
+        return (PagedText(pages: pages), headings)
+    }
+
+    /// Flatten a PDFOutline tree to (0-based page, level) pairs, level =
+    /// nesting depth from 1 (the root is a container, not a heading).
+    /// Entries with no resolvable destination page are skipped. Stable-
+    /// sorted ascending by page — outline order breaks ties, so a page
+    /// with several entries keeps its top-of-page entry first.
+    static func flattenOutline(_ root: PDFOutline,
+                               pageIndex: (PDFPage) -> Int?) -> [(page: Int, level: Int)] {
+        var found: [(page: Int, level: Int)] = []
+        func walk(_ node: PDFOutline, depth: Int) {
+            if depth > 0, let page = node.destination?.page,
+               let index = pageIndex(page) {
+                found.append((page: index, level: min(depth, 6)))
+            }
+            for i in 0..<node.numberOfChildren {
+                if let child = node.child(at: i) { walk(child, depth: depth + 1) }
+            }
+        }
+        walk(root, depth: 0)
+        return found.enumerated()
+            .sorted { ($0.element.page, $0.offset) < ($1.element.page, $1.offset) }
+            .map(\.element)
     }
 
     /// Preview window titles read "Name — Page 3 of 12" — the visible

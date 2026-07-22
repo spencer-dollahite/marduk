@@ -110,6 +110,11 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     // read starts (web harvest → setReadHeadings), empty = no heading
     // data → the motions buzz honestly via jumpHeading's false.
     private var readHeadings: [ReadHeading] = []
+    // Paged (PDF outline) headings: same motion math, but `offset` is a
+    // GLOBAL page index — heading jumps are page-granular like {count}%.
+    // Set by speakPaged, restored across window rebuilds like the other
+    // paged state; empty on synthetic paged reads.
+    private var pdfHeadings: [ReadHeading] = []
 
     // Back-motion anchor: at fast speech rates the boundary callbacks race
     // ahead of comprehension — by the time a `b` lands, readPosition is
@@ -206,6 +211,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         pagedFull = nil
         pagedSynthetic = false
         readHeadings = []  // stale headings die with the old read
+        pdfHeadings = []
         readBase = 0
         readPosition = 0
         segmentStartedAt = Date()
@@ -254,6 +260,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         pagedFull = nil
         pagedSynthetic = false
         readHeadings = []
+        pdfHeadings = []
     }
 
     func speakSSML(_ ssml: String) {
@@ -275,6 +282,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         pagedFull = nil
         pagedSynthetic = false
         readHeadings = []
+        pdfHeadings = []
     }
 
     // MARK: - Read motions (vim-style navigation within the current read)
@@ -328,6 +336,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// continues into the next one (didFinish). `synthetic` marks chunked
     /// plain text — same machinery, no viewer gestures.
     func speakPaged(_ paged: PagedText, startPage: Int, synthetic: Bool = false,
+                    headings: [(page: Int, level: Int)] = [],
                     completion: (() -> Void)? = nil) {
         let (first, window) = paged.window(startingAt: startPage - 1)
         speak(window.text, completion: completion)
@@ -336,6 +345,13 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         pagedWindowFirst = first
         readPaged = window
         pagedSynthetic = synthetic
+        // Same-page outline entries collapse to the first (heading jumps
+        // are page-granular, the {count}% precedent); input is ascending
+        var seenPages = Set<Int>()
+        pdfHeadings = headings.compactMap { entry in
+            guard seenPages.insert(entry.page).inserted else { return nil }
+            return ReadHeading(offset: entry.page, level: entry.level)
+        }
         // Preview already SHOWS the start page (the title told us) — seed
         // the tracker so the initial jump doesn't fire a redundant gesture
         followPageIndex = max(0, min(startPage - 1, paged.pageCount - 1))
@@ -353,6 +369,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     private func loadPageWindow(atGlobalPage global: Int) -> Bool {
         guard let full = pagedFull else { return false }
         let synthetic = pagedSynthetic  // speak() clears it — capture first
+        let headings = pdfHeadings      // (global pages — window-independent)
         let replaced = currentUtterance
         let carried = replaced.flatMap {
             completions.removeValue(forKey: ObjectIdentifier($0))
@@ -364,6 +381,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         pagedWindowFirst = first
         readPaged = window
         pagedSynthetic = synthetic
+        pdfHeadings = headings
         // Seed BEHIND the arrival page: unlike speakPaged's start (Preview
         // already shows it), the viewer has NOT turned to a rebuilt
         // window's page — the first word boundary must fire the gesture.
@@ -442,12 +460,14 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         return true
     }
 
-    private func speakPage(globalIndex: Int) -> Bool {
+    private func speakPage(globalIndex: Int, echoPage: Bool = true) -> Bool {
         guard let window = readPaged, let full = pagedFull else { return false }
         fputs("[speech] page \(globalIndex + 1) of \(full.pageCount)\n", stderr)
         // The echo overlaps the respeak's first beat on purpose — it's the
-        // distinct voice, and a pause-announce-resume dance costs latency
-        echo("page \(globalIndex + 1)")
+        // distinct voice, and a pause-announce-resume dance costs latency.
+        // Heading landings suppress it (silent-landing rule): the heading
+        // text speaks for itself; the log above keeps the page number.
+        if echoPage { echo("page \(globalIndex + 1)") }
         let local = globalIndex - pagedWindowFirst
         if window.pageStarts.indices.contains(local) {
             respeak(from: window.pageStarts[local])  // tracker fires onPageJump
@@ -495,7 +515,22 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     func jumpHeading(_ motion: HeadingMotion, count: Int = 1) -> Bool {
         stopEcho()
         guard readActive, readText != nil else { return false }
-        // Stage 2 (PDF outline): paged branch lands here, page-granular.
+        // Paged reads (PDF outline): page-granular, global page indices —
+        // the same pure helpers, pages as the ordinal. Out-of-window
+        // targets ride loadPageWindow inside speakPage for free.
+        if let window = readPaged, pagedFull != nil {
+            guard !pdfHeadings.isEmpty else { return false }
+            var page = pagedWindowFirst + window.pageIndex(at: readPosition)
+            var moved = false
+            for _ in 0..<max(1, count) {
+                guard let next = Self.headingStep(motion, headings: pdfHeadings,
+                                                  from: page) else { break }
+                page = next
+                moved = true
+            }
+            guard moved else { return false }
+            return speakPage(globalIndex: page, echoPage: false)
+        }
         guard !readHeadings.isEmpty else { return false }
         var position = readPosition
         var moved = false

@@ -109,4 +109,48 @@ final class LargeContentTests: XCTestCase {
                           "page \(target) must be reachable at a window start")
         }
     }
+
+    // MARK: - Windowed long reads: the 9M-char field case, whole and navigable
+
+    func testNineMillionCharDocChunksBoundedAndReachable() {
+        let line = "scrollback line with real content 0123456789\n"  // 45 chars
+        let text = String(repeating: line, count: 200_000)  // 9M chars
+        let ns = text as NSString
+        let deepStart = (line as NSString).length * 120_000  // a line start, ~5.4M in
+
+        let started = Date()
+        let (paged, startPage) = PagedText.chunking(text, from: deepStart)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10.0,
+                          "chunking the field-incident size must stay interactive")
+
+        XCTAssertEqual(paged.pageStarts[startPage - 1], deepStart,
+                       "the start page begins exactly at the caret")
+        let expectedPages = ns.length / PagedText.syntheticPageSize
+        XCTAssertGreaterThan(paged.pageCount, expectedPages / 2)
+        XCTAssertLessThan(paged.pageCount, expectedPages * 2)
+
+        // First, caret, and last pages all reachable at window starts
+        for target in [0, startPage - 1, paged.pageCount - 1] {
+            let (first, window) = paged.window(startingAt: target)
+            XCTAssertEqual(first, target)
+            XCTAssertLessThanOrEqual((window.text as NSString).length,
+                                     PagedText.windowBudget)
+        }
+    }
+
+    // MARK: - Cap ordering: the plain/paged threshold invariant
+
+    func testWindowBudgetSitsBelowBothCaps() {
+        // "Fits one window → plain read" is safe only while a window can
+        // never trip the preprocessor: the paged threshold must sit below
+        // the input cap AND the output cap (verbalizer expansion margin).
+        XCTAssertLessThan(PagedText.windowBudget, SpeechPreprocessor.maxInputLength)
+        XCTAssertLessThan(PagedText.windowBudget, SpeechPreprocessor.maxSpokenLength)
+    }
+
+    func testExceedsWindowThreshold() {
+        XCTAssertFalse(PagedText.exceedsWindow(0))
+        XCTAssertFalse(PagedText.exceedsWindow(PagedText.windowBudget))
+        XCTAssertTrue(PagedText.exceedsWindow(PagedText.windowBudget + 1))
+    }
 }

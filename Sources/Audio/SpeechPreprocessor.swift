@@ -433,7 +433,7 @@ enum SpeechPreprocessor {
 
     // MARK: - Tables
 
-    private static let maxSpokenLength = 50_000
+    static let maxSpokenLength = 50_000  // internal: tests pin cap ordering
     /// Cap on INPUT characters (comfortably above maxSpokenLength — the
     /// verbalizer usually grows text, never shrinks it much).
     static let maxInputLength = 60_000

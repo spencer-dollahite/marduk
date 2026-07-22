@@ -82,15 +82,19 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
                 let page = pagedWindowFirst + paged.pageIndex(at: readPosition)
                 if page != followPageIndex {
                     followPageIndex = page
-                    onPageJump?(page + 1)
+                    // Synthetic pages have no viewer to follow — the
+                    // tracker still advances (page echo, continuation) but
+                    // no go-to-page gesture fires.
+                    if !pagedSynthetic { onPageJump?(page + 1) }
                 }
             }
         }
     }
     // Last page whose visual follow fired (paged reads only)
     private var followPageIndex = -1
-    // Page starts when the current read is a paged document (PDF) — pages
-    // are respeak targets layered on the flat readText. Nil = not paged.
+    // Page starts when the current read is a paged document (PDF, or huge
+    // plain text chunked into synthetic pages) — pages are respeak targets
+    // layered on the flat readText. Nil = not paged.
     // readPaged is the current WINDOW; pagedFull is the whole document and
     // pagedWindowFirst maps window page indices to global ones. Jumps
     // outside the window rebuild it (loadPageWindow) — any page of any
@@ -98,6 +102,9 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     private var readPaged: PagedText?
     private var pagedFull: PagedText?
     private var pagedWindowFirst = 0
+    // Synthetic paging (huge plain text chunked into pages): same machinery,
+    // but no viewer follows along — go-to-page gestures are suppressed.
+    private var pagedSynthetic = false
 
     // Back-motion anchor: at fast speech rates the boundary callbacks race
     // ahead of comprehension — by the time a `b` lands, readPosition is
@@ -192,6 +199,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         readText = processed
         readPaged = nil  // plain read; speakPaged re-sets after this returns
         pagedFull = nil
+        pagedSynthetic = false
         readBase = 0
         readPosition = 0
         segmentStartedAt = Date()
@@ -238,6 +246,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         readText = nil
         readPaged = nil
         pagedFull = nil
+        pagedSynthetic = false
     }
 
     func speakSSML(_ ssml: String) {
@@ -257,6 +266,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         readText = nil // SSML positions don't map to plain text — no motions
         readPaged = nil
         pagedFull = nil
+        pagedSynthetic = false
     }
 
     // MARK: - Read motions (vim-style navigation within the current read)
@@ -301,19 +311,23 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         return true
     }
 
-    /// Whether the current read has page structure (PDF).
+    /// Whether the current read has page structure (PDF or synthetic).
     var isPaged: Bool { readActive && readPaged != nil }
 
     /// A paged document read: speak a page WINDOW starting at the visible
     /// page (1-based). The full document is retained; page jumps outside
-    /// the window rebuild it there.
-    func speakPaged(_ paged: PagedText, startPage: Int, completion: (() -> Void)? = nil) {
+    /// the window rebuild it there, and a window that ends naturally
+    /// continues into the next one (didFinish). `synthetic` marks chunked
+    /// plain text — same machinery, no viewer gestures.
+    func speakPaged(_ paged: PagedText, startPage: Int, synthetic: Bool = false,
+                    completion: (() -> Void)? = nil) {
         let (first, window) = paged.window(startingAt: startPage - 1)
         speak(window.text, completion: completion)
         guard readActive else { return }  // empty-after-preprocessing
         pagedFull = paged
         pagedWindowFirst = first
         readPaged = window
+        pagedSynthetic = synthetic
         // Preview already SHOWS the start page (the title told us) — seed
         // the tracker so the initial jump doesn't fire a redundant gesture
         followPageIndex = max(0, min(startPage - 1, paged.pageCount - 1))
@@ -323,18 +337,30 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// completion carries exactly like respeak's (the read's eventual end
     /// still fires it), and media stays ducked across the swap because the
     /// replaced utterance's didCancel is stale by the time it lands.
-    private func loadPageWindow(atGlobalPage global: Int) {
-        guard let full = pagedFull else { return }
-        let carried = currentUtterance.flatMap {
+    /// False when the new window never started speaking (its text
+    /// preprocessed to nothing — whitespace-only PDF pages, stripped
+    /// junk): state is left untouched and the caller must not assume a
+    /// live read, or a silent capture would strand the keyboard.
+    @discardableResult
+    private func loadPageWindow(atGlobalPage global: Int) -> Bool {
+        guard let full = pagedFull else { return false }
+        let synthetic = pagedSynthetic  // speak() clears it — capture first
+        let replaced = currentUtterance
+        let carried = replaced.flatMap {
             completions.removeValue(forKey: ObjectIdentifier($0))
         }
         let (first, window) = full.window(startingAt: global)
         speak(window.text, completion: carried)
-        guard readActive else { return }
+        guard readActive, currentUtterance !== replaced else { return false }
         pagedFull = full          // speak() cleared paged state — restore
         pagedWindowFirst = first
         readPaged = window
-        followPageIndex = global
+        pagedSynthetic = synthetic
+        // Seed BEHIND the arrival page: unlike speakPaged's start (Preview
+        // already shows it), the viewer has NOT turned to a rebuilt
+        // window's page — the first word boundary must fire the gesture.
+        followPageIndex = global - 1
+        return true
     }
 
     /// Ctrl+F / Ctrl+B: step pages (vim count semantics — step may be ±N).
@@ -660,6 +686,22 @@ extension SpeechEngine: AVSpeechSynthesizerDelegate {
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         fputs("[speech] didFinish fired\n", stderr)
+        // Window continuation: a paged read whose WINDOW ended naturally
+        // keeps going — load the next window instead of tearing down.
+        // Only didFinish continues (didCancel is a user stop); the check
+        // must precede finish(), while currentUtterance still points at
+        // the finishing utterance so loadPageWindow carries its completion
+        // and the skipped teardown keeps media ducked across the boundary.
+        if utterance === currentUtterance, let window = readPaged,
+           let full = pagedFull,
+           let next = full.nextWindowStart(afterWindowFirst: pagedWindowFirst,
+                                           windowPageCount: window.pageCount) {
+            fputs("[speech] window ended — continuing at page \(next + 1) "
+                + "of \(full.pageCount)\n", stderr)
+            if loadPageWindow(atGlobalPage: next) { return }
+            // Next window preprocessed to nothing — end the read normally
+            // rather than strand a silent capture.
+        }
         finish(utterance)
     }
 
@@ -692,6 +734,7 @@ extension SpeechEngine: AVSpeechSynthesizerDelegate {
             readText = nil
             readPaged = nil
             pagedFull = nil
+            pagedSynthetic = false
             readIPAEntries = []
         }
         if let completion = completions.removeValue(forKey: ObjectIdentifier(utterance)) {

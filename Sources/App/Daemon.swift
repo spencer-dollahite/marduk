@@ -151,6 +151,9 @@ final class DaemonServer {
     // cancel/no-match paths resume only then (a read the user had already
     // Space-paused before searching stays paused)
     private var searchPausedRead = false
+    // Long-read chunking runs off-main; a newer read must win over a
+    // stale chunk result landing late (R pressed twice on a huge doc).
+    private var longReadGeneration = 0
 
     // ":voices" picker rows: installed English voices, best quality first,
     // enumerated once on first use (same filter/sort as `marduk voices`)
@@ -391,9 +394,13 @@ final class DaemonServer {
         // speech.announce (tutorial.announce above), so it never sees itself.
         keyboardMonitor?.start(
             onSpeak: { [self] text in
+                longReadGeneration += 1  // a new read beats an in-flight chunk
                 speech.speak(text) { [self] in tutorial.handle(.readFinished) }
             },
-            onStop: { [self] in speech.stop() },
+            onStop: { [self] in
+                longReadGeneration += 1  // a stop beats an in-flight chunk
+                speech.stop()
+            },
             onAnnounce: { [self] text in
                 tutorial.handle(.announced(text))
                 speech.announce(text)
@@ -534,9 +541,13 @@ final class DaemonServer {
             }
         }
         keyboardMonitor?.onSpeakPaged = { [self] paged, startPage in
+            longReadGeneration += 1  // a new read beats an in-flight chunk
             speech.speakPaged(paged, startPage: startPage) { [self] in
                 tutorial.handle(.readFinished)
             }
+        }
+        keyboardMonitor?.onSpeakDocument = { [self] text, start in
+            speakDocument(text, start: start)
         }
         keyboardMonitor?.onReadLineStart = { [self] in
             if !speech.jumpToLineStart() {
@@ -662,6 +673,39 @@ final class DaemonServer {
         cleanup()
         if pendingExitCode != 0 {
             exit(pendingExitCode)
+        }
+    }
+
+    // MARK: - Long reads
+
+    /// Full-document read: plain when it fits one page window, else chunk
+    /// into synthetic pages OFF-MAIN (chunking a multi-MB string on main
+    /// would recreate the event-tap freeze the input cap fixed) and ride
+    /// the paged machinery — every part of any size document reachable
+    /// while preprocessing stays bounded. `start` is the exact UTF-16
+    /// offset the voice begins at; on paged reads the text before it
+    /// stays reachable (gg = the true top).
+    private func speakDocument(_ text: String, start: Int) {
+        longReadGeneration += 1
+        let ns = text as NSString
+        guard PagedText.exceedsWindow(ns.length) else {
+            speech.speak(ns.substring(from: max(0, min(start, ns.length)))) { [self] in
+                tutorial.handle(.readFinished)
+            }
+            return
+        }
+        fputs("[speech] long read (\(ns.length) chars) — chunking into "
+            + "synthetic pages\n", stderr)
+        let generation = longReadGeneration
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let (paged, startPage) = PagedText.chunking(text, from: start)
+            DispatchQueue.main.async { [self] in
+                guard generation == longReadGeneration else { return }
+                fputs("[speech] long read chunked: \(paged.pageCount) pages\n", stderr)
+                speech.speakPaged(paged, startPage: startPage, synthetic: true) { [self] in
+                    tutorial.handle(.readFinished)
+                }
+            }
         }
     }
 

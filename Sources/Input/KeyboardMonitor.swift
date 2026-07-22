@@ -125,6 +125,11 @@ final class KeyboardMonitor {
     var onReadPageStep: ((Int) -> Void)?      // Ctrl+F/Ctrl+B, ±count pages
     var onReadPageAbsolute: ((Int) -> Void)?  // 12G — page twelve
     var onSpeakPaged: ((PagedText, Int) -> Void)?  // PDF read (paged, 1-based start)
+    // Full-document read: complete text + UTF-16 start offset. The daemon
+    // decides plain vs synthetic-paged (huge text chunks into pages, so
+    // the whole document is reachable). Anchored web reads stay on onSpeak
+    // — their line→anchor scroll mapping assumes unwindowed text.
+    var onSpeakDocument: ((String, Int) -> Void)?
     private var lastReadAction: ReadAction?
     var onReadFind: ((Character, ReadDirection) -> Void)?  // f/F + char
     private var pendingReadFind: ReadDirection?  // f pressed, awaiting the target char
@@ -479,10 +484,10 @@ final class KeyboardMonitor {
                     let paused = isReadPaused()
                     onStop?()
                     if paused {
-                        Self.readSelection { [self] text in onSpeak?(text) }
+                        Self.readSelection { [self] text in onSpeakDocument?(text, 0) }
                     }
                 } else {
-                    Self.readSelection { [self] text in onSpeak?(text) }
+                    Self.readSelection { [self] text in onSpeakDocument?(text, 0) }
                 }
             }
             return nil
@@ -1196,7 +1201,7 @@ final class KeyboardMonitor {
                 pendingCount = 0
                 DispatchQueue.main.async { [self] in
                     visualAXState = nil
-                    Self.readSelection { [self] text in onSpeak?(text) }
+                    Self.readSelection { [self] text in onSpeakDocument?(text, 0) }
                 }
                 return nil
 
@@ -2004,7 +2009,10 @@ final class KeyboardMonitor {
                 return
             }
             fputs("[keyboard] R: document read (\(remainder.count) of \(ns.length) chars)\n", stderr)
-            onSpeak?(remainder)
+            // Full text + start, not the sliced remainder: a huge document
+            // gets chunked into pages around the exact start offset, so
+            // pre-caret text stays reachable (gg = the true top).
+            onSpeakDocument?(text, start)
         }
     }
 
@@ -2189,7 +2197,7 @@ final class KeyboardMonitor {
                     return
                 }
                 fputs("[keyboard] R: Safari page (\(text.count) chars)\n", stderr)
-                onSpeak?(text)
+                onSpeakDocument?(text, 0)  // unbounded harvest — may page
             }
         }
     }
@@ -2357,7 +2365,7 @@ final class KeyboardMonitor {
         DispatchQueue.main.async { [self] in
             tripleClickAtCursor()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [self] in
-                Self.readSelection { [self] text in onSpeak?(text) }
+                Self.readSelection { [self] text in onSpeakDocument?(text, 0) }
             }
         }
     }

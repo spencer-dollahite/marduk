@@ -1248,7 +1248,7 @@ final class KeyboardMonitor {
                         self.readingCapture = true
                         fputs("[keyboard] escape held → READING (read reclaimed)\n",
                               stderr)
-                        Earcon.riseToNormal()
+                        Earcon.riseToReading()  // middle rung — ends lower than NORMAL
                         return
                     }
                     self.mode = .normal

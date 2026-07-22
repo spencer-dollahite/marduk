@@ -20,10 +20,20 @@ enum Earcon {
         play(frequencies: [800, 500])
     }
 
-    /// Rising three-tone sweep — signals leaving INSERT and going "up" to NORMAL.
-    /// Low → mid → high, tight and quick so it reads as a single upward motion.
+    /// Rising three-tone sweep — signals climbing "up" to NORMAL (the top
+    /// of the INSERT → READING → NORMAL ladder). Low → mid → high, tight and
+    /// quick so it reads as a single upward motion. Ends higher than
+    /// riseToReading so the destination level is audible.
     static func riseToNormal() {
         play(frequencies: [440, 660, 990], toneDuration: 0.05, gapDuration: 0.0)
+    }
+
+    /// Rising sweep for the MIDDLE rung — climbing INSERT → READING (held
+    /// Escape reclaiming a still-playing read). Same shape as riseToNormal
+    /// but ends a step lower (990 → 784, a whole tone under), so the two
+    /// climb destinations are distinguishable by ear.
+    static func riseToReading() {
+        play(frequencies: [440, 660, 784], toneDuration: 0.05, gapDuration: 0.0)
     }
 
     /// Falling three-tone sweep — mirror of riseToNormal. Signals dropping

@@ -316,7 +316,7 @@ enum CommandCompleter {
     /// Staged commands complete with a trailing space (the buffer stays
     /// open for the next stage) instead of executing outright.
     private static func commandCompletion(_ name: String) -> String {
-        expandingCommands.contains(name) ? "\(name) " : name
+        ColonCommand.expandingCommands.contains(name) ? "\(name) " : name
     }
 
     /// Everything "/" search can land on: all commands + all config keys.
@@ -395,7 +395,7 @@ enum CommandCompleter {
         // fuzzy-filtered by whatever is typed after the command name.
         // Return/Tab/click accept a row; the completion carries the
         // identifier the daemon acts on.
-        if pickerCommands.contains(tokens[0]) {
+        if ColonCommand.pickerCommands.contains(tokens[0]) {
             return pickerRows(command: tokens[0], tokens: tokens,
                               source: tokens[0] == "voices" ? voices : apps)
         }

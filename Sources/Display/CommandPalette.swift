@@ -92,16 +92,18 @@ final class CommandPalette {
     ///
     /// Pure so the renderer and the click-row mapping can be proven to agree
     /// — they must, or a click lands on a different command than the one the
-    /// user sees highlighted. Keeps the selection inside the window by
-    /// scrolling the minimum distance, like a terminal pager.
+    /// user sees highlighted.
+    ///
+    /// Stateless by design (there is no previous window to scroll from), so
+    /// the rule is: show the EARLIEST window that still contains the
+    /// selection. The list therefore stays parked at the top until the
+    /// selection passes the bottom row, then advances one row at a time.
     static func visibleWindow(selected: Int, count: Int, maxRows: Int) -> Range<Int> {
         guard count > 0, maxRows > 0 else { return 0..<0 }
         guard count > maxRows else { return 0..<count }
         let selected = max(0, min(selected, count - 1))
-        // Scroll only far enough to bring the selection back into view.
-        var first = min(selected, count - maxRows)
-        if selected >= first + maxRows { first = selected - maxRows + 1 }
-        first = max(0, min(first, count - maxRows))
+        let first = min(max(0, selected < maxRows ? 0 : selected - maxRows + 1),
+                        count - maxRows)
         return first..<(first + maxRows)
     }
 

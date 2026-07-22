@@ -44,6 +44,19 @@ final class DisplayInverter: @unchecked Sendable {
 
     var invertApps: Set<String>
     var invertEnabled = true
+
+    /// Is the inversion subsystem live at all? EITHER switch opts you in —
+    /// turning on `autoinvert` is plainly a request to have the display
+    /// inverted, and requiring a second, differently-named switch to make
+    /// it do anything is a trap users fall into (field 2026-07-22).
+    ///
+    /// This MUST gate inverting and reverting identically. Before it, the
+    /// raw-activation fast path inverted listed apps with no `invert`
+    /// check at all while the heartbeat that reverts them was gated —
+    /// so with `invert` off, Pages would invert and NOTHING could ever
+    /// hand the display back. That stranded inversion is what later got
+    /// toggled onto a normal screen and blinded the user.
+    var inversionActive: Bool { invertEnabled || autoInvert }
     /// Fired (main queue) the first time a dark-appearance press succeeds
     /// this run — the Daemon speaks the one-time onboarding explanation.
     var onDarkApplied: (() -> Void)?
@@ -274,10 +287,13 @@ final class DisplayInverter: @unchecked Sendable {
             + "listed=\(invertApps.sorted().joined(separator: ",")) "
             + "builtin=\(Self.builtInInvertPrefixes.joined(separator: ","))\n",
             stderr)
-        if autoInvert && !invertEnabled {
-            fputs("[display] NOTE: autoinvert is ON but invert is OFF — "
-                + "invert is the master switch, so NOTHING will invert. "
-                + "Run: marduk config invert on\n", stderr)
+        if !inversionActive {
+            fputs("[display] NOTE: invert and autoinvert are both OFF — "
+                + "nothing will ever invert. Run: marduk config invert on\n",
+                stderr)
+        } else if autoInvert && !invertEnabled {
+            fputs("[display] active via autoinvert (invert itself is off) — "
+                + "listed apps still invert on sight\n", stderr)
         }
     }
 
@@ -464,10 +480,10 @@ final class DisplayInverter: @unchecked Sendable {
 
     private func handleAppActivated(_ bundleID: String, pid: pid_t) {
         fputs("[display] front=\(bundleID) listed=\(isListed(bundleID)) "
-            + "invert=\(invertEnabled ? "on" : "off") "
+            + "active=\(inversionActive) "
             + "autoinvert=\(autoInvert ? "on" : "off") "
             + "inverted=\(isInverted)\n", stderr)
-        if invertEnabled {
+        if inversionActive {
             // Events may INVERT (snappier than waiting for the heartbeat):
             // the list is unconditional certainty, auto-measurement judges
             // unlisted apps. Events NEVER revert — that's the heartbeat's
@@ -519,7 +535,7 @@ final class DisplayInverter: @unchecked Sendable {
         func step() {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 guard let self, generation == self.fastConfirmGeneration,
-                      self.isInverted, self.invertEnabled else { return }
+                      self.isInverted, self.inversionActive else { return }
                 guard let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
                       !self.isListed(front), front != self.invertHolder else { return }
                 checks += 1
@@ -537,7 +553,7 @@ final class DisplayInverter: @unchecked Sendable {
     }
 
     private func poll() {
-        guard invertEnabled,
+        guard inversionActive,
               let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         else { return }
         if isListed(front) {
@@ -567,9 +583,10 @@ final class DisplayInverter: @unchecked Sendable {
         if wanted { invertHolder = holder }
         // Never act on the display unless the user opted in. The built-in
         // app list is inert until `:config invert on`.
-        guard invertEnabled else {
+        guard inversionActive else {
             fputs("[display] want \(wanted ? "invert" : "revert") (\(reason)) "
-                + "but invert is OFF — run: marduk config invert on\n", stderr)
+                + "but both invert and autoinvert are OFF — run: "
+                + "marduk config invert on\n", stderr)
             return
         }
         // The lockout stands even with a sticking mechanism: one change,
@@ -756,7 +773,7 @@ final class DisplayInverter: @unchecked Sendable {
             }
             guard let measured else { return }
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.invertEnabled, self.autoInvert,
+                guard let self, self.inversionActive, self.autoInvert,
                       self.resolveFront()?.bundleID == bundleID else { return }
                 // Window captures come from the backing store, BEFORE the
                 // display-level inversion filter — the measurement is the

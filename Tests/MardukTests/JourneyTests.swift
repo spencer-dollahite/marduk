@@ -75,10 +75,17 @@ final class JourneyTests: XCTestCase {
         }
     }
 
-    private func terminalScrollback(pages: Int) -> String {
-        // Paragraph-shaped so the chunker has blank-line cut points
-        (0..<pages).map { "line \($0) of the scrollback\n\nbody text here" }
-            .joined(separator: "\n\n")
+    /// Paragraph-shaped so the chunker has blank-line cut points. Sized in
+    /// CHARACTERS, because what makes a read windowed is length
+    /// (`windowBudget` 45k), not how many paragraphs it has.
+    private func terminalScrollback(chars: Int) -> String {
+        var text = ""
+        var i = 0
+        while text.utf16.count < chars {
+            text += "line \(i) of the scrollback\n\nbody text here\n\n"
+            i += 1
+        }
+        return text
     }
 
     // MARK: - Journey 1: the 2026-07-22 field bug, replayed
@@ -87,7 +94,7 @@ final class JourneyTests: XCTestCase {
     /// pressed `50%`, then `gg`, and could never get back. This walks the
     /// exact sequence and asserts Ctrl+O returns them.
     func testTerminalScrollbackJumpAndReturn() throws {
-        let text = terminalScrollback(pages: 400)
+        let text = terminalScrollback(chars: 300_000)
         let ns = text as NSString
         let pointerStart = ns.length / 2          // R started under the pointer
         let (full, startPage) = PagedText.chunking(text, from: pointerStart)
@@ -135,7 +142,7 @@ final class JourneyTests: XCTestCase {
 
     /// Nothing older must buzz rather than moving somewhere arbitrary.
     func testCtrlOOnAFreshReadHasNowhereToGo() {
-        let text = terminalScrollback(pages: 100)
+        let text = terminalScrollback(chars: 300_000)
         let (full, startPage) = PagedText.chunking(text, from: 0)
         let (first, window) = full.window(startingAt: startPage - 1)
         var s = Session(full: full, window: window)
@@ -155,7 +162,7 @@ final class JourneyTests: XCTestCase {
             ModePolicy.documentEdge(forward: false, isPaged: false, pageCount: 0),
             .textOffset)
 
-        let big = terminalScrollback(pages: 400)
+        let big = terminalScrollback(chars: 300_000)
         XCTAssertTrue(PagedText.exceedsWindow((big as NSString).length))
         let (full, _) = PagedText.chunking(big, from: 0)
         XCTAssertEqual(
@@ -171,7 +178,7 @@ final class JourneyTests: XCTestCase {
     /// A windowed read must reach its LAST page — the whole point of
     /// window continuation, and what the escape bug interrupted.
     func testEveryPageOfAWindowedReadIsReachable() {
-        let (full, _) = PagedText.chunking(terminalScrollback(pages: 300), from: 0)
+        let (full, _) = PagedText.chunking(terminalScrollback(chars: 300_000), from: 0)
         let (first, window) = full.window(startingAt: 0)
         var s = Session(full: full, window: window)
         s.windowFirst = first
@@ -290,20 +297,36 @@ final class JourneyTests: XCTestCase {
 
     // MARK: - Journey 5: typing a `:` command with realistic pauses
 
-    /// Auto-accept fires on a pause. Typing `config rate 230` must produce
-    /// exactly one execution, never an early one — and `se` must never
-    /// resolve to `security` mid-word.
-    func testTypingAConfigCommandResolvesExactlyOnce() {
+    /// A NUMBER must never auto-accept — there is no way to know the user
+    /// finished typing "2" of "230", so a rate could apply half-entered.
+    /// Walking every prefix of `config rate 230` must produce no execution
+    /// at all; Return is what commits it.
+    func testTypingANumericConfigNeverAutoExecutes() {
         let full = "config rate 230"
         var executions: [String] = []
         for end in 1...full.count {
-            let prefix = String(full.prefix(end))
-            if case .execute(let command) = ColonCommand.autoResolve(prefix) {
+            if case .execute(let command) =
+                ColonCommand.autoResolve(String(full.prefix(end))) {
                 executions.append(command)
             }
         }
-        XCTAssertEqual(executions, ["config rate 230"],
-                       "a number must wait for Return until it is complete")
+        XCTAssertEqual(executions, [],
+                       "a half-typed number must never apply — Return commits it")
+    }
+
+    /// An enum value CAN auto-accept, because "on" is unambiguous the
+    /// moment it is complete. Exactly one execution, at the end.
+    func testTypingAToggleAutoAcceptsExactlyOnce() {
+        let full = "config echo on"
+        var executions: [String] = []
+        for end in 1...full.count {
+            if case .execute(let command) =
+                ColonCommand.autoResolve(String(full.prefix(end))) {
+                executions.append(command)
+            }
+        }
+        XCTAssertEqual(executions, ["config echo on"],
+                       "a unique enum value acts without Return, once")
     }
 
     func testSeNeverResolvesToSecurityMidWord() {

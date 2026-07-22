@@ -73,6 +73,17 @@ final class DisplayInverter: @unchecked Sendable {
     private var captureFailureLogged = false
 
     private var isInverted = false
+    /// Did WE fire the toggle that turned the current inversion on? The
+    /// display being inverted is NOT the same fact as Marduk owning that
+    /// inversion — a user who inverts for their own reasons, or a stale
+    /// `whiteOnBlack` pref (the documented stranded-pref failure), both
+    /// make `isInverted` true with nothing of ours behind it. Only an
+    /// inversion we OWN may ever be reverted, because the mechanism is a
+    /// blind TOGGLE: "reverting" a display that isn't actually inverted
+    /// INVERTS it (field 2026-07-22 — a dark-mode user's screen went
+    /// blinding white on an update restart, from `stop()` firing this on
+    /// a seeded flag it never earned, with invert switched OFF entirely).
+    private var weOwnInversion = false
     private var observer: NSObjectProtocol?
     private var terminationObserver: NSObjectProtocol?
     private var themeObserver: NSObjectProtocol?
@@ -144,9 +155,11 @@ final class DisplayInverter: @unchecked Sendable {
     }
 
     func start() {
-        // The user (or a crash) may have left the display inverted —
-        // bookkeeping starts from the system's actual state
+        // Seed the OBSERVED state so transition math is right — but claim
+        // no ownership. An inversion that predates this process is the
+        // user's (or a stranded pref), never ours to undo.
         isInverted = Self.displayIsInverted()
+        weOwnInversion = false
 
         observer = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
@@ -264,23 +277,31 @@ final class DisplayInverter: @unchecked Sendable {
         teardownPreviewObserver()
         pollTimer?.invalidate()
         pollTimer = nil
-        // Revert inversion if active
-        if isInverted {
-            lastToggleAt = Date()
-            applyInversion(false)
-            isInverted = false
-            fputs("[display] Reverted inversion on stop\n", stderr)
+        // Hand back ONLY an inversion we put there. Firing the toggle on
+        // someone else's (or on a stranded pref) turns a dark screen
+        // blinding white — the exact field failure this guard exists for.
+        guard isInverted, weOwnInversion else {
+            if isInverted {
+                fputs("[display] display is inverted but not by us — "
+                    + "leaving it alone on stop\n", stderr)
+            }
+            return
         }
+        lastToggleAt = Date()
+        applyInversion(false)
+        isInverted = false
+        weOwnInversion = false
+        fputs("[display] Reverted inversion on stop\n", stderr)
     }
 
     /// Live `:config invert off` mid-invert must hand the display back.
     func revertIfInverted() {
-        if isInverted {
-            lastToggleAt = Date()
-            applyInversion(false)
-            isInverted = false
-            fputs("[display] Reverted inversion (invert off)\n", stderr)
-        }
+        guard isInverted, weOwnInversion else { return }
+        lastToggleAt = Date()
+        applyInversion(false)
+        isInverted = false
+        weOwnInversion = false
+        fputs("[display] Reverted inversion (invert off)\n", stderr)
     }
 
     /// Force TCC registration: a capture attempt makes Marduk appear in
@@ -522,9 +543,15 @@ final class DisplayInverter: @unchecked Sendable {
         // The lockout stands even with a sticking mechanism: one change,
         // then silence — deferred wants converge via the heartbeat
         guard Date().timeIntervalSince(lastToggleAt) >= Self.toggleLockout else { return }
+        // Never act on the display unless the user opted in. The built-in
+        // app list is inert until `:config invert on`.
+        guard invertEnabled else { return }
+        // Reverting is only ever ours to do (see weOwnInversion)
+        guard wanted || weOwnInversion else { return }
         lastToggleAt = Date()
         applyInversion(wanted)
         isInverted = wanted
+        weOwnInversion = wanted
         if !wanted {
             invertHolder = nil
             lastRevertAt = Date()
@@ -631,6 +658,10 @@ final class DisplayInverter: @unchecked Sendable {
             let actual = Self.displayIsInverted()
             guard actual != wanted else { return }
             self.isInverted = actual
+            // Our toggle didn't land, so we own nothing — claiming an
+            // inversion that never happened is what makes a later
+            // "revert" fire a toggle onto an un-inverted display.
+            self.weOwnInversion = actual && self.weOwnInversion
             fputs("[display] inversion had no effect — check the Invert Colors "
                 + "shortcut in Settings, Keyboard, Keyboard Shortcuts, "
                 + "Accessibility, and Marduk's Automation permission for "

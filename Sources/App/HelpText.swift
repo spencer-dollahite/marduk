@@ -109,7 +109,8 @@ enum HelpText {
         only the central password and permission prompts. dialog focus, \
         one word, ask, always, or off: when a dialog is announced, \
         Marduk can bring it to the front — ask offers a, o, n, or s \
-        with the announcement. follow, on or \
+        with the announcement. hints, on or off: the occasional spoken \
+        pointer to a feature you might not have found yet. follow, on or \
         off: the app's view tracks the read — Preview turns to the page \
         you jump to, and reader articles scroll with the voice. \
         invert, on or off, off by \
@@ -184,6 +185,8 @@ enum HelpText {
         From there, type h for help, or t u for the guided tour. To try a \
         different voice any time, type colon voices, and type colon tip \
         any time to learn one feature. \
+        I will point out a feature now and then as you go — say colon hints \
+        off to silence that, or colon tutorial for a guided tour. \
         This message plays only once.
         """
 }

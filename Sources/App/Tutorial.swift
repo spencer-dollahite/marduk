@@ -30,6 +30,10 @@ final class Tutorial {
     /// reads its lessons trigger — and never observes its own speech.
     var announce: ((String) -> Void)?
 
+    /// Fired when the tour FINISHES (not on abort) — the daemon marks the
+    /// user experienced so feature hints stand down.
+    var onComplete: (() -> Void)?
+
     func start() {
         guard !isActive else { return }
         steps = Self.makeSteps()   // fresh step-local state every run
@@ -61,6 +65,7 @@ final class Tutorial {
             isActive = false
             fputs("[tutorial] finished\n", stderr)
             announce?(finished.success + " " + Self.wrapUp)
+            onComplete?()
         }
     }
 

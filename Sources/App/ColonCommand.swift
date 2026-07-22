@@ -210,6 +210,7 @@ enum ColonCommand: Equatable {
         // Shares the "dialog" stem with "dialogs" but neither is a prefix
         // of the other (7th char s vs f) — the guard test holds
         ("dialogfocus", .choice(["ask", "always", "off"])),
+        ("hints", .toggle),   // progressive onboarding hints + questions
         ("follow", .toggle),
         ("invert", .toggle),
         ("pdfdark", .choice(["auto", "on", "off"])),

@@ -135,16 +135,12 @@ final class DaemonServer {
     // Retained for live mutation (":config") + persistence
     private var config: MardukConfig
     private let tutorial = Tutorial()
+    private let onboarding: Onboarding
     private let dialogSentinel = DialogSentinel()
     // dialogfocus consent state (ask | always | off); markers make the
-    // full pitch and the zoom pointer speak once ever
+    // full pitch and the zoom pointer speak once ever (OnceMarker slugs
+    // "dialogfocus-explained" / "zoomfollow-hinted")
     private var dialogFocusSetting: DialogFocus.Setting = .ask
-    private static let dialogFocusExplainedMarker =
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/marduk/.dialogfocus-explained")
-    private static let zoomFollowHintMarker =
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/marduk/.zoomfollow-hinted")
     private let hoverSpeech = HoverSpeech()
     private let palette = CommandPalette()
     private var paletteEnabled: Bool
@@ -200,6 +196,10 @@ final class DaemonServer {
 
     init(config: MardukConfig) {
         self.config = config
+        onboarding = Onboarding(
+            hintsEnabled: config.onboarding?.hints ?? true,
+            hintsShown: config.onboarding?.hintsShown ?? 0,
+            tutored: OnceMarker.seen("tutored"))
         paletteEnabled = config.keyboard?.commandPalette ?? true
         autoUpdate = config.update?.auto ?? true
         updateCheckHours = config.update?.checkHours ?? 24
@@ -330,6 +330,17 @@ final class DaemonServer {
         if !safeMode { modeOverlay?.start() }
 
         tutorial.announce = { [self] text in speech.announce(text) }
+        // Finishing the guided tour is the strongest "this user gets it"
+        // signal — feature hints stand down afterward.
+        tutorial.onComplete = { [self] in onboarding.markTutored() }
+        onboarding.speak = { [self] text in speech.announce(text) }
+        onboarding.isSpeaking = { [self] in speech.isSpeaking }
+        onboarding.persistHintsShown = { [self] count in
+            var ob = config.onboarding ?? MardukConfig.OnboardingConfig()
+            ob.hintsShown = count
+            config.onboarding = ob
+            ConfigLoader.save(config)
+        }
 
         // Dialog sentinel: password prompts, permission dialogs, and
         // in-app sheets are invisible to a zoomed-in user — announce
@@ -350,10 +361,7 @@ final class DaemonServer {
         // One-time onboarding: automatic dark PDFs are an invisible
         // automation — the first success explains itself, once ever
         displayInverter?.onDarkApplied = { [self] in
-            let marker = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".config/marduk/.pdfdark-noticed")
-            guard !FileManager.default.fileExists(atPath: marker.path) else { return }
-            try? Data().write(to: marker)
+            guard OnceMarker.firstTime("pdfdark-noticed") else { return }
             speech.announce("Preview switched this P D F to dark view, "
                 + "matching your dark system theme. This happens "
                 + "automatically. Say colon config p d f dark off to stop.")
@@ -650,11 +658,8 @@ final class DaemonServer {
         // can never replay-loop it. Spoken via the READ path — Space-pausable,
         // Escape-stoppable. (If tap creation failed, this replaces the queued
         // permission announcement; the tap retry re-announces on success.)
-        let welcomeMarker = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/marduk/.welcomed")
-        if !FileManager.default.fileExists(atPath: welcomeMarker.path) {
+        if OnceMarker.firstTime("welcomed") {
             DispatchQueue.main.async { [self] in
-                try? Data().write(to: welcomeMarker)
                 fputs("[marduk] first-run welcome\n", stderr)
                 speech.speak(HelpText.welcome)
             }
@@ -756,8 +761,7 @@ final class DaemonServer {
             focusDialog(target)
             return
         }
-        let explained = FileManager.default
-            .fileExists(atPath: Self.dialogFocusExplainedMarker.path)
+        let explained = OnceMarker.seen("dialogfocus-explained")
         let zoomFollows = DialogFocus.zoomFollowsFocus()
         guard let tail = DialogFocus.promptTail(
             setting: .ask, explained: explained,
@@ -765,7 +769,7 @@ final class DaemonServer {
             speech.announce(text)
             return
         }
-        if !explained { try? Data().write(to: Self.dialogFocusExplainedMarker) }
+        if !explained { OnceMarker.mark("dialogfocus-explained") }
         // The window restarts when the spoken question ENDS — listening
         // to the full pitch must never eat the answer time
         speech.announce(text + " " + tail) { [weak keyboardMonitor] in
@@ -780,8 +784,7 @@ final class DaemonServer {
             // The moment the pointer is relevant: their first focused
             // dialog only zooms into view if zoom follows focus
             if let hint = DialogFocus.zoomHint(zoomFollowsFocus: zoomFollows),
-               !FileManager.default.fileExists(atPath: Self.zoomFollowHintMarker.path) {
-                try? Data().write(to: Self.zoomFollowHintMarker)
+               OnceMarker.firstTime("zoomfollow-hinted") {
                 speech.announce(hint)
             }
         }
@@ -1713,50 +1716,22 @@ final class DaemonServer {
     private func announceUntestedMacOSOnce() {
         let major = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
         guard major > Marduk.testedMacOSMajor else { return }
-        let marker = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/marduk/.macos-\(major)-noticed")
-        guard !FileManager.default.fileExists(atPath: marker.path) else { return }
-        func attempt(remaining: Int) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 35) { [self] in
-                if speech.isSpeaking {
-                    if remaining > 0 { attempt(remaining: remaining - 1) }
-                    return
-                }
-                try? Data().write(to: marker)
-                speech.announce("A note: you are running macOS \(major), newer "
-                    + "than this version of Marduk has been tested on. Most "
-                    + "things should work. If something misbehaves, press u — "
-                    + "a compatibility update may already be waiting.")
-                fputs("[marduk] spoke the untested-macOS notice (major \(major))\n",
-                      stderr)
-            }
-        }
-        attempt(remaining: 3)
+        onboarding.notice("macos-\(major)-noticed", delay: 35, retries: 3,
+            "A note: you are running macOS \(major), newer than this version "
+            + "of Marduk has been tested on. Most things should work. If "
+            + "something misbehaves, press u — a compatibility update may "
+            + "already be waiting.")
     }
 
     private func announceKarabinerAbsenceOnce() {
         let cli = "/Library/Application Support/org.pqrs/Karabiner-Elements/bin/karabiner_cli"
         guard !FileManager.default.isExecutableFile(atPath: cli) else { return }
-        let marker = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/marduk/.ke-noticed")
-        guard !FileManager.default.fileExists(atPath: marker.path) else { return }
-        func attempt(remaining: Int) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [self] in
-                if speech.isSpeaking {
-                    if remaining > 0 { attempt(remaining: remaining - 1) }
-                    return  // stay unnoticed; try again next daemon start
-                }
-                try? Data().write(to: marker)
-                speech.announce("A tip: Marduk is designed to pair with "
-                    + "Karabiner Elements. Everything works without it, but "
-                    + "installing Karabiner unlocks mapping a mouse button to "
-                    + "reads, automatic fallback to the system voice whenever "
-                    + "Marduk is off, and remapped keyboard layouts. "
-                    + "Details are in the read me.")
-                fputs("[marduk] spoke the Karabiner onboarding hint\n", stderr)
-            }
-        }
-        attempt(remaining: 2)
+        onboarding.notice("ke-noticed", delay: 25, retries: 2,
+            "A tip: Marduk is designed to pair with Karabiner Elements. "
+            + "Everything works without it, but installing Karabiner unlocks "
+            + "mapping a mouse button to reads, automatic fallback to the "
+            + "system voice whenever Marduk is off, and remapped keyboard "
+            + "layouts. Details are in the read me.")
     }
 
     /// Hand the keyboard back to the user's own profile. Every exit path
@@ -2083,6 +2058,16 @@ final class DaemonServer {
                 speech.announce("Dialog focus off.")
             }
 
+        case "hints":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            onboarding.hintsEnabled = on
+            var ob = config.onboarding ?? MardukConfig.OnboardingConfig()
+            ob.hints = on
+            config.onboarding = ob
+            ConfigLoader.save(config)
+            speech.announce(on ? "Onboarding hints on."
+                               : "Onboarding hints off.")
+
         case "follow":
             guard let on = toggle() else { return fail("Say on or off.") }
             keyboardMonitor?.followEnabled = on
@@ -2269,6 +2254,7 @@ final class DaemonServer {
             "readmotions": (keyboardMonitor?.readMotionsEnabled ?? false) ? "on" : "off",
             "dialogs": dialogSentinel.level.rawValue,
             "dialogfocus": dialogFocusSetting.rawValue,
+            "hints": (config.onboarding?.hints ?? true) ? "on" : "off",
             "follow": (keyboardMonitor?.followEnabled ?? true) ? "on" : "off",
             "invert": (config.display.invertEnabled ?? false) ? "on" : "off",
             "pdfdark": config.display.pdfDark ?? "auto",

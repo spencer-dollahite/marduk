@@ -11,6 +11,14 @@ struct MardukConfig: Codable {
     var verbalizer: VerbalizerConfig? = VerbalizerConfig()
     var update: UpdateConfig? = UpdateConfig()
     var overlay: OverlayConfig? = OverlayConfig()
+    var onboarding: OnboardingConfig? = OnboardingConfig()
+
+    /// Progressive onboarding: contextual hints + first-use config
+    /// questions, paced so a new user is never bombarded.
+    struct OnboardingConfig: Codable {
+        var hints: Bool? = true       // master switch for feature hints + questions
+        var hintsShown: Int? = 0      // lifetime count → "experienced" quieting
+    }
 
     // Every field below is Optional: synthesized Codable treats non-Optional
     // keys as REQUIRED (property defaults are ignored on decode), so a

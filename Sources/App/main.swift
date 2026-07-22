@@ -604,7 +604,17 @@ case "speak":
             }
         }
 
+        // The completion fires on finish OR cancel — but only if the
+        // synthesizer ever STARTS. On a machine with no audio device (a CI
+        // runner) or a wedged synthesizer, didStart never arrives and this
+        // loop had no exit: the command hung until killed. Bound it
+        // generously, so a long read still finishes on its own.
+        let deadline = Date(timeIntervalSinceNow: 600)
         while done.wait(timeout: .now()) == .timedOut {
+            guard Date() < deadline else {
+                fputs("[main] speech never completed — giving up\n", stderr)
+                break
+            }
             RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.05))
         }
     }

@@ -170,9 +170,14 @@ struct MardukConfig: Codable {
 }
 
 enum ConfigLoader {
-    private static let configDir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".config/marduk")
-    private static let configFile = configDir.appendingPathComponent("config.json")
+    /// Overridable for tests (the `BootGuard.markerURL` idiom). A test that
+    /// exercised load/save without a seam would rewrite the developer's own
+    /// config. Production never assigns these; set `configDir` and
+    /// `configFile` follows.
+    nonisolated(unsafe) static var configDir =
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/marduk")
+    static var configFile: URL { configDir.appendingPathComponent("config.json") }
 
     static func load() -> MardukConfig {
         let decoder = JSONDecoder()

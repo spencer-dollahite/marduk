@@ -1221,6 +1221,23 @@ final class DaemonServer {
             let wpm = Int(clamped * 360)
             fputs("[marduk] Rate set to \(String(format: "%.2f", clamped)) (~\(wpm) WPM)\n", stderr)
             return "OK \(String(format: "%.2f", clamped)) (~\(wpm) WPM)\n"
+        case "config":
+            // The SAME path `:config` takes from the keyboard, reachable
+            // without an event tap. Until this existed, applyConfig — 28
+            // settings, live-apply plus persistence — could not be
+            // exercised by any test at all, because the only route in was
+            // the tap.
+            let parts = arg.split(separator: " ", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else {
+                return "ERR usage: config <key> <value>\n"
+            }
+            guard case .config(let key, let value) =
+                ColonCommand.parse("config \(parts[0]) \(parts[1])"),
+                  ColonCommand.kind(for: key) != nil else {
+                return "ERR unknown setting: \(parts[0])\n"
+            }
+            DispatchQueue.main.async { [self] in applyConfig(key: key, value: value) }
+            return "OK \(key) \(value)\n"
         case "stop":
             DispatchQueue.main.async { [self] in running = false }
             return "OK stopping\n"

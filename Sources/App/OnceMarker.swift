@@ -11,8 +11,13 @@ import Foundation
 /// name is a bare slug WITHOUT the leading dot; the dot is added here so
 /// call sites read cleanly (`OnceMarker.seen("welcomed")`).
 enum OnceMarker {
-    private static let dir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".config/marduk")
+    /// Overridable for tests — the `BootGuard.markerURL` idiom. Without a
+    /// seam here, any test touching a marker writes into the DEVELOPER'S
+    /// real ~/.config/marduk and can clobber their `.welcomed`/`.tutored`
+    /// state. Production never assigns this.
+    nonisolated(unsafe) static var dir =
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/marduk")
 
     private static func url(_ name: String) -> URL {
         dir.appendingPathComponent(".\(name)")

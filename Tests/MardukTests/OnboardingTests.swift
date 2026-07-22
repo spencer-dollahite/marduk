@@ -118,17 +118,49 @@ final class OnboardingTests: XCTestCase {
         XCTAssertTrue(paged.contains("hint-page-keys"))
     }
 
-    // MARK: - OnceMarker round-trip (uses the real ~/.config/marduk dir;
-    // a uniquely-named slug keeps it isolated from real markers).
+    // MARK: - OnceMarker round-trip
+    //
+    // Redirected to a scratch dir. This used to write into the DEVELOPER'S
+    // real ~/.config/marduk — a uniquely-named slug kept it from colliding
+    // with `.welcomed`/`.tutored`, but it was still real I/O in someone's
+    // home directory, and it blocked any test that wanted to exercise a
+    // REAL marker name.
 
     func testOnceMarkerLifecycle() {
-        let id = "test-marker-onboarding-\(ProcessInfo.processInfo.processIdentifier)"
-        OnceMarker.clear(id)
-        XCTAssertFalse(OnceMarker.seen(id))
+        let original = OnceMarker.dir
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("oncemarker-\(UUID().uuidString)")
+        OnceMarker.dir = scratch
+        defer {
+            OnceMarker.dir = original
+            try? FileManager.default.removeItem(at: scratch)
+        }
+
+        // A real marker name is safe now, and worth using: this is the
+        // gate the first-run welcome depends on.
+        let id = "welcomed"
+        XCTAssertFalse(OnceMarker.seen(id), "a fresh install has no markers")
         XCTAssertTrue(OnceMarker.firstTime(id), "first call is the first time")
         XCTAssertTrue(OnceMarker.seen(id))
         XCTAssertFalse(OnceMarker.firstTime(id), "second call is not")
         OnceMarker.clear(id)
         XCTAssertFalse(OnceMarker.seen(id))
+    }
+
+    /// `mark` creates the config dir on a genuinely fresh install — the
+    /// first run may predate any config save.
+    func testMarkCreatesTheDirectoryOnAFreshInstall() {
+        let original = OnceMarker.dir
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("oncemarker-fresh-\(UUID().uuidString)")
+        OnceMarker.dir = scratch
+        defer {
+            OnceMarker.dir = original
+            try? FileManager.default.removeItem(at: scratch)
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: scratch.path))
+        XCTAssertTrue(OnceMarker.mark("pdfdark-noticed"))
+        XCTAssertTrue(OnceMarker.seen("pdfdark-noticed"))
     }
 }

@@ -262,6 +262,23 @@ final class DisplayInverter: @unchecked Sendable {
         fputs("[display] tracking started (\(invertApps.count) listed + "
             + "\(Self.builtInInvertPrefixes.count) built-in, PDF dark "
             + "\(pdfDarkStyle.rawValue), hotkey-fast)\n", stderr)
+        // The whole decision chain in one greppable line. Everything below
+        // returns SILENTLY when invert is off, which made a misconfigured
+        // master switch look identical to a broken inverter (field
+        // 2026-07-22 — hours were spent on a display that was simply
+        // never enabled).
+        fputs("[display] config: invert=\(invertEnabled ? "ON" : "OFF") "
+            + "autoinvert=\(autoInvert ? "ON" : "OFF") "
+            + "threshold=\(String(format: "%.2f", autoInvertThreshold)) "
+            + "theme=\(Self.systemIsDark() ? "dark" : "light") "
+            + "listed=\(invertApps.sorted().joined(separator: ",")) "
+            + "builtin=\(Self.builtInInvertPrefixes.joined(separator: ","))\n",
+            stderr)
+        if autoInvert && !invertEnabled {
+            fputs("[display] NOTE: autoinvert is ON but invert is OFF — "
+                + "invert is the master switch, so NOTHING will invert. "
+                + "Run: marduk config invert on\n", stderr)
+        }
     }
 
     func stop() {
@@ -446,6 +463,10 @@ final class DisplayInverter: @unchecked Sendable {
     }
 
     private func handleAppActivated(_ bundleID: String, pid: pid_t) {
+        fputs("[display] front=\(bundleID) listed=\(isListed(bundleID)) "
+            + "invert=\(invertEnabled ? "on" : "off") "
+            + "autoinvert=\(autoInvert ? "on" : "off") "
+            + "inverted=\(isInverted)\n", stderr)
         if invertEnabled {
             // Events may INVERT (snappier than waiting for the heartbeat):
             // the list is unconditional certainty, auto-measurement judges
@@ -546,10 +567,18 @@ final class DisplayInverter: @unchecked Sendable {
         if wanted { invertHolder = holder }
         // Never act on the display unless the user opted in. The built-in
         // app list is inert until `:config invert on`.
-        guard invertEnabled else { return }
+        guard invertEnabled else {
+            fputs("[display] want \(wanted ? "invert" : "revert") (\(reason)) "
+                + "but invert is OFF — run: marduk config invert on\n", stderr)
+            return
+        }
         // The lockout stands even with a sticking mechanism: one change,
         // then silence — deferred wants converge via the heartbeat
-        guard Date().timeIntervalSince(lastToggleAt) >= Self.toggleLockout else { return }
+        guard Date().timeIntervalSince(lastToggleAt) >= Self.toggleLockout else {
+            fputs("[display] want \(wanted ? "invert" : "revert") (\(reason)) "
+                + "deferred by the toggle lockout\n", stderr)
+            return
+        }
         // THE TOGGLE IS BLIND: it flips whatever the display is ACTUALLY
         // doing, not what we believe. So re-read the truth before deciding
         // — a stale flag otherwise makes the toggle do the exact opposite
@@ -564,7 +593,11 @@ final class DisplayInverter: @unchecked Sendable {
             isInverted = actual
             if !actual { weOwnInversion = false }
         }
-        guard wanted != isInverted else { return }
+        guard wanted != isInverted else {
+            fputs("[display] \(reason): already "
+                + "\(isInverted ? "inverted" : "normal"), nothing to do\n", stderr)
+            return
+        }
         lastToggleAt = Date()
         applyInversion(wanted)
         isInverted = wanted
@@ -734,6 +767,11 @@ final class DisplayInverter: @unchecked Sendable {
                 let wanted = measured > self.autoInvertThreshold
                     - (self.isInverted ? 0.08 : 0)
                 let reason = "auto \(bundleID) " + String(format: "%.2f", measured)
+                fputs("[display] sampled \(bundleID): brightness "
+                    + String(format: "%.2f", measured) + " vs threshold "
+                    + String(format: "%.2f", self.autoInvertThreshold)
+                    + " → \(wanted ? "LIGHT, inverting" : "dark, no action")\n",
+                    stderr)
                 if wanted {
                     self.lastHolderSeen = Date()
                     self.ensureInverted(true, holder: bundleID, reason: reason)

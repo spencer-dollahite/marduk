@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import ApplicationServices
 import AVFoundation
 
 // Crash-restore state for the Karabiner profile handoff, file-scope so the
@@ -135,6 +136,15 @@ final class DaemonServer {
     private var config: MardukConfig
     private let tutorial = Tutorial()
     private let dialogSentinel = DialogSentinel()
+    // dialogfocus consent state (ask | always | off); markers make the
+    // full pitch and the zoom pointer speak once ever
+    private var dialogFocusSetting: DialogFocus.Setting = .ask
+    private static let dialogFocusExplainedMarker =
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/marduk/.dialogfocus-explained")
+    private static let zoomFollowHintMarker =
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/marduk/.zoomfollow-hinted")
     private let hoverSpeech = HoverSpeech()
     private let palette = CommandPalette()
     private var paletteEnabled: Bool
@@ -323,12 +333,18 @@ final class DaemonServer {
 
         // Dialog sentinel: password prompts, permission dialogs, and
         // in-app sheets are invisible to a zoomed-in user — announce
-        // them (interrupting reads on purpose; a dialog IS urgent)
-        dialogSentinel.announce = { [self] text in speech.announce(text) }
+        // them (interrupting reads on purpose; a dialog IS urgent), and
+        // per the dialogfocus consent the announcement can carry the
+        // a/o/n/s question or trigger a silent focus (handleDialogAnnouncement)
+        dialogSentinel.announce = { [self] text, target in
+            handleDialogAnnouncement(text, target: target)
+        }
         // dialogLevel wins; legacy dialogAlerts=false maps to off
         dialogSentinel.level = DialogSentinel.Level(
             rawValue: config.keyboard?.dialogLevel ?? "")
             ?? ((config.keyboard?.dialogAlerts ?? true) ? .all : .off)
+        dialogFocusSetting = DialogFocus.Setting(
+            rawValue: config.keyboard?.dialogFocus ?? "") ?? .ask
         if !safeMode { dialogSentinel.start() }
 
         // One-time onboarding: automatic dark PDFs are an invisible
@@ -718,6 +734,108 @@ final class DaemonServer {
                     tutorial.handle(.readFinished)
                 }
             }
+        }
+    }
+
+    // MARK: - Dialog focus (consent-gated)
+
+    /// Every sentinel announcement routes here. Focusing a dialog is
+    /// input-invasive, so it never happens without consent: `always`
+    /// focuses silently, `off` never does, and `ask` rides the a/o/n/s
+    /// question on the announcement — full pitch once ever, terse after.
+    /// Zoom's Follow keyboard focus is a SIGNAL for wording (synergy
+    /// line when on, one-time Settings pointer when not), never a gate.
+    private func handleDialogAnnouncement(_ text: String,
+                                          target: DialogSentinel.Target?) {
+        guard let target, dialogFocusSetting != .off else {
+            speech.announce(text)  // announcements always continue
+            return
+        }
+        if dialogFocusSetting == .always {
+            speech.announce(text)  // announcement unchanged — silent focus
+            focusDialog(target)
+            return
+        }
+        let explained = FileManager.default
+            .fileExists(atPath: Self.dialogFocusExplainedMarker.path)
+        let zoomFollows = DialogFocus.zoomFollowsFocus()
+        guard let tail = DialogFocus.promptTail(setting: .ask,
+                                                explained: explained,
+                                                zoomFollowsFocus: zoomFollows) else {
+            speech.announce(text)
+            return
+        }
+        if !explained { try? Data().write(to: Self.dialogFocusExplainedMarker) }
+        speech.announce(text + " " + tail)
+        keyboardMonitor?.armDialogQuestion { [self] answer in
+            guard let resolution = DialogFocus.resolve(answer: answer) else { return }
+            if let setting = resolution.newSetting { setDialogFocus(setting) }
+            speech.announce(resolution.ack)
+            guard resolution.focusNow else { return }
+            focusDialog(target)
+            // The moment the pointer is relevant: their first focused
+            // dialog only zooms into view if zoom follows focus
+            if let hint = DialogFocus.zoomHint(zoomFollowsFocus: zoomFollows),
+               !FileManager.default.fileExists(atPath: Self.zoomFollowHintMarker.path) {
+                try? Data().write(to: Self.zoomFollowHintMarker)
+                speech.announce(hint)
+            }
+        }
+    }
+
+    private func setDialogFocus(_ setting: DialogFocus.Setting) {
+        dialogFocusSetting = setting
+        var kb = config.keyboard ?? MardukConfig.KeyboardConfig()
+        kb.dialogFocus = setting.rawValue
+        config.keyboard = kb
+        ConfigLoader.save(config)
+    }
+
+    /// Activate the dialog's owner and raise the dialog. Detector-2
+    /// targets carry the element — validated first, because there is no
+    /// dismissal observer by design: an AX read error means the dialog
+    /// closed between announce and answer. Detector-1 (system agents)
+    /// resolves the agent's window now. Best-effort, 0.5s AX timeouts,
+    /// logs carry error codes only — never titles.
+    private func focusDialog(_ target: DialogSentinel.Target) {
+        if let element = target.element {
+            AXUIElementSetMessagingTimeout(element, 0.5)
+            var roleRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString,
+                                                &roleRef) == .success else {
+                fputs("[sentinel] focus: dialog element gone\n", stderr)
+                Earcon.error()
+                speech.announce("That dialog is gone.")
+                return
+            }
+            let raise = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+            NSRunningApplication(processIdentifier: target.pid)?.activate()
+            fputs("[sentinel] focus: raise "
+                + "\(raise == .success ? "ok" : "err \(raise.rawValue)"), "
+                + "app activated\n", stderr)
+            return
+        }
+        // System agent: PID only — activate, then raise its window
+        NSRunningApplication(processIdentifier: target.pid)?.activate()
+        let axApp = AXUIElementCreateApplication(target.pid)
+        AXUIElementSetMessagingTimeout(axApp, 0.5)
+        var windowRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString,
+                                         &windowRef) != .success {
+            var windowsRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString,
+                                             &windowsRef) == .success,
+               let windows = windowsRef as? [AXUIElement] {
+                windowRef = windows.first
+            }
+        }
+        if let windowRef, CFGetTypeID(windowRef) == AXUIElementGetTypeID() {
+            let window = windowRef as! AXUIElement
+            let raise = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            fputs("[sentinel] focus: agent window raise "
+                + "\(raise == .success ? "ok" : "err \(raise.rawValue)")\n", stderr)
+        } else {
+            fputs("[sentinel] focus: agent activated, no window to raise\n", stderr)
         }
     }
 
@@ -1849,6 +1967,22 @@ final class DaemonServer {
                 speech.announce("Dialog alerts off.")
             }
 
+        case "dialogfocus":
+            guard let setting = DialogFocus.Setting(rawValue: value) else {
+                return fail("Say ask, always, or off.")
+            }
+            setDialogFocus(setting)
+            switch setting {
+            case .ask:
+                speech.announce("Dialog focus ask. "
+                    + "Announced dialogs offer a, o, n, or s.")
+            case .always:
+                speech.announce("Dialog focus always. "
+                    + "Announced dialogs are focused automatically.")
+            case .off:
+                speech.announce("Dialog focus off.")
+            }
+
         case "follow":
             guard let on = toggle() else { return fail("Say on or off.") }
             keyboardMonitor?.followEnabled = on
@@ -2034,6 +2168,7 @@ final class DaemonServer {
             "togglesound": (keyboardMonitor?.toggleEarconEnabled ?? false) ? "earcon" : "speech",
             "readmotions": (keyboardMonitor?.readMotionsEnabled ?? false) ? "on" : "off",
             "dialogs": dialogSentinel.level.rawValue,
+            "dialogfocus": dialogFocusSetting.rawValue,
             "follow": (keyboardMonitor?.followEnabled ?? true) ? "on" : "off",
             "invert": (config.display.invertEnabled ?? false) ? "on" : "off",
             "pdfdark": config.display.pdfDark ?? "auto",

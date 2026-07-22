@@ -106,7 +106,10 @@ enum HelpText {
         Control Option M plays. read motions, one word, on or off: vim \
         navigation keys inside a read. dialogs, all, system, or off: \
         all announces app sheets and system prompts, system announces \
-        only the central password and permission prompts. follow, on or \
+        only the central password and permission prompts. dialog focus, \
+        one word, ask, always, or off: when a dialog is announced, \
+        Marduk can bring it to the front — ask offers a, o, n, or s \
+        with the announcement. follow, on or \
         off: the app's view tracks the read — Preview turns to the page \
         you jump to, and reader articles scroll with the voice. \
         invert, on or off, off by \
@@ -165,6 +168,7 @@ enum HelpText {
         "Want every key you type spoken, in every app? macOS already does that: colon typing opens the typing feedback settings. Marduk is happy to be your front desk for the accessibility features Apple already built.",
         "Marduk mispronouncing a name? Colon pronunciation opens the system pronunciation editor. Add the word there, typed or spoken, and Marduk says it your way from the very next read — including entries you scope to a single app.",
         "Lost in a long read? Control G is vim's ruler: it says the page and how far through you are, without stopping the voice. A number then the percent sign jumps — fifty percent starts halfway through the document.",
+        "When Marduk announces a dialog, it can also bring it to the front for you: press a for always, o for just this one, n for not now, or s to stop asking. And in Settings, Accessibility, Zoom, Advanced, follow keyboard focus makes your zoom pan straight to whatever Marduk focuses.",
     ]
 
     static let welcome = """

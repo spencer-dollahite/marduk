@@ -29,7 +29,17 @@ final class DialogSentinel {
         case all, system, off
     }
 
-    var announce: ((String) -> Void)?
+    /// What to focus if the user consents (dialogfocus). Detector 2
+    /// retains the dialog's AXUIElement (captured here, so Swift retains
+    /// the CF ref); detector 1 has only the agent's PID — its window is
+    /// resolved at focus time. Rides WITH the announcement so a
+    /// dedup-dropped emission can never leave a stale target behind.
+    struct Target {
+        let pid: pid_t
+        let element: AXUIElement?
+    }
+
+    var announce: ((String, Target?) -> Void)?
     var level: Level = .all
 
     private var workspaceObserver: NSObjectProtocol?
@@ -58,7 +68,8 @@ final class DialogSentinel {
             if let bundle = app.bundleIdentifier,
                let message = Self.systemAgents[bundle] {
                 fputs("[sentinel] system agent active: \(bundle)\n", stderr)
-                self.emit(message)
+                self.emit(message,
+                          target: Target(pid: app.processIdentifier, element: nil))
             }
             self.observeFrontmost(app)
         }
@@ -153,18 +164,18 @@ final class DialogSentinel {
             ? "A \(kind) in \(appName) needs attention."
             : "A \(kind) in \(appName): \(title)."
         fputs("[sentinel] \(kind) in \(appName) (title \(title.count) chars)\n", stderr)
-        emit(message)
+        emit(message, target: Target(pid: observedPID, element: element))
     }
 
     /// Dedup: window-created and sheet-created can fire together, and
     /// some apps re-post on focus cycling — same text within 5s is one
     /// announcement.
-    private func emit(_ message: String) {
+    private func emit(_ message: String, target: Target?) {
         let now = Date()
         if message == lastAnnouncement,
            now.timeIntervalSince(lastAnnouncedAt) < 5 { return }
         lastAnnouncement = message
         lastAnnouncedAt = now
-        announce?(message)
+        announce?(message, target)
     }
 }

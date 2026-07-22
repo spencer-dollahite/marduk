@@ -144,6 +144,34 @@ final class KeyboardMonitor {
         pendingReadFind = nil
     }
 
+    // Dialog-focus question (armed by the daemon when a dialog
+    // announcement carries the a/o/n/s consent tail). Main-thread-only
+    // like all tap state; answered/expired/superseded → the closure is
+    // released, and with it the daemon's retained dialog target.
+    private var pendingDialogAnswer: ((Character) -> Void)?
+    private var dialogQuestionTimeout: DispatchWorkItem?
+    private static let dialogAnswerKeys: [Int64: Character] =
+        [0: "a", 31: "o", 45: "n", 1: "s"]
+    private static let dialogQuestionWindow: TimeInterval = 20
+
+    /// Arm the a/o/n/s capture for one question. Main thread only. A new
+    /// question replaces an armed one; the timeout bounds how long the
+    /// answer keys shadow their NORMAL meanings (s = hover, Firefox n).
+    func armDialogQuestion(onAnswer: @escaping (Character) -> Void) {
+        cancelDialogQuestion()
+        pendingDialogAnswer = onAnswer
+        let work = DispatchWorkItem { [weak self] in self?.cancelDialogQuestion() }
+        dialogQuestionTimeout = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.dialogQuestionWindow,
+                                      execute: work)
+    }
+
+    func cancelDialogQuestion() {
+        dialogQuestionTimeout?.cancel()
+        dialogQuestionTimeout = nil
+        pendingDialogAnswer = nil
+    }
+
     // Firefox Reader narration handoff (`n` in NORMAL while Firefox is
     // frontmost). true = Marduk stops its own speech and holds media
     // paused while Firefox's Narrate reads; false = release. State is
@@ -519,6 +547,8 @@ final class KeyboardMonitor {
             readSearchBuffer = ""
             resetReadMotionState()
             readingCapture = false
+            // And an armed dialog-focus question (releases its AX target)
+            cancelDialogQuestion()
             let state = isEnabled ? "ON (NORMAL)" : "OFF"
             fputs("[keyboard] Marduk \(state)\n", stderr)
             let word = isEnabled ? "Systems engaged" : "Systems disengaged"
@@ -1287,6 +1317,26 @@ final class KeyboardMonitor {
             case .swallow: return nil
             case .pass(let result): return result
             }
+        }
+
+        // Armed dialog question: a/o/n/s answer it; any other key means
+        // the user moved on — disarm silently and let the key act normally
+        // (vim pendingReadG style). Sits AFTER the burst layer on purpose:
+        // rescue-withheld letters only re-enter via the flush, and a burst
+        // that resolved to typing replays in INSERT where this never runs —
+        // a burst-resolved keystroke can never answer a consent question
+        // (the double-u field lesson).
+        if pendingDialogAnswer != nil {
+            if let answer = Self.dialogAnswerKeys[keycode],
+               !flags.contains(.maskShift) {
+                if isAutorepeat { return nil }
+                let respond = pendingDialogAnswer
+                cancelDialogQuestion()
+                fputs("[keyboard] dialog question answered: \(answer)\n", stderr)
+                DispatchQueue.main.async { respond?(answer) }
+                return nil
+            }
+            cancelDialogQuestion()  // disarm; the key keeps its meaning
         }
 
         // One-shot commands must not re-fire on key autorepeat: a held `i`

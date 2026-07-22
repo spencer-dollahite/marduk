@@ -207,6 +207,9 @@ enum ColonCommand: Equatable {
         ("togglesound", .choice(["speech", "earcon"])),
         ("readmotions", .toggle),
         ("dialogs", .choice(["all", "system", "off"])),
+        // Shares the "dialog" stem with "dialogs" but neither is a prefix
+        // of the other (7th char s vs f) — the guard test holds
+        ("dialogfocus", .choice(["ask", "always", "off"])),
         ("follow", .toggle),
         ("invert", .toggle),
         ("pdfdark", .choice(["auto", "on", "off"])),

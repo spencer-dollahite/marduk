@@ -33,6 +33,7 @@ struct MardukConfig: Codable {
                                                      // (Naga side button 12 = the = key)
         var dialogAlerts: Bool? = true   // LEGACY toggle — dialogLevel wins when present
         var dialogLevel: String? = "all" // all | system | off (system = only central OS prompts)
+        var dialogFocus: String? = "ask" // ask | always | off — focus announced dialogs?
         var follow: Bool? = true         // the view follows the read (Preview pages, web scroll)
         var karabinerReadVendorId: Int? = 5426   // device scope for the read-button rule (5426 = Razer; 0 = any device)
         var karabinerReadProductId: Int?         // optional tighter scope (see Karabiner-EventViewer)

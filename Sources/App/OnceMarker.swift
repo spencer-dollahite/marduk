@@ -32,7 +32,8 @@ enum OnceMarker {
         return seen(name)
     }
 
-    /// Forget the marker (support / `:onboarding reset` / tests).
+    /// Forget the marker (tests; by hand, `rm ~/.config/marduk/.<name>`
+    /// replays the welcome or a hint for support and development).
     static func clear(_ name: String) {
         try? FileManager.default.removeItem(at: url(name))
     }

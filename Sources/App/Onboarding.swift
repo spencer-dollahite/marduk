@@ -119,15 +119,4 @@ final class Onboarding {
         }
         attempt(retries)
     }
-
-    /// `:onboarding reset` — start the progressive experience over.
-    func reset(clearing ids: [String]) {
-        ids.forEach { OnceMarker.clear($0) }
-        hintsShown = 0
-        sessionCount = 0
-        lastHintAt = Date.distantPast
-        tutored = false
-        persistHintsShown?(0)
-        fputs("[onboarding] reset\n", stderr)
-    }
 }

@@ -615,6 +615,14 @@ final class DaemonServer {
                 Earcon.error()
             }
         }
+        keyboardMonitor?.onReadJumpList = { [self] direction, count in
+            // Nothing older (or newer) buzzes, as vim beeps at both ends
+            if speech.jumpList(direction, count: count) {
+                tutorial.handle(.readJumped)
+            } else {
+                Earcon.error()
+            }
+        }
         keyboardMonitor?.onSpeakPaged = { [self] paged, startPage, headings in
             longReadGeneration += 1  // a new read beats an in-flight chunk
             startingRead(paged: true) { [self] in

@@ -207,6 +207,10 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         // A NEW read supersedes any prior stop request. Cleared after
         // stop() precisely because stop() is what sets it.
         stopRequested = false
+        // Every jumplist entry indexes text this call is about to replace.
+        // loadPageWindow restores the old session, so a window REBUILD
+        // keeps the list while a genuinely new read starts empty.
+        readSession += 1
 
         onNewRead?()
         readText = processed
@@ -298,36 +302,48 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// target, which doubles as feedback.
     @discardableResult
     func jump(_ unit: ReadUnit, direction: ReadDirection, count: Int = 1) -> Bool {
-        stopEcho()
-        guard readActive, let text = readText else { return false }
-        var position = direction == .back ? backAnchor : readPosition
-        for _ in 0..<max(1, count) {
-            let next = ReadNavigator.target(in: text, from: position,
-                                            unit: unit, direction: direction)
-            if next == position { break }
-            position = next
+        // Vim's jumplist takes { } and ( ) but not w/b/h/l or j/k — the
+        // small motions are ordinary movement, not jumps.
+        let isJump = unit == .paragraph || unit == .sentence
+        let move = { [self] () -> Bool in
+            stopEcho()
+            guard readActive, let text = readText else { return false }
+            var position = direction == .back ? backAnchor : readPosition
+            for _ in 0..<max(1, count) {
+                let next = ReadNavigator.target(in: text, from: position,
+                                                unit: unit, direction: direction)
+                if next == position { break }
+                position = next
+            }
+            guard position != readPosition else { return false }
+            respeak(from: position)
+            return true
         }
-        guard position != readPosition else { return false }
-        respeak(from: position)
-        return true
+        return isJump ? recordingJump(move) : move()
     }
 
     /// Absolute-offset jump (the search handler computes the target).
+    /// A search is a vim jump (`/ ? n N`).
     func jumpTo(offset: Int) {
-        stopEcho()
-        guard readActive, readText != nil else { return }
-        respeak(from: offset)
+        _ = recordingJump { [self] in
+            stopEcho()
+            guard readActive, readText != nil else { return false }
+            respeak(from: offset)
+            return true
+        }
     }
 
     /// gg (.back → the very beginning) / G (.forward → the last paragraph).
     @discardableResult
     func jumpToEdge(_ direction: ReadDirection) -> Bool {
-        stopEcho()
-        guard readActive, let text = readText else { return false }
-        let target = direction == .back ? 0 : ReadNavigator.endTarget(in: text)
-        guard target != readPosition else { return false }
-        respeak(from: target)
-        return true
+        recordingJump { [self] in
+            stopEcho()
+            guard readActive, let text = readText else { return false }
+            let target = direction == .back ? 0 : ReadNavigator.endTarget(in: text)
+            guard target != readPosition else { return false }
+            respeak(from: target)
+            return true
+        }
     }
 
     /// Whether the current read has page structure (PDF or synthetic).
@@ -373,6 +389,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         guard let full = pagedFull else { return false }
         let synthetic = pagedSynthetic  // speak() clears it — capture first
         let headings = pdfHeadings      // (global pages — window-independent)
+        let session = readSession       // a rebuild is the SAME read
         let replaced = currentUtterance
         let carried = replaced.flatMap {
             completions.removeValue(forKey: ObjectIdentifier($0))
@@ -385,6 +402,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         readPaged = window
         pagedSynthetic = synthetic
         pdfHeadings = headings
+        readSession = session     // keeps the jumplist across the rebuild
         // Seed BEHIND the arrival page: unlike speakPaged's start (Preview
         // already shows it), the viewer has NOT turned to a rebuilt
         // window's page — the first word boundary must fire the gesture.
@@ -409,10 +427,12 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// GLOBAL page numbers, any page of any size document.
     @discardableResult
     func jumpToPage(_ number: Int) -> Bool {
-        stopEcho()
-        guard readActive, readPaged != nil, let full = pagedFull else { return false }
-        let target = max(0, min(number - 1, full.pageCount - 1))
-        return speakPage(globalIndex: target)
+        recordingJump { [self] in
+            stopEcho()
+            guard readActive, readPaged != nil, let full = pagedFull else { return false }
+            let target = max(0, min(number - 1, full.pageCount - 1))
+            return speakPage(globalIndex: target)
+        }
     }
 
     var pageCount: Int { pagedFull?.pageCount ?? 0 }
@@ -449,18 +469,67 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// snapped respeak on plain reads.
     @discardableResult
     func jumpToPercent(_ percent: Int) -> Bool {
-        stopEcho()
-        guard readActive, let text = readText else { return false }
-        let pct = max(1, min(100, percent))
-        if let full = pagedFull {
-            let target = full.pageIndex(at: pct * full.utf16Length / 100)
-            return speakPage(globalIndex: target)
+        recordingJump { [self] in
+            stopEcho()
+            guard readActive, let text = readText else { return false }
+            let pct = max(1, min(100, percent))
+            if let full = pagedFull {
+                let target = full.pageIndex(at: pct * full.utf16Length / 100)
+                return speakPage(globalIndex: target)
+            }
+            let ns = text as NSString
+            guard ns.length > 0 else { return false }
+            let raw = min(ns.length * pct / 100, ns.length - 1)
+            respeak(from: ReadNavigator.wordStart(in: text, at: raw))
+            return true
         }
-        let ns = text as NSString
-        guard ns.length > 0 else { return false }
-        let raw = min(ns.length * pct / 100, ns.length - 1)
-        respeak(from: ReadNavigator.wordStart(in: text, at: raw))
-        return true
+    }
+
+    /// Ctrl+O / Ctrl+I — walk the jumplist. Returns false when there is
+    /// nothing older (or newer); the caller buzzes, as vim beeps.
+    ///
+    /// With a count, move as far as possible and fail only if nothing moved
+    /// at all — the same rule every other counted motion here follows.
+    @discardableResult
+    func jumpList(_ direction: ReadDirection, count: Int = 1) -> Bool {
+        stopEcho()
+        guard readActive else { return false }
+        var moved = false
+        for _ in 0..<max(1, count) {
+            let target = direction == .back
+                ? jumps.back(from: currentJumpPosition)
+                : jumps.forward()
+            guard let target, restore(target) else { break }
+            moved = true
+        }
+        return moved
+    }
+
+    /// Put the read back at a recorded position.
+    ///
+    /// An offset is only meaningful while the window it was measured in is
+    /// still loaded: `readPosition` indexes the window's PROCESSED text
+    /// while page starts index the RAW text, and a rebuilt window is
+    /// re-preprocessed (the pronunciation dictionary is even re-fetched per
+    /// read and is frontmost-app scoped). So the exact offset is used only
+    /// when it is literally the same string; otherwise the restore is
+    /// page-granular — the precedent `{count}%` and PDF outline headings
+    /// already set. Vim's jumplist is line-granular for the same reason.
+    private func restore(_ position: JumpList.Position) -> Bool {
+        switch position {
+        case .plain(let offset):
+            guard readText != nil else { return false }
+            respeak(from: offset)
+            return true
+        case .paged(let page, let windowFirst, let offset):
+            guard let window = readPaged, pagedFull != nil else { return false }
+            if windowFirst == pagedWindowFirst,
+               window.pageStarts.indices.contains(page - 1 - pagedWindowFirst) {
+                respeak(from: offset)   // same window, same string
+                return true
+            }
+            return speakPage(globalIndex: page - 1)
+        }
     }
 
     private func speakPage(globalIndex: Int, echoPage: Bool = true) -> Bool {
@@ -516,6 +585,10 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// the heading text, which announces itself.
     @discardableResult
     func jumpHeading(_ motion: HeadingMotion, count: Int = 1) -> Bool {
+        recordingJump { [self] in headingMove(motion, count: count) }
+    }
+
+    private func headingMove(_ motion: HeadingMotion, count: Int) -> Bool {
         stopEcho()
         guard readActive, readText != nil else { return false }
         // Paged reads (PDF outline): page-granular, global page indices —
@@ -735,6 +808,38 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// the delegate callback, because a stopped utterance can arrive as
     /// didFinish (see `stop()`).
     private var stopRequested = false
+
+    /// Vim's jumplist — Ctrl+O / Ctrl+I. See `JumpList`.
+    private var jumps = JumpList()
+    /// Bumped by every genuinely new read and PRESERVED across window
+    /// rebuilds, so jumplist entries know whether the text they index
+    /// still exists. `speak()` runs on both, which is exactly why the
+    /// counter (rather than clearing in `speak()`) is what distinguishes
+    /// them — `loadPageWindow` restores it alongside the paged state.
+    private var readSession = 0
+
+    /// Where the read is right now, in a form that survives a window
+    /// rebuild. Uses `backAnchor` rather than the raw position: at speed
+    /// the boundary callbacks run ahead of comprehension, which is why
+    /// every back motion in this file anchors the same way.
+    private var currentJumpPosition: JumpList.Position {
+        let anchor = backAnchor
+        guard let window = readPaged else { return .plain(offset: anchor) }
+        let localPage = window.pageIndex(at: anchor)
+        return .paged(page: pagedWindowFirst + localPage + 1,
+                      windowFirst: pagedWindowFirst,
+                      offset: anchor)
+    }
+
+    /// Run a jump, recording where it came FROM — but only if it actually
+    /// moved. Vim marks a successful jump; recording a `G` that was already
+    /// at the last page would spend a slot on a no-op.
+    private func recordingJump(_ move: () -> Bool) -> Bool {
+        let origin = currentJumpPosition
+        guard move() else { return false }
+        jumps.record(origin, session: readSession)
+        return true
+    }
 
     private func startSpeaking(_ utterance: AVSpeechUtterance, completion: (() -> Void)?) {
         if let completion {

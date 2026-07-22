@@ -147,7 +147,9 @@ final class KeyboardMonitor {
     var onReadPageStep: ((Int) -> Void)?      // Ctrl+F/Ctrl+B, ±count pages
     var onReadPageAbsolute: ((Int) -> Void)?  // 12G — page twelve
     var onReadPercent: ((Int) -> Void)?       // 50% — jump to N percent
-    var onReadPosition: (() -> Void)?         // Ctrl+G — where am I
+    var onReadPosition: (() -> Void)?
+    /// Ctrl+O (.back) / Ctrl+I (.forward) — vim's jumplist, with a count.
+    var onReadJumpList: ((ReadDirection, Int) -> Void)?         // Ctrl+G — where am I
     // PDF read: paged text, 1-based start page, outline headings (page, level)
     var onSpeakPaged: ((PagedText, Int, [(page: Int, level: Int)]) -> Void)?
     // Full-document read: complete text + UTF-16 start offset. The daemon
@@ -735,6 +737,15 @@ final class KeyboardMonitor {
                 readSearchDirection = nil
                 readSearchBuffer = ""
             } else {
+                // Ctrl+O/Ctrl+I are OURS during a read (the jumplist), and
+                // this block runs before the capture's carve-out. Letting
+                // them through here sends Ctrl+O to the frontmost app —
+                // in Terminal that is readline's operate-and-get-next,
+                // which EXECUTES a shell history line the user never typed.
+                if hasControl, !hasCommand, !hasOption, keycode == 31 || keycode == 34 {
+                    DispatchQueue.main.async { Earcon.error() }
+                    return nil
+                }
                 if hasCommand || hasControl { return pass }   // app shortcuts untouched
                 if isAutorepeat, keycode != 51 { return nil } // only Delete repeats
 
@@ -848,6 +859,26 @@ final class KeyboardMonitor {
         // Ctrl+G — vim's file-info: where am I? Same capture-only carve-
         // out as Ctrl+F/B. One-shot; consumes a pending count (count
         // Ctrl+G is vim's full-path variant — no audio meaning).
+        // Ctrl+O / Ctrl+I — vim's jumplist: walk back through the places
+        // jumps came from, and forward again. Autorepeat is deliberately
+        // SUPPRESSED (unlike Ctrl+F/B): a cross-window restore rebuilds a
+        // 45k window and re-fetches pronunciations synchronously on main,
+        // right beside the event tap, so a held key is the same shape as
+        // the stall the input cap exists to prevent.
+        if readingCapture, hasControl, !hasCommand, !hasOption,
+           burstBuffer.isEmpty, keycode == 31 || keycode == 34 {
+            if isAutorepeat { return nil }
+            let count = max(1, readMotionCount)
+            // Ctrl+G leaves f/bracket arms set; clear everything so the
+            // next key isn't eaten as a find target.
+            resetReadMotionState()
+            let direction: ReadDirection = keycode == 31 ? .back : .forward
+            // Deliberately does NOT set lastReadAction — vim's `.` does not
+            // repeat Ctrl+O.
+            DispatchQueue.main.async { [self] in onReadJumpList?(direction, count) }
+            return nil
+        }
+
         if readingCapture, hasControl, !hasCommand, !hasOption,
            burstBuffer.isEmpty, keycode == 5 {
             if isAutorepeat { return nil }

@@ -24,15 +24,55 @@ import ApplicationServices
 /// is permission-free and has no delivery path to break; a dwell
 /// feature only needs "has the pointer settled somewhere new". Do not
 /// switch back to NSEvent monitors or add a second event tap for this.
+/// The dwell decision core, pure and clock-injected (unit-tested — the
+/// 2026-07-22 hover deafness shipped precisely because this logic lived
+/// tangled in event plumbing nothing could exercise). Rules: movement
+/// beyond the threshold resets the settle clock; a pointer at rest for
+/// `settleDelay` speaks exactly once per rest; sub-threshold drift
+/// ACCUMULATES against the rest point (never rebased tick by tick), so
+/// a slow glide across a toolbar re-arms and keeps naming things
+/// instead of being eaten 2 pixels at a time.
+struct HoverDwell {
+    static let moveThreshold: CGFloat = 3
+    static let settleDelay: TimeInterval = 0.3
+
+    private var restPoint: CGPoint
+    private var settledSince: Date
+    private var spokenAtRest: Bool
+
+    enum Verdict { case moving, resting, speak }
+
+    /// Starts at rest with the speak already owed — the caller speaks
+    /// the element under the pointer immediately on activation.
+    init(point: CGPoint, now: Date) {
+        restPoint = point
+        settledSince = now
+        spokenAtRest = true
+    }
+
+    mutating func poll(point: CGPoint, now: Date) -> Verdict {
+        if abs(point.x - restPoint.x) > Self.moveThreshold
+            || abs(point.y - restPoint.y) > Self.moveThreshold {
+            restPoint = point
+            settledSince = now
+            spokenAtRest = false
+            return .moving
+        }
+        if !spokenAtRest, now.timeIntervalSince(settledSince) >= Self.settleDelay {
+            spokenAtRest = true
+            return .speak
+        }
+        return .resting
+    }
+}
+
 final class HoverSpeech {
     var speak: ((String) -> Void)?      // → SpeechEngine.hover (echo channel)
     var announce: ((String) -> Void)?   // toggle feedback
     private(set) var active = false
 
     private var pollTimer: Timer?
-    private var lastPoint = NSPoint(x: -1, y: -1)
-    private var settledSince = Date()
-    private var spokenAtRest = true
+    private var dwell = HoverDwell(point: .zero, now: Date())
     private var lastLabel = ""
     private var lastElement: AXUIElement?
 
@@ -61,9 +101,8 @@ final class HoverSpeech {
         movedEvents = 0; dwellFires = 0; axFailures = 0
         skipOwnWindow = 0; skipSameElement = 0; skipNoLabel = 0
         skipSameLabel = 0; spokeCount = 0
-        lastPoint = NSEvent.mouseLocation
-        settledSince = Date()
-        spokenAtRest = true  // the immediate speak below covers this rest
+        // Fresh dwell state; the immediate speak below covers this rest
+        dwell = HoverDwell(point: NSEvent.mouseLocation, now: Date())
         let timer = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in
             self?.poll()
         }
@@ -87,27 +126,20 @@ final class HoverSpeech {
             + "\(skipOwnWindow) own-window\n", stderr)
     }
 
-    /// One poll tick: movement resets the dwell clock; a pointer that
-    /// has settled somewhere new for ~0.3s speaks once. Slow deliberate
-    /// gliding (under the movement threshold) counts as settled — a
-    /// low-vision user creeping across a toolbar WANTS the names.
+    /// One poll tick — all decisions live in the pure HoverDwell so the
+    /// regression tests can drive them with an injected clock.
     private func poll() {
         guard active else { return }
-        let p = NSEvent.mouseLocation
-        if abs(p.x - lastPoint.x) > 3 || abs(p.y - lastPoint.y) > 3 {
+        switch dwell.poll(point: NSEvent.mouseLocation, now: Date()) {
+        case .moving:
             movedEvents += 1
             if movedEvents == 1 {
                 fputs("[keyboard] hover: first movement detected\n", stderr)
             }
-            lastPoint = p
-            settledSince = Date()
-            spokenAtRest = false
-            return
-        }
-        lastPoint = p
-        if !spokenAtRest, Date().timeIntervalSince(settledSince) >= 0.3 {
-            spokenAtRest = true
+        case .speak:
             speakUnderPointer()
+        case .resting:
+            break
         }
     }
 

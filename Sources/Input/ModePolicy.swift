@@ -55,6 +55,23 @@ enum ModePolicy {
         }
     }
 
+    /// What the UNDERLYING mode becomes once a hold resolves.
+    ///
+    /// The subtle one is `.reclaimReading`. A natural read end only drops
+    /// the capture and deliberately leaves `mode` alone — that is what lets
+    /// `i` during a read return the user to INSERT when the read finishes.
+    /// But a HELD Escape from that INSERT means "I am done typing": if the
+    /// mode stayed `.insert` underneath, the read ending would silently
+    /// drop them back into INSERT with no earcon, having just asked to
+    /// leave it. So a reclaim also drops the underlying mode to NORMAL.
+    static func underlyingMode(after destination: EscapeDestination,
+                               current: Mode) -> Mode {
+        switch destination {
+        case .reclaimReading, .normal: return .normal
+        case .passToApp: return current
+        }
+    }
+
     /// A TAPPED Escape. Tap and hold are the same key, so the distinction
     /// is time — and every mode answers a tap differently.
     enum EscapeTap: Equatable {

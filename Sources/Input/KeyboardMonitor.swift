@@ -1382,6 +1382,12 @@ final class KeyboardMonitor {
                         enabled: self.isEnabled
                     ) {
                     case .reclaimReading:
+                        // Drop the underlying mode too: the user asked to
+                        // leave INSERT. A natural read end only drops the
+                        // capture, so leaving `.insert` here would silently
+                        // return them to typing when the read finished.
+                        self.mode = ModePolicy.underlyingMode(after: .reclaimReading,
+                                                              current: self.mode)
                         self.readingCapture = true
                         fputs("[keyboard] escape held → READING (read reclaimed)\n",
                               stderr)

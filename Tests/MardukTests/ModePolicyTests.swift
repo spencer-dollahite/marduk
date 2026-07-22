@@ -94,6 +94,53 @@ final class ModePolicyTests: XCTestCase {
         }
     }
 
+    // MARK: - The ladder must not silently drop a rung
+
+    /// Reclaiming READING from INSERT means the user asked to LEAVE
+    /// INSERT. A natural read end only drops the capture and deliberately
+    /// leaves `mode` alone (that is what returns `i`-during-a-read to
+    /// INSERT) — so if the underlying mode stayed `.insert` here, finishing
+    /// the read would silently drop them back into typing, with no earcon,
+    /// right after they asked to get out.
+    func testReclaimingReadingAlsoLeavesInsertUnderneath() {
+        XCTAssertEqual(
+            ModePolicy.underlyingMode(after: .reclaimReading, current: .insert),
+            .normal,
+            "the read ending would otherwise return the user to INSERT")
+    }
+
+    func testAnOrdinaryHoldLandsInNormal() {
+        for mode in allModes {
+            XCTAssertEqual(ModePolicy.underlyingMode(after: .normal, current: mode),
+                           .normal)
+        }
+    }
+
+    /// A hold Marduk doesn't claim must not move the user at all.
+    func testPassingEscapeToTheAppLeavesTheModeAlone() {
+        for mode in allModes {
+            XCTAssertEqual(
+                ModePolicy.underlyingMode(after: .passToApp, current: mode), mode)
+        }
+    }
+
+    /// The whole ladder, walked: INSERT during a live read → hold →
+    /// READING (mode NORMAL underneath) → hold → NORMAL.
+    func testHoldingEscapeTwiceWalksInsertToNormalViaReading() {
+        let first = ModePolicy.escapeHoldDestination(
+            mode: .insert, readActive: true, readMotionsEnabled: true, enabled: true)
+        XCTAssertEqual(first, .reclaimReading)
+        let underneath = ModePolicy.underlyingMode(after: first, current: .insert)
+        XCTAssertEqual(underneath, .normal)
+        // Second hold comes from READING capture, whose handler exits to
+        // NORMAL — and the mode underneath already agrees.
+        XCTAssertEqual(
+            ModePolicy.escapeHoldDestination(mode: underneath, readActive: true,
+                                             readMotionsEnabled: true, enabled: true),
+            .passToApp,
+            "once in NORMAL the app gets its Escape back")
+    }
+
     // MARK: - Escape TAP: same key, five answers
 
     /// vim and Claude Code must keep their Escape.

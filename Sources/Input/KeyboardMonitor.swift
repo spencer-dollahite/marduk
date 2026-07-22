@@ -1754,17 +1754,12 @@ final class KeyboardMonitor {
         case pass(Unmanaged<CGEvent>?)  // verdict of a flush redispatch
     }
 
-    // NORMAL-mode letters that are commands: s v r t u i. `i` counts —
-    // mid-buffer it is a plausible deliberate command, and any following
-    // non-command letter still flips the decision to typing.
-    private static let commandLetterKeys: Set<Int64> = [1, 9, 15, 17, 32, 34]
+    // The command-letter and visual-motion tables live in BurstPolicy —
+    // one source of truth, shared with the pure decision.
+    private static let commandLetterKeys = BurstPolicy.commandLetterKeys
 
-    /// n (45) is a command ONLY while Firefox is frontmost (Reader
-    /// narration handoff) — everywhere else it stays a plain letter, so
-    /// typing rescue keeps treating all-command-plus-n words ("sun",
-    /// "runs") as typing.
     private func isCommandLetter(_ keycode: Int64) -> Bool {
-        Self.commandLetterKeys.contains(keycode) || (keycode == 45 && isFirefoxFrontmost)
+        BurstPolicy.isCommandLetter(keycode, firefoxFrontmost: isFirefoxFrontmost)
     }
 
     // MARK: - Firefox Reader narration handoff
@@ -1844,145 +1839,100 @@ final class KeyboardMonitor {
         return false
     }
 
-    // Visual motions that may legitimately follow a withheld `v`/`V`:
-    // h j k l and g/G (no English word starts with those pairs, so fast
-    // vj/Vj/vG power-use keeps working with zero added latency).
-    private static let visualMotionKeys: Set<Int64> = [4, 38, 40, 37, 5]
-
     /// Decide what a NORMAL-mode keypress means while typing rescue is on.
     /// Returns nil when the burst layer has no opinion (fall through to the
     /// regular command dispatch).
+    /// Executes the verdict from the pure `BurstPolicy`. Every decision
+    /// lives there (and is exhaustively tested in BurstPolicyTests); this
+    /// keeps only the side effects — copying events, redispatching,
+    /// ordered replay, and the callbacks.
     private func burstIntercept(
         event: CGEvent, keycode: Int64, isAutorepeat: Bool
     ) -> BurstVerdict? {
         let isLetter = Self.alphaKeyCodes.contains(keycode) || keycode == 40
+        let verdict = BurstPolicy.classify(
+            buffer: burstBuffer.map { $0.getIntegerValueField(.keyboardEventKeycode) },
+            keycode: keycode, isLetter: isLetter, isAutorepeat: isAutorepeat,
+            firefoxFrontmost: isFirefoxFrontmost,
+            releaseAvailable: releaseAvailable)
 
-        if isLetter {
-            if isAutorepeat {
-                // A held key's repeats never join the buffer and never beep
-                // (single beep/command on expiry instead of a machine-gun).
-                // Held k keeps repeating into the app even while a burst is
-                // pending — its repeats are app-bound input (scroll), not
-                // no-ops, and must not stall for the decision window.
-                if keycode == 40 { return nil }
-                return .swallow
+        switch verdict {
+        case .passThrough:
+            return nil
+
+        case .swallowRepeat:
+            // A held key's repeats never join the buffer and never beep
+            // (single beep/command on expiry instead of a machine-gun).
+            return .swallow
+
+        case .startBuffer:
+            // If the copy fails we can't withhold — behave as today
+            guard let copy = event.copy() else { return nil }
+            burstBuffer = [copy]
+            armBurstTimer()
+            return .swallow
+
+        case .append:
+            if let copy = event.copy() { burstBuffer.append(copy) }
+            armBurstTimer()
+            return .swallow
+
+        case .declareTyping:
+            declareTyping(currentEvent: event)
+            return .swallow
+
+        case .doubleTap(let gesture):
+            // Any earlier buffered commands (the s in s-t-t) flush first so
+            // they aren't lost; the first key of the pair is consumed here.
+            var events = takeBurst()
+            events.removeLast()
+            for ev in events {
+                if redispatch(ev) != nil { enqueueReplay(ev) }
             }
-
-            if burstBuffer.isEmpty {
-                // i → instant INSERT (the i-then-type flow must have zero
-                // latency); k keeps its pass-through. Neither starts a buffer.
-                if keycode == 34 || keycode == 40 { return nil }
-                // If the copy fails we can't withhold — behave as today
-                guard let copy = event.copy() else { return nil }
-                burstBuffer = [copy]
-                armBurstTimer()
-                return .swallow
-            }
-
-            // tt: a t landing on a buffered t resolves immediately as
-            // time + date (subsumes the old double-tap timer, and is
-            // strictly faster). Any earlier buffered commands (s in s-t-t)
-            // flush first so they aren't lost.
-            if keycode == 17,
-               burstBuffer.last?.getIntegerValueField(.keyboardEventKeycode) == 17 {
-                var events = takeBurst()
-                events.removeLast() // the first t of the pair — consumed by tt
-                for ev in events {
-                    if redispatch(ev) != nil { enqueueReplay(ev) }
-                }
-                DispatchQueue.main.async { [self] in
+            DispatchQueue.main.async { [self] in
+                switch gesture {
+                case .time:
                     onAnnounce?(Self.currentTimeAndDate())
-                }
-                return .swallow
-            }
-
-            // uu: same double-tap resolution as tt — one u asks (speaks the
-            // release notes), two installs.
-            if keycode == 32,
-               burstBuffer.last?.getIntegerValueField(.keyboardEventKeycode) == 32 {
-                var events = takeBurst()
-                events.removeLast() // the first u of the pair — consumed by uu
-                for ev in events {
-                    if redispatch(ev) != nil { enqueueReplay(ev) }
-                }
-                DispatchQueue.main.async { [self] in
-                    // EXPRESS lane: the daemon installs immediately when any
+                case .update:
+                    // EXPRESS lane: the daemon installs immediately when a
                     // prior check knows updates exist, and degrades to a
                     // harmless check otherwise — so deliberate uu skips the
                     // notes, while a stray double-u on an up-to-date system
                     // (the field incident) can never install anything.
                     fputs("[keyboard] uu → express update\n", stderr)
                     onUpdate?()
-                }
-                return .swallow
-            }
-
-            // dd: cut a patch release — same double-tap resolution as
-            // tt/uu, but ONLY on a source install (releaseAvailable);
-            // everywhere else d stays an ordinary letter and this branch
-            // is invisible. The daemon asks a spoken y/n before anything
-            // irreversible happens.
-            if releaseAvailable, keycode == 2,
-               burstBuffer.last?.getIntegerValueField(.keyboardEventKeycode) == 2 {
-                var events = takeBurst()
-                events.removeLast() // the first d of the pair — consumed by dd
-                for ev in events {
-                    if redispatch(ev) != nil { enqueueReplay(ev) }
-                }
-                DispatchQueue.main.async { [self] in
+                case .release:
+                    // The daemon asks a spoken y/n before anything
+                    // irreversible happens.
                     fputs("[keyboard] dd → cut release\n", stderr)
                     onCutRelease?()
                 }
-                return .swallow
             }
-
-            // v + motion: deliberate fast visual-mode use. Flush the v
-            // (enters visual synchronously), then redispatch the motion —
-            // it lands in the visual block because mode already changed.
-            if Self.visualMotionKeys.contains(keycode),
-               burstBuffer[0].getIntegerValueField(.keyboardEventKeycode) == 9 {
-                flushBurstAsCommands()
-                return .pass(redispatch(event))
-            }
-
-            // A burst containing any non-command letter means typing. A
-            // non-command letter can only ever sit at buffer position 0 (a
-            // later one resolves the burst right here), so checking the head
-            // plus the incoming key covers the whole buffer — this is what
-            // rescues "hi"/"he"/"at", where the command letter comes second.
-            let headIsCommand = isCommandLetter(
-                burstBuffer[0].getIntegerValueField(.keyboardEventKeycode)
-            )
-            if headIsCommand, isCommandLetter(keycode) {
-                // Still ambiguous (all commands so far) — keep collecting.
-                // On expiry the whole buffer executes as commands, so
-                // deliberate rapid command pairs (s then r) stay commands.
-                if let copy = event.copy() { burstBuffer.append(copy) }
-                armBurstTimer()
-                return .swallow
-            }
-
-            declareTyping(currentEvent: event)
             return .swallow
-        }
 
-        // Non-letter key (space, digit, arrow, Escape…): resolve any pending
-        // burst as commands first, then let this key take its normal —
-        // possibly mode-changed — route (a digit after `v` lands in the
-        // visual count-prefix; a space after `s i` passes into INSERT).
-        if !burstBuffer.isEmpty {
+        case .flushThenRedispatch:
+            // Flush the v (enters visual synchronously), then redispatch
+            // the motion — it lands in the visual block because mode
+            // already changed.
             flushBurstAsCommands()
-            let verdict = redispatch(event)
-            if verdict != nil, let copy = event.copy() {
+            return .pass(redispatch(event))
+
+        case .flushThenRoute:
+            // Resolve the burst as commands, then let this key take its
+            // normal — possibly mode-changed — route (a digit after `v`
+            // lands in the visual count-prefix; a space after `s i` passes
+            // into INSERT).
+            flushBurstAsCommands()
+            let routed = redispatch(event)
+            if routed != nil, let copy = event.copy() {
                 // App-bound: queue behind any keys the flush itself queued
                 // (e.g. "sir" + space — the r is still waiting to be posted)
                 // so nothing races ahead of the ordered replay.
                 enqueueReplay(copy)
                 return .swallow
             }
-            return .pass(verdict)
+            return .pass(routed)
         }
-        return nil
     }
 
     /// Arm (or push back) the burst decision timer.

@@ -74,6 +74,15 @@ struct MardukConfig: Codable {
         var identifiers: Bool? = true   // split camelCase / snake_case into words
     }
 
+    // The three blocks below predate the all-Optional rule and keep
+    // non-Optional fields, because every consumption site reads them
+    // directly (`config.speech.rate`). Their DECODE is made total by hand
+    // instead: a missing key — or a missing block — falls back to the
+    // property default rather than failing. Synthesized Codable would
+    // treat each as REQUIRED, so a config.json without "ducking" (or with
+    // `"ducking": {}`) failed the whole decode, and `load()` answers a
+    // failed decode by resetting the file — silently wiping the user's
+    // voice and rate. Caught by ConfigPermutationTests, not in the field.
     struct DuckingConfig: Codable {
         var duckLevel: Int = 5
         var rampSteps: Int = 15
@@ -85,12 +94,37 @@ struct MardukConfig: Codable {
         // (the pause toggle is only sent to apps that will claim it —
         // unclaimed presses launch Music). Optional: decode-safe.
         var mediaKeyApps: [String]?
+
+        init() {}
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            let d = DuckingConfig()
+            duckLevel = try c.decodeIfPresent(Int.self, forKey: .duckLevel) ?? d.duckLevel
+            rampSteps = try c.decodeIfPresent(Int.self, forKey: .rampSteps) ?? d.rampSteps
+            rampDurationMs = try c.decodeIfPresent(Int.self, forKey: .rampDurationMs)
+                ?? d.rampDurationMs
+            duckAppleMusic = try c.decodeIfPresent(Bool.self, forKey: .duckAppleMusic)
+                ?? d.duckAppleMusic
+            duckSpotify = try c.decodeIfPresent(Bool.self, forKey: .duckSpotify)
+                ?? d.duckSpotify
+            useMediaKey = try c.decodeIfPresent(Bool.self, forKey: .useMediaKey)
+                ?? d.useMediaKey
+            mediaKeyApps = try c.decodeIfPresent([String].self, forKey: .mediaKeyApps)
+        }
     }
 
     struct SpeechConfig: Codable {
         var rate: Float = 0.59       // ~213 WPM (0.0=min, 1.0=max)
         var voiceIdentifier: String? // nil = auto-select best English voice
         var pitch: Float?            // reading-voice multiplier, 0.5-2.0 (nil = 1.0)
+
+        init() {}
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            rate = try c.decodeIfPresent(Float.self, forKey: .rate) ?? SpeechConfig().rate
+            voiceIdentifier = try c.decodeIfPresent(String.self, forKey: .voiceIdentifier)
+            pitch = try c.decodeIfPresent(Float.self, forKey: .pitch)
+        }
     }
 
     struct DisplayConfig: Codable {
@@ -100,6 +134,38 @@ struct MardukConfig: Codable {
         var autoInvert: Bool? = false         // measure window brightness (Screen Recording)
         var autoInvertThreshold: Int? = 70    // percent brightness that counts as "bright"
         var dockIcon: Bool? = false           // .regular policy: Dock + app switcher + Force Quit
+
+        init() {}
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            invertForApps = try c.decodeIfPresent([String].self, forKey: .invertForApps) ?? []
+            invertEnabled = try c.decodeIfPresent(Bool.self, forKey: .invertEnabled)
+            pdfDark = try c.decodeIfPresent(String.self, forKey: .pdfDark)
+            autoInvert = try c.decodeIfPresent(Bool.self, forKey: .autoInvert)
+            autoInvertThreshold = try c.decodeIfPresent(Int.self, forKey: .autoInvertThreshold)
+            dockIcon = try c.decodeIfPresent(Bool.self, forKey: .dockIcon)
+        }
+    }
+
+    init() {}
+
+    /// Total decode: an ABSENT block falls back to defaults instead of
+    /// failing the file. `ducking`, `speech`, and `display` are
+    /// non-Optional properties, so synthesized Codable required them —
+    /// a config.json lacking any one of them reset the whole file.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ducking = try c.decodeIfPresent(DuckingConfig.self, forKey: .ducking)
+            ?? DuckingConfig()
+        speech = try c.decodeIfPresent(SpeechConfig.self, forKey: .speech)
+            ?? SpeechConfig()
+        display = try c.decodeIfPresent(DisplayConfig.self, forKey: .display)
+            ?? DisplayConfig()
+        keyboard = try c.decodeIfPresent(KeyboardConfig.self, forKey: .keyboard)
+        verbalizer = try c.decodeIfPresent(VerbalizerConfig.self, forKey: .verbalizer)
+        update = try c.decodeIfPresent(UpdateConfig.self, forKey: .update)
+        overlay = try c.decodeIfPresent(OverlayConfig.self, forKey: .overlay)
+        onboarding = try c.decodeIfPresent(OnboardingConfig.self, forKey: .onboarding)
     }
 }
 

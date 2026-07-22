@@ -82,6 +82,9 @@ enum HelpText {
         Colon commands: help. commands. tutorial. tip, one random feature \
         tip. config, change a setting. voices, choose the reading voice — \
         arrows preview each voice in its own sound, Return picks it. \
+        invert apps, choose which apps darken the display — the app you \
+        were just in comes first, so Return alone adds it, and Return on \
+        one already listed removes it. \
         pronunciation, open the system pronunciation editor — Marduk \
         speaks every entry you add there the way you taught it. \
         typing, open the system typing feedback settings — macOS can \
@@ -155,6 +158,7 @@ enum HelpText {
         "Media pauses during reads and resumes after, only if it was actually playing. Music apps get volume-ducked instead of paused.",
         "If you can see some of the screen, colon config border on frames it in the mode color: red for NORMAL, green for INSERT, blue for VISUAL. Colon config pointer on adds a dot at the mouse that stays visible while zoomed in.",
         "Colon voices opens a voice picker. Arrow through the list and each voice introduces itself in its own sound; Return keeps the one you are hearing.",
+        "If an app is painfully bright, colon invert apps adds it to the list that darkens the whole display while it is in front. The app you were just in is the first choice, so Return alone adds it — and Return on an app already listed takes it back off.",
         "With colon config speed keys on, Option up arrow and Option down arrow change the speech rate on the spot, ten words per minute at a time. Hold the key to glide.",
         "In Firefox reader mode, n hands the reading to Firefox's own narrator: your music pauses, Marduk goes quiet, and Firefox reads the page. Press n again or Escape to bring the music back.",
         "On any article in Firefox, 8 does the whole ritual at once: opens reader mode, pauses your music, and starts Firefox narrating. 8 again closes it all back down.",

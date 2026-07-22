@@ -2451,10 +2451,26 @@ final class KeyboardMonitor {
             var text: String?
             do {
                 try process.run()
+                // Kill-on-timeout watchdog — the last osascript in the
+                // codebase without one. The FIRST scripted fallback fires
+                // Safari's Automation consent prompt, which stalls the
+                // script until the user answers (and a wedged Safari never
+                // answers): an unbounded drain would strand this worker
+                // and the read would never report failure. Terminating
+                // closes the pipes, so the drain below unblocks.
+                let watchdog = DispatchWorkItem { [weak process] in
+                    guard let process, process.isRunning else { return }
+                    fputs("[keyboard] scripted extraction timed out — "
+                        + "killing osascript\n", stderr)
+                    process.terminate()
+                }
+                DispatchQueue.global(qos: .utility)
+                    .asyncAfter(deadline: .now() + 10, execute: watchdog)
                 // Drain before waiting — the pipe-buffer deadlock guard
                 let data = outPipe.fileHandleForReading.readDataToEndOfFile()
                 let err = errPipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
+                watchdog.cancel()
                 if process.terminationStatus == 0 {
                     text = String(data: data, encoding: .utf8)?
                         .trimmingCharacters(in: .whitespacesAndNewlines)

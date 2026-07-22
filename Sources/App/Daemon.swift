@@ -789,6 +789,31 @@ final class DaemonServer {
         }
     }
 
+    /// Speak a farewell, then run the exit action on main — but never let a
+    /// wedged synthesizer strand the daemon. `:quit`/`:restart` used to set
+    /// their exit state ONLY inside the announcement completion, and the
+    /// speech-health watchdog covers reads (`readText != nil`), never
+    /// announcements: an utterance accepted but never started meant the
+    /// daemon simply never stopped. Completion or deadline, first one wins,
+    /// exactly once (both arrive on main, so the flag needs no lock).
+    private func announceThenExit(_ text: String,
+                                  _ exitAction: @escaping () -> Void) {
+        var fired = false
+        let once = {
+            guard !fired else { return }
+            fired = true
+            exitAction()
+        }
+        speech.announce(text) {
+            DispatchQueue.main.async { once() }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+            if !fired { fputs("[marduk] exit announcement wedged — "
+                + "exiting anyway\n", stderr) }
+            once()
+        }
+    }
+
     /// Every content read routes its completion here: the tutorial event
     /// first, then the progressive feature hints. A read's END is the one
     /// reliably QUIET moment (offer's isSpeaking gate makes mid-read
@@ -1273,24 +1298,20 @@ final class DaemonServer {
         case .quit:
             // Clean exit 0 — under launchd (SuccessfulExit=false) this stays
             // stopped until next login or `marduk start`.
-            speech.announce("Marduk stopping.") { [self] in
-                DispatchQueue.main.async { [self] in running = false }
-            }
+            announceThenExit("Marduk stopping.") { [self] in running = false }
         case .restart:
-            speech.announce("Restarting.") { [self] in
-                DispatchQueue.main.async { [self] in
-                    if LaunchAgent.isInstalled {
-                        pendingExitCode = 75  // launchd relaunches us
-                    } else {
-                        let binary = URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
-                            .standardized
-                        let daemon = Process()
-                        daemon.executableURL = binary
-                        daemon.arguments = ["start"]
-                        try? daemon.run()
-                    }
-                    running = false
+            announceThenExit("Restarting.") { [self] in
+                if LaunchAgent.isInstalled {
+                    pendingExitCode = 75  // launchd relaunches us
+                } else {
+                    let binary = URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
+                        .standardized
+                    let daemon = Process()
+                    daemon.executableURL = binary
+                    daemon.arguments = ["start"]
+                    try? daemon.run()
                 }
+                running = false
             }
         case .update:
             speech.announce("Update initiated")

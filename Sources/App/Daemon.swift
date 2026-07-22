@@ -795,13 +795,20 @@ final class DaemonServer {
         ConfigLoader.save(config)
     }
 
-    /// Activate the dialog's owner and raise the dialog. Detector-2
-    /// targets carry the element — validated first, because there is no
-    /// dismissal observer by design: an AX read error means the dialog
-    /// closed between announce and answer. Detector-1 (system agents)
-    /// resolves the agent's window now. Best-effort, 0.5s AX timeouts,
-    /// logs carry error codes only — never titles.
+    /// Bring the announced dialog to the front AND give it keyboard focus
+    /// — a plain z-order raise isn't enough for the prompts that need this
+    /// most: permission dialogs (Allow/Don't Allow, no text field) never
+    /// take focus themselves, so `AXRaise` "succeeds" while the window
+    /// server keeps the previous app on top and zoom (which follows the
+    /// FOCUSED element) has nothing to pan to (field: raise ok, but front
+    /// stayed Terminal). So we also set the app frontmost and the window
+    /// main+focused. Detector-2 targets carry the element; detector-1
+    /// (system agents) is PID-only — resolve the dialog window now. No
+    /// dismissal observer by design: an AX read error = the dialog closed
+    /// between announce and answer. Best-effort, 0.5s timeouts, error
+    /// codes only in the log — never titles.
     private func focusDialog(_ target: DialogSentinel.Target) {
+        let window: AXUIElement
         if let element = target.element {
             AXUIElementSetMessagingTimeout(element, 0.5)
             var roleRef: CFTypeRef?
@@ -812,35 +819,57 @@ final class DaemonServer {
                 speech.announce("That dialog is gone.")
                 return
             }
-            let raise = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
+            window = element
+        } else if let resolved = dialogWindow(pid: target.pid) {
+            window = resolved
+        } else {
+            fputs("[sentinel] focus: no window to focus\n", stderr)
             NSRunningApplication(processIdentifier: target.pid)?.activate()
-            fputs("[sentinel] focus: raise "
-                + "\(raise == .success ? "ok" : "err \(raise.rawValue)"), "
-                + "app activated\n", stderr)
             return
         }
-        // System agent: PID only — activate, then raise its window
-        NSRunningApplication(processIdentifier: target.pid)?.activate()
-        let axApp = AXUIElementCreateApplication(target.pid)
-        AXUIElementSetMessagingTimeout(axApp, 0.5)
-        var windowRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString,
-                                         &windowRef) != .success {
-            var windowsRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString,
-                                             &windowsRef) == .success,
-               let windows = windowsRef as? [AXUIElement] {
-                windowRef = windows.first
-            }
+        bringDialogForward(window: window, pid: target.pid)
+    }
+
+    /// A system agent's dialog window: prefer an AXDialog/AXSystemDialog
+    /// subrole (the prompt), else the focused window, else the first.
+    private func dialogWindow(pid: pid_t) -> AXUIElement? {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.5)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString,
+                                            &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement], !windows.isEmpty else {
+            fputs("[sentinel] focus: agent exposes no windows\n", stderr)
+            return nil
         }
-        if let windowRef, CFGetTypeID(windowRef) == AXUIElementGetTypeID() {
-            let window = windowRef as! AXUIElement
-            let raise = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-            fputs("[sentinel] focus: agent window raise "
-                + "\(raise == .success ? "ok" : "err \(raise.rawValue)")\n", stderr)
-        } else {
-            fputs("[sentinel] focus: agent activated, no window to raise\n", stderr)
+        fputs("[sentinel] focus: agent has \(windows.count) window(s)\n", stderr)
+        for w in windows {
+            var subRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(w, kAXSubroleAttribute as CFString, &subRef)
+            if let sub = subRef as? String,
+               sub == "AXDialog" || sub == "AXSystemDialog" { return w }
         }
+        return windows.first
+    }
+
+    private func bringDialogForward(window: AXUIElement, pid: pid_t) {
+        func ok(_ e: AXError) -> String { e == .success ? "ok" : "err\(e.rawValue)" }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.5)
+        // App frontmost first (a bare .activate() doesn't always take on a
+        // system agent), then make the dialog the main + FOCUSED window so
+        // follow-keyboard-focus zoom pans to it — the step a raise alone
+        // skips. Raise last to settle z-order.
+        let front = AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString,
+                                                 kCFBooleanTrue)
+        let main = AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString,
+                                                kCFBooleanTrue)
+        let focused = AXUIElementSetAttributeValue(window, kAXFocusedAttribute as CFString,
+                                                   kCFBooleanTrue)
+        let raise = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        fputs("[sentinel] focus: frontmost=\(ok(front)) main=\(ok(main)) "
+            + "focused=\(ok(focused)) raise=\(ok(raise))\n", stderr)
     }
 
     // MARK: - Client Handling

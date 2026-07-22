@@ -586,7 +586,7 @@ final class KeyboardMonitor {
             return nil
         }
 
-        // === Interactive question (any mode) ===
+        // === Interactive question (any mode except COMMAND) ===
         // While Marduk awaits an answer to a spoken question (dialog-focus
         // consent), the valid keys ARE the answer and Escape bails — no
         // mode ceremony, because a dialog interrupts whatever the user was
@@ -597,8 +597,12 @@ final class KeyboardMonitor {
         // Any other unmodified key means "not answering" — the question
         // evaporates and the key does its normal thing. Cmd/Ctrl/Option
         // combos skip this entirely (Cmd+C mid-question keeps the question;
-        // the timeout bounds it). Zero effect when nothing is armed.
-        if pendingDialogAnswer != nil, !hasCommand, !hasControl, !hasOption {
+        // the timeout bounds it). COMMAND is excluded: you're typing a
+        // Marduk command (`:config …`), and a re-arming dialog eating its
+        // a/o/s letters mangled the command (field 2026-07-22). Zero
+        // effect when nothing is armed.
+        if pendingDialogAnswer != nil, mode != .command,
+           !hasCommand, !hasControl, !hasOption {
             if let answer = Self.dialogAnswerKeys[keycode],
                !flags.contains(.maskShift) {
                 if isAutorepeat { return nil }

@@ -12,39 +12,57 @@ final class DialogFocusTests: XCTestCase {
 
     func testPromptTailFullOnFirstAsk() {
         let tail = DialogFocus.promptTail(setting: .ask, explained: false,
-                                          zoomFollowsFocus: nil)
+                                          zoomFollowsFocus: nil, inInsert: false)
         XCTAssertNotNil(tail)
-        for key in ["a to always focus", "o to focus just this one",
+        for key in ["Press a to always focus", "o to focus just this one",
                     "n for not now", "s to stop asking"] {
             XCTAssertTrue(tail!.contains(key), key)
         }
         XCTAssertFalse(tail!.contains("zoom"),
                        "no synergy line when the zoom state is unknown")
+        XCTAssertFalse(tail!.contains("Escape"),
+                       "NORMAL wording must not detour through Escape")
     }
 
     func testPromptTailMentionsZoomSynergyOnlyWhenOn() {
         let on = DialogFocus.promptTail(setting: .ask, explained: false,
-                                        zoomFollowsFocus: true)
+                                        zoomFollowsFocus: true, inInsert: false)
         XCTAssertTrue(on!.contains("zoom follows keyboard focus"))
         let off = DialogFocus.promptTail(setting: .ask, explained: false,
-                                         zoomFollowsFocus: false)
+                                         zoomFollowsFocus: false, inInsert: false)
         XCTAssertFalse(off!.contains("zoom"))
     }
 
     func testPromptTailTerseOnceExplained() {
         for zoom in [true, false, nil] as [Bool?] {
             XCTAssertEqual(DialogFocus.promptTail(setting: .ask, explained: true,
-                                                  zoomFollowsFocus: zoom),
+                                                  zoomFollowsFocus: zoom,
+                                                  inInsert: false),
                            "Focus? a, o, n, or s.")
         }
+    }
+
+    func testPromptTailInInsertRoutesThroughEscape() {
+        // Announced into INSERT the keys would type into the app (often
+        // the dialog's own field — the field incident), so the wording
+        // must route through the held Escape, full and terse alike.
+        let full = DialogFocus.promptTail(setting: .ask, explained: false,
+                                          zoomFollowsFocus: nil, inInsert: true)
+        XCTAssertTrue(full!.contains("Hold Escape, then press a"))
+        XCTAssertEqual(DialogFocus.promptTail(setting: .ask, explained: true,
+                                              zoomFollowsFocus: nil, inInsert: true),
+                       "Focus? Hold Escape, then a, o, n, or s.")
     }
 
     func testPromptTailNilForAlwaysAndOff() {
         for setting in [DialogFocus.Setting.always, .off] {
             for explained in [true, false] {
-                XCTAssertNil(DialogFocus.promptTail(setting: setting,
-                                                    explained: explained,
-                                                    zoomFollowsFocus: true))
+                for inInsert in [true, false] {
+                    XCTAssertNil(DialogFocus.promptTail(setting: setting,
+                                                        explained: explained,
+                                                        zoomFollowsFocus: true,
+                                                        inInsert: inInsert))
+                }
             }
         }
     }

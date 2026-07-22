@@ -157,9 +157,26 @@ final class KeyboardMonitor {
     /// Arm the a/o/n/s capture for one question. Main thread only. A new
     /// question replaces an armed one; the timeout bounds how long the
     /// answer keys shadow their NORMAL meanings (s = hover, Firefox n).
+    /// The daemon RESTARTS the window when the spoken question finishes
+    /// (extendDialogQuestionWindow) — the clock must not tick while the
+    /// instructions are still being read aloud (field report: the user
+    /// listened to the whole pitch before answering).
     func armDialogQuestion(onAnswer: @escaping (Character) -> Void) {
         cancelDialogQuestion()
         pendingDialogAnswer = onAnswer
+        scheduleDialogTimeout()
+    }
+
+    /// Restart the answer window (no-op when nothing is armed) — called
+    /// when the spoken question completes, so the user always gets the
+    /// full window AFTER hearing the instructions.
+    func extendDialogQuestionWindow() {
+        guard pendingDialogAnswer != nil else { return }
+        scheduleDialogTimeout()
+    }
+
+    private func scheduleDialogTimeout() {
+        dialogQuestionTimeout?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.cancelDialogQuestion() }
         dialogQuestionTimeout = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.dialogQuestionWindow,
@@ -1633,9 +1650,17 @@ final class KeyboardMonitor {
     /// n (45) is a command ONLY while Firefox is frontmost (Reader
     /// narration handoff) — everywhere else it stays a plain letter, so
     /// typing rescue keeps treating all-command-plus-n words ("sun",
-    /// "runs") as typing.
+    /// "runs") as typing. The dialog-question answer keys (a o n s) are
+    /// command-shaped the same dynamic way while a question is armed:
+    /// without this, rescue declared a double-tapped answer TYPING and
+    /// replayed it into the focused dialog — a password field's username
+    /// box, in the field incident (2026-07-22). A burst already holding a
+    /// real non-command letter still resolves to typing, so genuine words
+    /// keep their rescue.
     private func isCommandLetter(_ keycode: Int64) -> Bool {
-        Self.commandLetterKeys.contains(keycode) || (keycode == 45 && isFirefoxFrontmost)
+        Self.commandLetterKeys.contains(keycode)
+            || (keycode == 45 && isFirefoxFrontmost)
+            || (pendingDialogAnswer != nil && Self.dialogAnswerKeys[keycode] != nil)
     }
 
     // MARK: - Firefox Reader narration handoff

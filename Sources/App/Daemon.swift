@@ -759,14 +759,18 @@ final class DaemonServer {
         let explained = FileManager.default
             .fileExists(atPath: Self.dialogFocusExplainedMarker.path)
         let zoomFollows = DialogFocus.zoomFollowsFocus()
-        guard let tail = DialogFocus.promptTail(setting: .ask,
-                                                explained: explained,
-                                                zoomFollowsFocus: zoomFollows) else {
+        guard let tail = DialogFocus.promptTail(
+            setting: .ask, explained: explained, zoomFollowsFocus: zoomFollows,
+            inInsert: keyboardMonitor?.mode == .insert) else {
             speech.announce(text)
             return
         }
         if !explained { try? Data().write(to: Self.dialogFocusExplainedMarker) }
-        speech.announce(text + " " + tail)
+        // The window restarts when the spoken question ENDS — listening
+        // to the full pitch must never eat the answer time
+        speech.announce(text + " " + tail) { [weak keyboardMonitor] in
+            keyboardMonitor?.extendDialogQuestionWindow()
+        }
         keyboardMonitor?.armDialogQuestion { [self] answer in
             guard let resolution = DialogFocus.resolve(answer: answer) else { return }
             if let setting = resolution.newSetting { setDialogFocus(setting) }

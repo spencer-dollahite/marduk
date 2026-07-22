@@ -605,6 +605,14 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
             completions.removeValue(forKey: ObjectIdentifier($0))
         }
         stop()
+        // A respeak is a MOVE, not a user stop. stop() sets stopRequested
+        // and only speak() clears it — which respeak bypasses — so without
+        // this, any in-window motion (a sentence jump, a search, an
+        // in-window page step) left the flag set for the rest of the
+        // window, and paged continuation then refused to load the next one.
+        // The read died silently at the window boundary, 15-45 pages after
+        // a keypress that appeared to work.
+        stopRequested = false
         readBase = clamped
         readPosition = clamped
         segmentStartedAt = Date()

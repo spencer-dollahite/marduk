@@ -289,6 +289,23 @@ final class ModePolicyTests: XCTestCase {
             .page(1))
     }
 
+    /// An in-window MOTION must not look like a user stop.
+    ///
+    /// `respeak` — the move primitive behind every jump — calls `stop()`,
+    /// which sets stopRequested. It bypasses `speak()`, the only place that
+    /// cleared the flag, so a single sentence jump or search left it set
+    /// and the next window never loaded: the read died silently at the
+    /// boundary, 15-45 pages after a keypress that seemed to work. The
+    /// engine now clears the flag in `respeak`; this pins the contract the
+    /// two sides have to agree on.
+    func testAMotionLeavesContinuationEnabled() {
+        // After a motion the flag must be back to false, so continuation
+        // behaves exactly as it does on an untouched read.
+        XCTAssertTrue(ModePolicy.shouldContinueWindow(
+            stopRequested: false, isCurrentUtterance: true, hasNextWindow: true),
+            "a moved-but-not-stopped read must still flow into its next window")
+    }
+
     /// Exhaustive: stopRequested dominates every other input.
     func testStopAlwaysWins() {
         for isCurrent in [false, true] {

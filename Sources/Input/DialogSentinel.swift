@@ -132,38 +132,63 @@ final class DialogSentinel {
         suppressSheetsUntil = Date().addingTimeInterval(seconds)
     }
 
+    /// Should this overlay be announced, and as what?
+    ///
+    /// Pure, because it is ~8 lines of judgment behind ~30 lines of AX
+    /// plumbing and it has ALREADY shipped one field regression: Qt apps
+    /// mass-produce untitled AXDialog windows, and every Packet Tracer
+    /// launch false-alarmed "a dialog needs attention".
+    ///
+    /// Nil = stay silent.
+    static func announcement(level: Level, isSheet: Bool, subrole: String,
+                             title: String, appName: String,
+                             suppressed: Bool) -> String? {
+        guard level == .all else { return nil }   // .system keeps app sheets silent
+        guard !suppressed else { return nil }     // one of our own sheets
+        let isDialog = subrole == "AXDialog" || subrole == "AXSystemDialog"
+        guard isSheet || isDialog else { return nil } // standard windows stay silent
+
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        // An untitled app DIALOG stays silent (the Qt false alarms); real
+        // system prompts arrive via the system agents, and SHEETS announce
+        // regardless — they are structurally real.
+        if isDialog && !isSheet && title.isEmpty { return nil }
+
+        let kind = isSheet ? "sheet" : "dialog"
+        return title.isEmpty
+            ? "A \(kind) in \(appName) needs attention."
+            : "A \(kind) in \(appName): \(title)."
+    }
+
+    /// Same text within this window is one announcement — window-created
+    /// and sheet-created can fire together, and some apps re-post on focus
+    /// cycling.
+    static let dedupWindow: TimeInterval = 5
+
+    static func shouldEmit(_ message: String, lastMessage: String?,
+                           lastAt: Date, now: Date) -> Bool {
+        message != lastMessage || now.timeIntervalSince(lastAt) >= dedupWindow
+    }
+
     private func handleAXNotification(element: AXUIElement, notification: String) {
-        guard level == .all else { return }  // .system keeps app sheets silent
-        guard Date() >= suppressSheetsUntil else { return }  // our own sheet
         var subroleRef: CFTypeRef?
         _ = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString,
                                           &subroleRef)
-        let subrole = subroleRef as? String ?? ""
-
-        let isSheet = notification == (kAXSheetCreatedNotification as String)
-        let isDialog = subrole == "AXDialog" || subrole == "AXSystemDialog"
-        guard isSheet || isDialog else { return } // standard windows stay silent
-
         var titleRef: CFTypeRef?
         _ = AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString,
                                           &titleRef)
-        let title = (titleRef as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        // Qt apps (Packet Tracer) mass-produce untitled windows wearing the
-        // AXDialog subrole — every launch false-alarmed "a dialog needs
-        // attention" (field report). An untitled app DIALOG stays silent;
-        // real system prompts come from the system agents (detector 1),
-        // and sheets announce regardless — they're structurally real.
-        if isDialog && !isSheet && title.isEmpty { return }
+        let isSheet = notification == (kAXSheetCreatedNotification as String)
         let appName = NSRunningApplication(processIdentifier: observedPID)?
             .localizedName ?? "the front app"
 
-        let kind = isSheet ? "sheet" : "dialog"
-        let message = title.isEmpty
-            ? "A \(kind) in \(appName) needs attention."
-            : "A \(kind) in \(appName): \(title)."
-        fputs("[sentinel] \(kind) in \(appName) (title \(title.count) chars)\n", stderr)
+        guard let message = Self.announcement(
+            level: level, isSheet: isSheet,
+            subrole: subroleRef as? String ?? "",
+            title: titleRef as? String ?? "", appName: appName,
+            suppressed: Date() < suppressSheetsUntil) else { return }
+
+        // Titles are SPOKEN, never logged — the log is pasted into issues
+        fputs("[sentinel] \(isSheet ? "sheet" : "dialog") in \(appName)\n", stderr)
         emit(message, target: Target(pid: observedPID, element: element))
     }
 
@@ -172,8 +197,8 @@ final class DialogSentinel {
     /// announcement.
     private func emit(_ message: String, target: Target?) {
         let now = Date()
-        if message == lastAnnouncement,
-           now.timeIntervalSince(lastAnnouncedAt) < 5 { return }
+        guard Self.shouldEmit(message, lastMessage: lastAnnouncement,
+                              lastAt: lastAnnouncedAt, now: now) else { return }
         lastAnnouncement = message
         lastAnnouncedAt = now
         announce?(message, target)

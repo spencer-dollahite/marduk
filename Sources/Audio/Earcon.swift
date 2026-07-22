@@ -63,7 +63,25 @@ enum Earcon {
             playData(wav)
             return
         }
+        let wav = self.wav(frequencies: frequencies, toneDuration: toneDuration,
+                           gapDuration: gapDuration, amplitude: amplitude,
+                           square: square, fadeDuration: fadeDuration)
+        wavCache[cacheKey] = wav
+        playData(wav)
+    }
 
+    /// The synthesis half — deterministic, which is the premise the cache
+    /// above rests on. Split out because the earcons are the ONLY feedback
+    /// for a mode change in NORMAL, and two that render identically are
+    /// indistinguishable to the user with nothing else to tell them apart.
+    static func wav(
+        frequencies: [Double],
+        toneDuration: Double = 0.07,
+        gapDuration: Double = 0.03,
+        amplitude: Double = 0.25,
+        square: Bool = false,
+        fadeDuration: Double = 0.009
+    ) -> Data {
         let sampleRate = 44100
         let toneSamples = Int(Double(sampleRate) * toneDuration)
         let gapSamples = Int(Double(sampleRate) * gapDuration)
@@ -79,7 +97,11 @@ enum Earcon {
                 let env = min(Double(s) / Double(fade), Double(toneSamples - 1 - s) / Double(fade), 1.0)
                 let raw = sin(2.0 * .pi * freq * t)
                 let wave = square ? (raw >= 0 ? 1.0 : -1.0) : raw
-                pcm[offset + s] = Int16(wave * amplitude * env * 32767.0)
+                // Clamp before narrowing: Int16(_:) TRAPS on overflow, so a
+                // future amplitude or envelope change would crash the daemon
+                // at the exact moment it tried to play an error beep.
+                let scaled = (wave * amplitude * env * 32767.0).rounded()
+                pcm[offset + s] = Int16(max(-32768, min(32767, scaled)))
             }
             offset += toneSamples
             if i < frequencies.count - 1 { offset += gapSamples }
@@ -103,9 +125,7 @@ enum Earcon {
         wav.append(ascii: "data")
         wav.appendLE(UInt32(dataBytes))
         pcm.withUnsafeBytes { wav.append(contentsOf: $0) }
-
-        wavCache[cacheKey] = wav
-        playData(wav)
+        return wav
     }
 
     private static func playData(_ wav: Data) {

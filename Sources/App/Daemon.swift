@@ -1385,7 +1385,9 @@ final class DaemonServer {
             return
         }
         guard !releaseInFlight else {
-            speech.announce("A release is already running.")
+            // dd mid-release = the status poke: quiet by default, answers
+            // with the current stage when asked
+            speech.announce("Release in progress. \(releaseLastStage).")
             return
         }
         DispatchQueue.global(qos: .utility).async { [self] in
@@ -1448,6 +1450,11 @@ final class DaemonServer {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
+        // Stages are TRACKED, not spoken (user-tuned: the run is usable
+        // time — reads and motions keep working — and a stage announce()
+        // would stop an active read every few minutes). The log carries
+        // the full narration; dd while running speaks the current stage
+        // on demand; only start, success, and failure interrupt.
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else {
@@ -1459,7 +1466,6 @@ final class DaemonServer {
                 if let stage = ReleaseCheck.stageLine(text) {
                     DispatchQueue.main.async { [weak self] in
                         self?.releaseLastStage = stage
-                        self?.speech.announce(stage + ".")
                     }
                 }
             }

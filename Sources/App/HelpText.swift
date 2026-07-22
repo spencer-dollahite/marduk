@@ -37,7 +37,8 @@ enum HelpText {
         time. t t, time and date. s, speak what is under the mouse pointer as it moves, in your reading voice. u, check \
         for updates and hear what's new; u again within a minute installs. \
         On a source install, d d cuts a patch release: Marduk asks the \
-        version out loud, y confirms, and every pipeline stage is spoken. \
+        version out loud, y confirms, and it works quietly — d d again \
+        says how far along it is, and the finish is announced. \
         u u skips the notes and just installs. \
         n, in Firefox reader mode: pause your media and start Firefox's \
         own narration. n again, or Escape, brings the media back. n works \

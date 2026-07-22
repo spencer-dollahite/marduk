@@ -49,9 +49,11 @@ final class BundlerTests: XCTestCase {
     /// sides rather than assume which form comes back.
     private func assertProjectDir(_ execPath: String, isRepo repo: URL,
                                   line: UInt = #line) {
-        let found = Bundler.projectDir(fromExecutable: execPath)
-        XCTAssertNotNil(found, "expected a project dir", line: line)
-        XCTAssertEqual(found.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path },
+        guard let found = Bundler.projectDir(fromExecutable: execPath) else {
+            XCTFail("expected a project dir for \(execPath)", line: line)
+            return
+        }
+        XCTAssertEqual(URL(fileURLWithPath: found).resolvingSymlinksInPath().path,
                        repo.resolvingSymlinksInPath().path, line: line)
     }
 

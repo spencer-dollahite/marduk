@@ -799,7 +799,7 @@ final class DaemonServer {
     private func announceThenExit(_ text: String,
                                   _ exitAction: @escaping () -> Void) {
         var fired = false
-        let once = {
+        let once: () -> Void = {
             guard !fired else { return }
             fired = true
             exitAction()

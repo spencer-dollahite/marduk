@@ -205,7 +205,9 @@ final class DaemonServer {
         onboarding = Onboarding(
             hintsEnabled: config.onboarding?.hints ?? true,
             hintsShown: config.onboarding?.hintsShown ?? 0,
-            tutored: OnceMarker.seen("tutored"))
+            tutored: OnceMarker.seen("tutored"),
+            lastHintAt: config.onboarding?.lastHintAt
+                .map { Date(timeIntervalSince1970: $0) } ?? .distantPast)
         paletteEnabled = config.keyboard?.commandPalette ?? true
         autoUpdate = config.update?.auto ?? true
         updateCheckHours = config.update?.checkHours ?? 24
@@ -341,9 +343,11 @@ final class DaemonServer {
         tutorial.onComplete = { [self] in onboarding.markTutored() }
         onboarding.speak = { [self] text in speech.announce(text) }
         onboarding.isSpeaking = { [self] in speech.isSpeaking }
-        onboarding.persistHintsShown = { [self] count in
+        onboarding.persistProgress = { [self] count, at in
             var ob = config.onboarding ?? MardukConfig.OnboardingConfig()
             ob.hintsShown = count
+            // Persisted so the multi-day cooldown survives restarts
+            ob.lastHintAt = at.timeIntervalSince1970
             config.onboarding = ob
             ConfigLoader.save(config)
         }
@@ -436,7 +440,9 @@ final class DaemonServer {
         keyboardMonitor?.start(
             onSpeak: { [self] text in
                 longReadGeneration += 1  // a new read beats an in-flight chunk
-                speech.speak(text) { [self] in contentReadEnded(paged: false) }
+                startingRead(paged: false) { [self] in
+                    speech.speak(text) { [self] in contentReadEnded(paged: false) }
+                }
             },
             onStop: { [self] in
                 longReadGeneration += 1  // a stop beats an in-flight chunk
@@ -600,9 +606,11 @@ final class DaemonServer {
         }
         keyboardMonitor?.onSpeakPaged = { [self] paged, startPage, headings in
             longReadGeneration += 1  // a new read beats an in-flight chunk
-            speech.speakPaged(paged, startPage: startPage,
-                              headings: headings) { [self] in
-                contentReadEnded(paged: true)
+            startingRead(paged: true) { [self] in
+                speech.speakPaged(paged, startPage: startPage,
+                                  headings: headings) { [self] in
+                    contentReadEnded(paged: true)
+                }
             }
         }
         keyboardMonitor?.onSpeakDocument = { [self] text, start in
@@ -769,8 +777,10 @@ final class DaemonServer {
         longReadGeneration += 1
         let ns = text as NSString
         guard PagedText.exceedsWindow(ns.length) else {
-            speech.speak(ns.substring(from: max(0, min(start, ns.length)))) { [self] in
-                contentReadEnded(paged: false)
+            startingRead(paged: false) { [self] in
+                speech.speak(ns.substring(from: max(0, min(start, ns.length)))) { [self] in
+                    contentReadEnded(paged: false)
+                }
             }
             return
         }
@@ -782,8 +792,11 @@ final class DaemonServer {
             DispatchQueue.main.async { [self] in
                 guard generation == longReadGeneration else { return }
                 fputs("[speech] long read chunked: \(paged.pageCount) pages\n", stderr)
-                speech.speakPaged(paged, startPage: startPage, synthetic: true) { [self] in
-                    contentReadEnded(paged: true)
+                startingRead(paged: true) { [self] in
+                    speech.speakPaged(paged, startPage: startPage,
+                                      synthetic: true) { [self] in
+                        contentReadEnded(paged: true)
+                    }
                 }
             }
         }
@@ -822,27 +835,38 @@ final class DaemonServer {
     /// engine's cooldown lets at most one surface per read end, spacing
     /// the rest across future reads. Never during the tutorial — the tour
     /// is already teaching.
-    private func contentReadEnded(paged: Bool) {
+    private func contentReadEnded() {
         tutorial.handle(.readFinished)
-        guard !tutorial.isActive else { return }
-        // This completion runs INSIDE the synthesizer's didFinish delegate,
-        // where isSpeaking hasn't settled — offering here would fail the
-        // pacing gate's quiet check every time and no hint would ever
-        // surface. The beat also keeps a tip from treading on the read's
-        // last word, and lets a new read (r pressed immediately) win: it
-        // makes isSpeaking true again, so the offer stands down.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
-            guard !tutorial.isActive else { return }
-            if paged {
-                onboarding.offer("hint-page-keys", "Tip: long documents read "
-                    + "in pages. Control F and Control B turn them.")
+    }
+
+    /// Speak a hint about reading BEFORE the read it describes, then run
+    /// the read. A tip has to arrive attached to the thing it's about —
+    /// arriving in the silence after a read is out of the blue, and by
+    /// then the moment it would have helped with has passed (user ruling
+    /// 2026-07-22). Nothing eligible = the read starts immediately, so
+    /// the common path is untouched.
+    ///
+    /// Order matters: the most useful tip for THIS read wins, and the
+    /// engine's cooldown keeps the rest for later reads.
+    private func startingRead(paged: Bool, then read: @escaping () -> Void) {
+        guard !tutorial.isActive else { return read() }
+        // Every caller bumps this before us. If a NEWER read starts while
+        // the tip is speaking, that read cancels the tip — whose completion
+        // still fires — and running our read then would clobber the one the
+        // user actually just asked for.
+        let generation = longReadGeneration
+        guard let tip = onboarding.claim(paged ? .pagedReadStart : .readStart) else {
+            return read()
+        }
+        speech.announce(tip) { [self] in
+            DispatchQueue.main.async { [self] in
+                guard generation == longReadGeneration else {
+                    fputs("[onboarding] newer read won — dropping the "
+                        + "tipped one\n", stderr)
+                    return
+                }
+                read()
             }
-            onboarding.offer("hint-read-motions", "Tip: while reading, j and k "
-                + "move by line, and Space pauses.")
-            onboarding.offer("hint-continuous-read", "Tip: uppercase R reads "
-                + "the whole document, starting under the pointer.")
-            onboarding.offer("hint-spell", "Tip: while reading, z spells the "
-                + "current word.")
         }
     }
 
@@ -2203,19 +2227,17 @@ final class DaemonServer {
             speech.rate = rate
             config.speech.rate = rate
             ConfigLoader.save(config)
+            // The moment rate is on their mind — mention the live nudge,
+            // claimed BEFORE speaking (while the synthesizer is quiet, so
+            // the pacing gate sees the truth) and chained onto the
+            // confirmation so it rides the action instead of arriving
+            // later out of nowhere.
+            let rateTip = (config.keyboard?.speedKeys ?? false) || tutorial.isActive
+                ? nil : onboarding.claim(.rateChange)
             // READ voice on purpose: the confirmation demos the new rate
             speech.speak("Rate set to \(wpm) words per minute.") { [self] in
-                // The moment rate is on their mind — mention the live nudge
-                // (only while speed keys are off; the hint is the pointer).
-                // Deferred like the reading hints: this fires inside the
-                // synthesizer's delegate, where isSpeaking hasn't settled.
-                guard !(config.keyboard?.speedKeys ?? false) else { return }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
-                    guard !tutorial.isActive else { return }
-                    onboarding.offer("hint-speed-keys", "Tip: colon config "
-                        + "speedkeys on lets Option up and down nudge the "
-                        + "rate live.")
-                }
+                guard let rateTip else { return }
+                DispatchQueue.main.async { [self] in speech.announce(rateTip) }
             }
 
         case "pitch":

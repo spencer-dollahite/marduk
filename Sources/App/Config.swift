@@ -18,6 +18,10 @@ struct MardukConfig: Codable {
     struct OnboardingConfig: Codable {
         var hints: Bool? = true       // master switch for feature hints + questions
         var hintsShown: Int? = 0      // lifetime count → "experienced" quieting
+        // Epoch seconds of the last hint. PERSISTED because the cooldown
+        // between hints is measured in DAYS (user ruling 2026-07-22) — an
+        // in-memory timestamp would reset every restart and bunch them up.
+        var lastHintAt: Double?
     }
 
     // Every field below is Optional: synthesized Codable treats non-Optional

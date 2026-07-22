@@ -16,10 +16,52 @@ import Foundation
 ///   safe-mode — important enough to bypass the pacing gates, but still
 ///   once-ever and still yielding until speech is quiet.
 final class Onboarding {
+    /// Where a hint is allowed to speak. A tip has to arrive attached to
+    /// the thing it describes (user ruling 2026-07-22): reading tips ride
+    /// the gap between reading mode engaging and the content starting,
+    /// others hang off the action they're about. `.standalone` is for the
+    /// rare hint with no natural context — those may speak alone.
+    enum Context {
+        case readStart, pagedReadStart, rateChange, standalone
+    }
+
+    struct Hint {
+        let id: String
+        /// Every moment this hint may ride. A hint that fits both a plain
+        /// and a paged read lists both rather than being duplicated —
+        /// duplicate rows would let the same tip play twice under two ids.
+        let contexts: Set<Context>
+        let text: String
+    }
+
+    /// The hint ladder, ordered MOST CRITICAL FIRST and trailing off into
+    /// advanced/niche (user ruling 2026-07-22: "low and slow"). Order is
+    /// the priority: at any eligible moment the earliest unseen hint whose
+    /// context matches wins, so a new user learns to control a read long
+    /// before they hear about spelling or rate nudging. New hints are a
+    /// TABLE ROW placed by importance — never a new code path.
+    static let catalog: [Hint] = [
+        // 1. Controlling a read at all — useless to hear anything else first
+        Hint(id: "hint-read-motions", contexts: [.readStart, .pagedReadStart],
+             text: "While I read: j and k move by line, Space pauses, and "
+                 + "holding Escape stops."),
+        // 2. Only matters once they meet a paged document
+        Hint(id: "hint-page-keys", contexts: [.pagedReadStart],
+             text: "This one reads in pages. Control F and Control B turn "
+                 + "them, and Control G says where you are."),
+        // 3. Advanced reading motion
+        Hint(id: "hint-spell", contexts: [.readStart, .pagedReadStart],
+             text: "While I read, z spells the current word."),
+        // 4. Niche comfort setting
+        Hint(id: "hint-speed-keys", contexts: [.rateChange],
+             text: "You can also nudge the rate while I read: colon config "
+                 + "speedkeys on, then Option with up or down."),
+    ]
+
     // Wiring injected by the daemon
     var speak: ((String) -> Void)?      // → speech.announce
     var isSpeaking: (() -> Bool)?       // → speech.isSpeaking
-    var persistHintsShown: ((Int) -> Void)?
+    var persistProgress: ((Int, Date) -> Void)?
 
     var hintsEnabled: Bool
     private var hintsShown: Int
@@ -27,20 +69,25 @@ final class Onboarding {
 
     // Per-session pacing — the anti-bombard state
     private var sessionCount = 0
-    private var lastHintAt = Date.distantPast
+    private var lastHintAt: Date
 
-    /// At most this many hints/questions surface per daemon session…
-    static let sessionCap = 2
-    /// …and never within this window of the previous one.
-    static let cooldown: TimeInterval = 120
+    /// At most this many hints surface per daemon session…
+    static let sessionCap = 1
+    /// …and never within this window of the previous one. DAYS, not
+    /// minutes (user ruling 2026-07-22: "space things out a LOT, like over
+    /// several DAYS") — which is why `lastHintAt` is persisted to config
+    /// rather than living for the lifetime of one daemon.
+    static let cooldown: TimeInterval = 2 * 24 * 60 * 60
     /// After this many lifetime hints, onboarding goes quiet (feature
     /// discovery is done; critical notices still fire).
     static let experiencedThreshold = 12
 
-    init(hintsEnabled: Bool, hintsShown: Int, tutored: Bool) {
+    init(hintsEnabled: Bool, hintsShown: Int, tutored: Bool,
+         lastHintAt: Date = .distantPast) {
         self.hintsEnabled = hintsEnabled
         self.hintsShown = hintsShown
         self.tutored = tutored
+        self.lastHintAt = lastHintAt
     }
 
     var experienced: Bool { tutored || hintsShown >= Self.experiencedThreshold }
@@ -75,7 +122,7 @@ final class Onboarding {
         hintsShown += 1
         sessionCount += 1
         lastHintAt = Date()
-        persistHintsShown?(hintsShown)
+        persistProgress?(hintsShown, lastHintAt)
         fputs("[onboarding] surfaced \(id) (\(hintsShown) lifetime)\n", stderr)
     }
 
@@ -86,6 +133,22 @@ final class Onboarding {
         consume(id)
         speak?(text)
         return true
+    }
+
+    /// Claim the highest-priority hint for this context WITHOUT speaking
+    /// it: returns its text (burning the once-ever marker) or nil.
+    ///
+    /// The caller speaks it and chains the real action to its completion,
+    /// so a reading tip lands after reading mode engages but BEFORE the
+    /// content — a preamble, never an interruption, and never the
+    /// out-of-nowhere interjection that trailing hints produced.
+    func claim(_ context: Context) -> String? {
+        for hint in Self.catalog where hint.contexts.contains(context) {
+            guard eligible(hint.id) else { continue }
+            consume(hint.id)
+            return hint.text
+        }
+        return nil
     }
 
     /// A first-use config question: speak the prompt, then let the caller

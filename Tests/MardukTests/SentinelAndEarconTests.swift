@@ -161,14 +161,20 @@ final class SentinelAndEarconTests: XCTestCase {
     /// `Int16(_:)` TRAPS on overflow, so an amplitude or envelope change
     /// would crash the daemon at the exact moment it played an error beep.
     func testLoudEarconsClampInsteadOfTrapping() {
+        // Reaching this line at all proves it didn't trap. What the numbers
+        // then prove is that it SATURATED rather than wrapping: a wrap
+        // would fold peaks back toward zero and turn the beep to mush.
+        // 32768 is legitimate — it is |Int16.min|.
         let hot = Earcon.wav(frequencies: [440], amplitude: 4.0, square: true)
-        XCTAssertLessThanOrEqual(pcmPeak(hot), 32767)
-        XCTAssertGreaterThan(pcmPeak(hot), 0, "a loud earcon must still sound")
+        XCTAssertLessThanOrEqual(pcmPeak(hot), 32768)
+        XCTAssertGreaterThanOrEqual(pcmPeak(hot), 32767,
+                                    "an over-driven earcon must saturate, not wrap")
     }
 
+    /// The shipped amplitudes leave headroom — no earcon is riding the rail.
     func testShippedAmplitudesStayBelowClipping() {
-        XCTAssertLessThanOrEqual(pcmPeak(Earcon.wav(frequencies: [440])), 32767)
-        XCTAssertLessThanOrEqual(
+        XCTAssertLessThan(pcmPeak(Earcon.wav(frequencies: [440])), 32767)
+        XCTAssertLessThan(
             pcmPeak(Earcon.wav(frequencies: [200], toneDuration: 0.11,
                                gapDuration: 0.0, amplitude: 0.6,
                                square: true, fadeDuration: 0.0015)), 32767)

@@ -78,20 +78,30 @@ enum DialogFocus {
 
     /// Zoom's Follow keyboard focus state from com.apple.universalaccess
     /// (the domain Marduk already reads for whiteOnBlack and the
-    /// pronunciation store). CANDIDATE KEYS as data — the classic Bool
-    /// first; macOS 26's actual key is hardware-confirmed and this list
-    /// adjusted if it differs. Missing/unreadable → nil (fail-soft; the
-    /// wording treats unknown as "not known on"). Read fresh per question
-    /// so Settings edits apply at the next dialog.
-    static let zoomFollowKeys = ["closeViewZoomFollowsFocus"]
+    /// pronunciation store). macOS 26 stores it as an INT MODE in
+    /// `closeViewZoomFocusFollowModeKey` (hardware-confirmed 2026-07-22:
+    /// 0 = never, nonzero = following — the user's "follows focus" read
+    /// 2). Older macOS used a Bool `closeViewZoomFollowsFocus`; kept as a
+    /// fallback. Missing/unreadable → nil (fail-soft; the wording treats
+    /// unknown as "not known on"). Read fresh per question so Settings
+    /// edits apply at the next dialog.
+    static let zoomFollowModeKey = "closeViewZoomFocusFollowModeKey"
+    static let zoomFollowLegacyKey = "closeViewZoomFollowsFocus"
+
+    /// The mode int → follows-keyboard-focus? Pure and tested; 0 (never)
+    /// is the only off value, any following mode counts as on.
+    static func followsFocus(mode: Int) -> Bool { mode != 0 }
 
     static func zoomFollowsFocus() -> Bool? {
         let domain = "com.apple.universalaccess" as CFString
         CFPreferencesAppSynchronize(domain)
-        for key in zoomFollowKeys {
-            if let value = CFPreferencesCopyAppValue(key as CFString, domain) {
-                if let number = value as? NSNumber { return number.boolValue }
-            }
+        if let value = CFPreferencesCopyAppValue(zoomFollowModeKey as CFString,
+                                                 domain) as? NSNumber {
+            return followsFocus(mode: value.intValue)
+        }
+        if let legacy = CFPreferencesCopyAppValue(zoomFollowLegacyKey as CFString,
+                                                  domain) as? NSNumber {
+            return legacy.boolValue
         }
         return nil
     }

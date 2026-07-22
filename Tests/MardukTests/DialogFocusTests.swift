@@ -107,6 +107,16 @@ final class DialogFocusTests: XCTestCase {
             .contains("Zoom, Advanced"))
     }
 
+    // MARK: - Zoom follow-focus mode interpretation
+
+    func testFollowModeMapping() {
+        // macOS 26 mode int: 0 = never, nonzero = following (2 = the
+        // user-confirmed follows-keyboard-focus value).
+        XCTAssertFalse(DialogFocus.followsFocus(mode: 0))
+        XCTAssertTrue(DialogFocus.followsFocus(mode: 1))
+        XCTAssertTrue(DialogFocus.followsFocus(mode: 2))
+    }
+
     // MARK: - Config decode resilience
 
     func testPartialConfigDecodeSurvivesMissingDialogFocusKey() throws {

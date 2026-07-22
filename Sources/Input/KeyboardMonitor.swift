@@ -21,6 +21,10 @@ final class KeyboardMonitor {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
+    /// The most recent frontmost app that wasn't Marduk — what the user
+    /// was actually in before a picker stole focus.
+    private(set) var lastForeignApp: (name: String, id: String)?
+
     /// True once the CGEventTap exists (Accessibility granted). The daemon
     /// gates the first-run welcome on this — arming a t/p/s question with no
     /// tap silently loses the user's answer to the frontmost app.
@@ -337,8 +341,18 @@ final class KeyboardMonitor {
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil, queue: .main
         ) { [weak self] note in
-            self?.frontmostBundleID = (note.userInfo?[NSWorkspace.applicationUserInfoKey]
-                as? NSRunningApplication)?.bundleIdentifier ?? ""
+            guard let self else { return }
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey]
+                as? NSRunningApplication
+            frontmostBundleID = app?.bundleIdentifier ?? ""
+            // Remember the last app that ISN'T us: the command palette
+            // activates Marduk to take key focus, so by the time a picker
+            // opens, NSWorkspace's idea of "frontmost" is Marduk. The app
+            // picker needs whoever the user was actually working in.
+            if let app, let id = app.bundleIdentifier,
+               id != Bundle.main.bundleIdentifier {
+                lastForeignApp = (app.localizedName ?? id, id)
+            }
         }
 
         if createTap() {
@@ -1194,12 +1208,12 @@ final class KeyboardMonitor {
             switch keycode {
             case 36: // Return — submit (empty buffer = cancel)
                 let cmd = commandBuffer
-                if cmd.hasPrefix("/") || cmd.hasPrefix("voices") {
-                    // Fuzzy search and the voice picker: Enter accepts the
-                    // selection. Stay in COMMAND mode — the daemon either
-                    // executes (and ends the mode) or expands the buffer
-                    // for further typing. ("voices" can't collide with
-                    // another command — no name is a prefix of another.)
+                if ColonCommand.staysOpenOnReturn(cmd) {
+                    // Fuzzy search and every staged picker: Enter accepts
+                    // the selection. Stay in COMMAND mode — the daemon
+                    // either executes (and ends the mode) or expands the
+                    // buffer for further typing. The set of pickers lives
+                    // in ColonCommand, so adding one never edits the tap.
                     fputs("[keyboard] : \(cmd) (selection accept)\n", stderr)
                     DispatchQueue.main.async { [self] in onCommandSubmit?(cmd) }
                     return nil

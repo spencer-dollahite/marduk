@@ -1231,12 +1231,15 @@ final class DaemonServer {
                 // A config key — keep typing the value
                 speech.announce(completion.trimmingCharacters(in: .whitespaces))
                 keyboardMonitor?.replaceCommandBuffer(completion)
-            } else if completion.hasPrefix("voices ") {
-                // A voice row surfaced by "/" — apply directly (recursing
+            } else if let picker = ColonCommand.pickerCommands.first(where: {
+                completion.hasPrefix("\($0) ")
+            }) {
+                // A picker row surfaced by "/" — apply directly (recursing
                 // into handleColonCommand would re-read the selection and
                 // loop)
                 keyboardMonitor?.endCommandMode()
-                applyVoice(identifier: String(completion.dropFirst("voices ".count)))
+                applyPickerRow(picker,
+                               identifier: String(completion.dropFirst(picker.count + 1)))
             } else {
                 keyboardMonitor?.endCommandMode()
                 handleColonCommand(completion)
@@ -1244,17 +1247,17 @@ final class DaemonServer {
             return
         }
 
-        // ":voices" picker accept — Return takes the highlighted row, dmenu
-        // style (the tap keeps COMMAND mode alive for this prefix, like "/").
-        if raw.hasPrefix("voices") {
+        // Staged picker accept — Return takes the highlighted row, dmenu
+        // style (the tap keeps COMMAND mode alive for these, like "/").
+        if let picker = ColonCommand.pickerCommands.first(where: { raw.hasPrefix($0) }) {
             // A buffer holding a full identifier (Tab/click filled it) is
             // already a decision — apply it without consulting the selection.
             // Identifiers are reverse-DNS; typed filter text can't contain
             // dots (the tap has no "." key in commandKeyChars).
-            let arg = raw.dropFirst("voices".count).trimmingCharacters(in: .whitespaces)
+            let arg = raw.dropFirst(picker.count).trimmingCharacters(in: .whitespaces)
             if arg.contains(".") {
                 keyboardMonitor?.endCommandMode()
-                applyVoice(identifier: arg)
+                applyPickerRow(picker, identifier: arg)
                 return
             }
             guard commandCandidates.indices.contains(commandSelected),
@@ -1264,12 +1267,13 @@ final class DaemonServer {
                 return
             }
             if completion.hasSuffix(" ") {
-                // The command row itself ("voices ") — enter the picker
-                announceVoicesPicker()
+                // The command row itself — enter the picker
+                announcePickerEntry(picker)
                 keyboardMonitor?.replaceCommandBuffer(completion)
-            } else if completion.hasPrefix("voices ") {
+            } else if completion.hasPrefix("\(picker) ") {
                 keyboardMonitor?.endCommandMode()
-                applyVoice(identifier: String(completion.dropFirst("voices ".count)))
+                applyPickerRow(picker,
+                               identifier: String(completion.dropFirst(picker.count + 1)))
             } else {
                 // Selection drifted off the picker (shouldn't happen)
                 Earcon.error()
@@ -1296,8 +1300,8 @@ final class DaemonServer {
             }
             lastTipIndex = index
             speech.speak("Tip: " + HelpText.tips[index])
-        case .voices:
-            // Unreachable in practice — every "voices"-prefixed buffer is
+        case .voices, .invertApps:
+            // Unreachable in practice — every picker-prefixed buffer is
             // intercepted above before parse. Compiler exhaustiveness only.
             break
         case .typing:
@@ -1896,9 +1900,11 @@ final class DaemonServer {
             if explicit { speech.announce("No options here. Press Return to run it.") }
             return
         }
-        // The voice picker can list 20+ voices — don't recite them all;
-        // arrows preview each one in its own voice anyway
-        if commandBufferSnapshot.hasPrefix("voices"), displays.count > 8 {
+        // Pickers list dozens of rows (voices, every installed app) — don't
+        // recite them all; arrows walk them one at a time anyway
+        if ColonCommand.pickerCommands.contains(where: {
+            commandBufferSnapshot.hasPrefix($0)
+        }), displays.count > 8 {
             let more = displays.count - 6
             displays = Array(displays.prefix(6)) + ["and \(more) more"]
         }
@@ -2200,6 +2206,122 @@ final class DaemonServer {
         fputs("[speech] Reading voice set to \(voice.name) (\(identifier))\n", stderr)
         // READ voice on purpose: the confirmation demos the choice
         speech.speak("This is \(voice.name).")
+    }
+
+    // MARK: - Staged pickers
+
+    /// Route an accepted picker row to whatever that picker does. One
+    /// switch, so a new picker is a case here plus its row source — not a
+    /// new set of prefix checks threaded through the tap and the palette.
+    private func applyPickerRow(_ picker: String, identifier: String) {
+        switch picker {
+        case "voices": applyVoice(identifier: identifier)
+        case "invertapps": toggleInvertApp(identifier: identifier)
+        default: break
+        }
+    }
+
+    private func announcePickerEntry(_ picker: String) {
+        switch picker {
+        case "voices":
+            announceVoicesPicker()
+        case "invertapps":
+            speech.announce("invert apps. Choose an app to invert the display "
+                + "while it is in front. Return adds it, or removes it if it "
+                + "is already on the list.")
+        default: break
+        }
+    }
+
+    /// The ":invertapps" rows: the app the user was just in FIRST (the
+    /// whole point — you notice an app is blinding while you're in it),
+    /// then everything running, then everything installed. Bundle IDs stay
+    /// out of the display entirely; nobody should need to know theirs.
+    private func invertAppOptions() -> [(name: String, identifier: String)] {
+        let listed = Set(config.display.invertForApps)
+        var seen = Set<String>()
+        if let own = Bundle.main.bundleIdentifier { seen.insert(own) }
+        var rows: [(name: String, identifier: String)] = []
+
+        func add(_ name: String, _ id: String) {
+            guard !seen.contains(id) else { return }
+            seen.insert(id)
+            // Spoken, so the state has to be a word, not a checkmark
+            let builtIn = DisplayInverter.builtInInvertPrefixes
+                .contains { id.hasPrefix($0) }
+            let suffix = builtIn ? " — always inverts (built in)"
+                : (listed.contains(id) ? " — inverting" : "")
+            rows.append((name + suffix, id))
+        }
+
+        if let front = keyboardMonitor?.lastForeignApp { add(front.name, front.id) }
+        for app in NSWorkspace.shared.runningApplications
+            where app.activationPolicy == .regular {
+            if let id = app.bundleIdentifier { add(app.localizedName ?? id, id) }
+        }
+        // Anything already on the list but neither running nor installed
+        // must still be removable
+        for id in config.display.invertForApps.sorted() { add(id, id) }
+        for app in Self.installedApps() { add(app.name, app.identifier) }
+        return rows
+    }
+
+    /// Every .app in the standard locations, name + bundle ID from its own
+    /// Info.plist. Best-effort: an unreadable bundle is simply skipped.
+    private static func installedApps() -> [(name: String, identifier: String)] {
+        let fm = FileManager.default
+        let roots = [URL(fileURLWithPath: "/Applications"),
+                     URL(fileURLWithPath: "/Applications/Utilities"),
+                     fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications"),
+                     URL(fileURLWithPath: "/System/Applications"),
+                     URL(fileURLWithPath: "/System/Applications/Utilities")]
+        var found: [(name: String, identifier: String)] = []
+        for root in roots {
+            let entries = (try? fm.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: nil)) ?? []
+            for url in entries where url.pathExtension == "app" {
+                guard let bundle = Bundle(url: url),
+                      let id = bundle.bundleIdentifier else { continue }
+                let name = (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName")
+                    as? String)
+                    ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String)
+                    ?? url.deletingPathExtension().lastPathComponent
+                found.append((name, id))
+            }
+        }
+        return found.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Add or remove an app from `display.invertForApps` — the picker's
+    /// accept. Toggling means one command both adds and removes, so there
+    /// is no second gesture to learn.
+    private func toggleInvertApp(identifier: String) {
+        let name = invertAppOptions().first { $0.identifier == identifier }?.name
+            .components(separatedBy: " — ").first ?? identifier
+        if DisplayInverter.builtInInvertPrefixes.contains(where: { identifier.hasPrefix($0) }) {
+            speech.announce("\(name) already inverts the display. It is built in, "
+                + "so there is nothing to add.")
+            return
+        }
+        var list = config.display.invertForApps
+        let removing = list.contains(identifier)
+        if removing {
+            list.removeAll { $0 == identifier }
+        } else {
+            list.append(identifier)
+        }
+        config.display.invertForApps = list
+        ConfigLoader.save(config)
+        displayInverter?.invertApps = Set(list)  // live, no restart
+        fputs("[display] invert list: \(removing ? "removed" : "added") "
+            + "\(identifier) (\(list.count) total)\n", stderr)
+        let inversionOn = (config.display.invertEnabled ?? false)
+            || (config.display.autoInvert ?? false)
+        let caveat = inversionOn ? ""
+            : " Inverting is switched off, so run colon config invert on to use it."
+        speech.announce(removing
+            ? "\(name) removed. It no longer inverts the display."
+            : "\(name) added. The display will invert while it is in front.\(caveat)")
     }
 
     /// Applies a setting live AND persists it. Failures speak and change
@@ -2648,8 +2770,9 @@ final class DaemonServer {
                 case .expand(let expanded):
                     // Speak the completed word so audio users hear the jump
                     // (the voices picker gets its premium-download hint)
-                    if expanded == "voices " {
-                        self.announceVoicesPicker()
+                    if let picker = ColonCommand.pickerCommands
+                        .first(where: { expanded == "\($0) " }) {
+                        self.announcePickerEntry(picker)
                     } else if let word = expanded.split(separator: " ").last {
                         self.speech.announce(String(word))
                     }
@@ -2669,8 +2792,11 @@ final class DaemonServer {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
         }
         commandBufferSnapshot = buffer
+        // App rows are enumerated only while the app picker is open — a
+        // disk walk on every keystroke of every command would be absurd
+        let apps = buffer.hasPrefix("invertapps") ? invertAppOptions() : []
         commandCandidates = CommandCompleter.candidates(for: buffer, values: settingValues(),
-                                                        voices: voiceOptions)
+                                                        voices: voiceOptions, apps: apps)
         commandSelected = 0
         if paletteEnabled {
             palette.update(buffer: buffer, candidates: commandCandidates,
@@ -2697,11 +2823,17 @@ final class DaemonServer {
         guard commandCandidates.indices.contains(commandSelected),
               let completion = commandCandidates[commandSelected].completion else { return }
         keyboardMonitor?.replaceCommandBuffer(completion)
-        // Voice rows complete to "voices <identifier>" — speak the display
-        // name (in that voice), never the raw identifier
+        // Picker rows complete to "<picker> <identifier>" — speak the
+        // display name (a voice auditions in its own voice), NEVER the raw
+        // identifier: reciting "com.apple.iWork.Pages" at someone is
+        // exactly the bundle-ID knowledge the picker exists to remove.
         let candidate = commandCandidates[commandSelected]
         if let voice = previewVoice(for: candidate) {
             speech.announce(candidate.display, voice: voice)
+        } else if ColonCommand.pickerCommands.contains(where: {
+            completion.hasPrefix("\($0) ")
+        }) {
+            speech.announce(candidate.display)
         } else {
             speech.announce(completion.trimmingCharacters(in: .whitespaces))
         }

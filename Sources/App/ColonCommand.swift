@@ -8,6 +8,7 @@ enum ColonCommand: Equatable {
     case tip
     case config(key: String, value: String)
     case voices
+    case invertApps
     case pronunciation
     case typing
     case quit
@@ -22,11 +23,34 @@ enum ColonCommand: Equatable {
     case unknown(String)
 
     // No name may be a prefix of another — auto-accept relies on it
-    // (the tap's Return handler also assumes "voices" owns that prefix)
     static let commandNames = ["help", "commands", "tutorial", "tip", "config",
-                               "voices", "pronunciation", "typing", "quit", "restart",
-                               "update", "uninstall", "log", "feedback", "bug",
-                               "security"]
+                               "voices", "invertapps", "pronunciation", "typing",
+                               "quit", "restart", "update", "uninstall", "log",
+                               "feedback", "bug", "security"]
+
+    /// Commands that open a STAGED PICKER: the buffer stays in COMMAND
+    /// mode while the user fuzzy-filters, and Return accepts the
+    /// highlighted row instead of submitting the text. The daemon
+    /// intercepts these before `parse`, so their enum cases exist for
+    /// compiler exhaustiveness only.
+    ///
+    /// TABLE, not a code path: `voices` used to own eight hardcoded
+    /// `hasPrefix("voices")` checks across three files, so a second picker
+    /// would have meant a second copy of all of them.
+    static let pickerCommands: Set<String> = ["voices", "invertapps"]
+
+    /// Commands that EXPAND to "<name> " rather than executing — every
+    /// picker, plus `config` (which wants a key next).
+    static let expandingCommands: Set<String> = pickerCommands.union(["config"])
+
+    /// Does this buffer keep COMMAND mode open on Return? Pickers accept a
+    /// row rather than submitting, and "/" is the fuzzy search. The event
+    /// tap asks this instead of testing command names itself.
+    static func staysOpenOnReturn(_ buffer: String) -> Bool {
+        if buffer.hasPrefix("/") { return true }
+        let first = buffer.lowercased().split(separator: " ").first.map(String.init)
+        return first.map(pickerCommands.contains) ?? false
+    }
 
     static func parse(_ raw: String) -> ColonCommand {
         let tokens = raw.lowercased().split(separator: " ").map(String.init)
@@ -60,6 +84,8 @@ enum ColonCommand: Equatable {
             // palette selection before ever parsing, so bare .voices is
             // only reached as a fallback.
             return .voices
+        case "invertapps":
+            return .invertApps
         case "pronunciation":
             return .pronunciation
         case "typing":
@@ -144,7 +170,7 @@ enum ColonCommand: Equatable {
                   name != "set" else { return .none }
             // Staged commands expand instead of executing: config wants a
             // key, voices opens the picker (selection accepts via Return)
-            if name == "config" || name == "voices" { return .expand("\(name) ") }
+            if expandingCommands.contains(name) { return .expand("\(name) ") }
             return .execute(name)
 
         case 2 where tokens[0] == "log":
@@ -240,6 +266,7 @@ enum CommandCompleter {
         "tip": "a random feature tip",
         "config": "change a setting",
         "voices": "choose the reading voice",
+        "invertapps": "choose which apps invert the display",
         "pronunciation": "open the system pronunciation editor",
         "typing": "open the system typing feedback settings",
         "quit": "stop Marduk",
@@ -252,6 +279,35 @@ enum CommandCompleter {
         "security": "report a security issue privately",
     ]
 
+    /// One staged picker's rows, fuzzy-filtered by the typed remainder.
+    /// Display names contain spaces, so the whole remainder is the query.
+    private static func pickerRows(
+        command: String, tokens: [String],
+        source: [(name: String, identifier: String)]
+    ) -> [Candidate] {
+        let rows = source.map {
+            Candidate(display: $0.name, completion: "\(command) \($0.identifier)")
+        }
+        // Tab/click fills the full identifier into the buffer — keep showing
+        // that row (an identifier never fuzzy-matches the display names, and
+        // an empty list would break Return)
+        let remainder = tokens.dropFirst().joined(separator: " ")
+        if let exact = source.first(where: { $0.identifier.lowercased() == remainder }) {
+            return [Candidate(display: exact.name,
+                              completion: "\(command) \(exact.identifier)")]
+        }
+        let query = tokens.dropFirst().joined().lowercased()
+        guard !query.isEmpty else { return rows }
+        return rows
+            .compactMap { row -> (Candidate, Int)? in
+                guard let score = fuzzyScore(query: query,
+                                             target: row.display.lowercased()) else { return nil }
+                return (row, score)
+            }
+            .sorted { $0.1 < $1.1 }
+            .map(\.0)
+    }
+
     private static func commandDisplay(_ name: String) -> String {
         guard let description = commandDescriptions[name] else { return name }
         return "\(name) — \(description)"
@@ -260,7 +316,7 @@ enum CommandCompleter {
     /// Staged commands complete with a trailing space (the buffer stays
     /// open for the next stage) instead of executing outright.
     private static func commandCompletion(_ name: String) -> String {
-        name == "config" || name == "voices" ? "\(name) " : name
+        expandingCommands.contains(name) ? "\(name) " : name
     }
 
     /// Everything "/" search can land on: all commands + all config keys.
@@ -299,7 +355,8 @@ enum CommandCompleter {
     /// feeds the ":voices" picker stage (dynamic — the daemon supplies the
     /// installed list; tests pass a fixture).
     static func candidates(for buffer: String, values: [String: String],
-                           voices: [(name: String, identifier: String)] = []) -> [Candidate] {
+                           voices: [(name: String, identifier: String)] = [],
+                           apps: [(name: String, identifier: String)] = []) -> [Candidate] {
         let lowered = buffer.lowercased()
 
         // "/query" — fuzzy search across the whole catalog (commands +
@@ -334,31 +391,13 @@ enum CommandCompleter {
             }
         }
 
-        // ":voices" picker stage — every installed voice, fuzzy-filtered by
-        // whatever is typed after the command (names contain spaces, so the
-        // whole remainder is the query). Return/Tab/click accept a row; the
-        // completion carries the identifier.
-        if tokens[0] == "voices" {
-            let rows = voices.map {
-                Candidate(display: $0.name, completion: "voices \($0.identifier)")
-            }
-            // Tab/click fills the full identifier into the buffer — keep
-            // showing that voice's row (an identifier never fuzzy-matches
-            // the display names, and an empty list would break Return)
-            let remainder = tokens.dropFirst().joined(separator: " ")
-            if let exact = voices.first(where: { $0.identifier.lowercased() == remainder }) {
-                return [Candidate(display: exact.name, completion: "voices \(exact.identifier)")]
-            }
-            let query = tokens.dropFirst().joined().lowercased()
-            guard !query.isEmpty else { return rows }
-            return rows
-                .compactMap { row -> (Candidate, Int)? in
-                    guard let score = fuzzyScore(query: query,
-                                                 target: row.display.lowercased()) else { return nil }
-                    return (row, score)
-                }
-                .sorted { $0.1 < $1.1 }
-                .map(\.0)
+        // Staged picker (":voices", ":invertapps") — the whole source list,
+        // fuzzy-filtered by whatever is typed after the command name.
+        // Return/Tab/click accept a row; the completion carries the
+        // identifier the daemon acts on.
+        if pickerCommands.contains(tokens[0]) {
+            return pickerRows(command: tokens[0], tokens: tokens,
+                              source: tokens[0] == "voices" ? voices : apps)
         }
 
         // "log" has one optional argument

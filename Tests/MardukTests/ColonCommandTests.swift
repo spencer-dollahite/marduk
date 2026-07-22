@@ -165,6 +165,83 @@ final class ColonCommandTests: XCTestCase {
 
     // Auto-accept and unique-prefix expansion both assume no grammar word
     // swallows another — guard the settings table as it grows.
+    // MARK: - Staged pickers (:voices, :invertapps)
+
+    /// Unique-prefix expansion breaks if one command name prefixes
+    /// another — the same trap that forbids a `invertapplist` SETTING,
+    /// since `invert` is already a settings key.
+    func testNoCommandNameIsPrefixOfAnother() {
+        let names = ColonCommand.commandNames
+        for a in names {
+            for b in names where a != b {
+                XCTAssertFalse(b.hasPrefix(a), "\(a) is a prefix of \(b)")
+            }
+        }
+    }
+
+    func testInvertAppsIsNotASettingKey() {
+        // It must be a COMMAND: as a setting it would collide with the
+        // existing "invert" key and fail testNoSettingKeyIsPrefixOfAnother
+        XCTAssertTrue(ColonCommand.commandNames.contains("invertapps"))
+        XCTAssertFalse(ColonCommand.settings.map(\.key).contains("invertapps"))
+    }
+
+    func testPickersExpandInsteadOfExecuting() {
+        for picker in ColonCommand.pickerCommands {
+            XCTAssertTrue(ColonCommand.expandingCommands.contains(picker),
+                          "\(picker) must expand to a stage")
+        }
+        XCTAssertEqual(ColonCommand.autoResolve("invertapps"),
+                       .expand("invertapps "))
+        XCTAssertEqual(ColonCommand.autoResolve("voices"), .expand("voices "))
+    }
+
+    /// The event tap asks this instead of testing names itself, so a new
+    /// picker never requires editing KeyboardMonitor.
+    func testStaysOpenOnReturnCoversPickersAndSearch() {
+        XCTAssertTrue(ColonCommand.staysOpenOnReturn("/paus"))
+        XCTAssertTrue(ColonCommand.staysOpenOnReturn("voices"))
+        XCTAssertTrue(ColonCommand.staysOpenOnReturn("invertapps"))
+        XCTAssertTrue(ColonCommand.staysOpenOnReturn("invertapps pag"))
+        XCTAssertFalse(ColonCommand.staysOpenOnReturn("config rate 200"))
+        XCTAssertFalse(ColonCommand.staysOpenOnReturn("help"))
+        XCTAssertFalse(ColonCommand.staysOpenOnReturn(""))
+    }
+
+    func testAppPickerRowsFilterAndCarryBundleIDs() {
+        let apps = [(name: "Pages", identifier: "com.apple.iWork.Pages"),
+                    (name: "Numbers", identifier: "com.apple.iWork.Numbers"),
+                    (name: "Terminal", identifier: "com.apple.Terminal")]
+        let all = CommandCompleter.candidates(for: "invertapps ", values: [:],
+                                              apps: apps)
+        XCTAssertEqual(all.count, 3)
+        XCTAssertEqual(all.first?.completion, "invertapps com.apple.iWork.Pages")
+
+        let filtered = CommandCompleter.candidates(for: "invertapps term", values: [:],
+                                                   apps: apps)
+        XCTAssertEqual(filtered.first?.display, "Terminal")
+    }
+
+    /// Tab/click fills the full bundle ID into the buffer; that row must
+    /// survive so Return still has something to accept.
+    func testAppPickerKeepsExactIdentifierRow() {
+        let apps = [(name: "Pages", identifier: "com.apple.iWork.Pages")]
+        let rows = CommandCompleter.candidates(
+            for: "invertapps com.apple.iwork.pages", values: [:], apps: apps)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.display, "Pages")
+    }
+
+    /// Both pickers share one implementation — voices must not regress.
+    func testVoicePickerStillWorks() {
+        let voices = [(name: "Samantha", identifier: "com.apple.voice.Samantha"),
+                      (name: "Daniel", identifier: "com.apple.voice.Daniel")]
+        let rows = CommandCompleter.candidates(for: "voices dan", values: [:],
+                                               voices: voices)
+        XCTAssertEqual(rows.first?.display, "Daniel")
+        XCTAssertEqual(rows.first?.completion, "voices com.apple.voice.Daniel")
+    }
+
     func testNoSettingKeyIsPrefixOfAnother() {
         let keys = ColonCommand.settings.map(\.key)
         for a in keys {

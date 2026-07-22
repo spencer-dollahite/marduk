@@ -9,9 +9,12 @@ import XCTest
 final class OnboardingTests: XCTestCase {
 
     // A fresh, eligible baseline; each test flips one condition.
+    // Derived from the constant, never a literal: the cooldown is now
+    // measured in days, and a hardcoded baseline silently stopped
+    // clearing it when that changed.
     private func surface(seen: Bool = false, enabled: Bool = true,
                          experienced: Bool = false, sessionCount: Int = 0,
-                         sinceLast: TimeInterval = 9999,
+                         sinceLast: TimeInterval = Onboarding.cooldown + 1,
                          speaking: Bool = false) -> Bool {
         Onboarding.shouldSurface(seen: seen, enabled: enabled,
                                  experienced: experienced,

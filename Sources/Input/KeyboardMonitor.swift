@@ -20,6 +20,15 @@ final class KeyboardMonitor {
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+
+    /// True once the CGEventTap exists (Accessibility granted). The daemon
+    /// gates the first-run welcome on this — arming a t/p/s question with no
+    /// tap silently loses the user's answer to the frontmost app.
+    var tapAlive: Bool { eventTap != nil }
+    /// Fired when the tap comes up LATE (retry after a permission grant).
+    /// When set, the daemon owns the spoken feedback — the deferred welcome
+    /// or the generic "active" line; unset falls back to the generic line.
+    var onTapEstablished: (() -> Void)?
     private var tapWatchdog: DispatchSourceTimer?
     private var tapRetry: DispatchSourceTimer?
     // FAIL-OPEN: when Marduk's main thread can't process keys promptly,
@@ -457,7 +466,11 @@ final class KeyboardMonitor {
                 self.tapRetry?.cancel()
                 self.tapRetry = nil
                 fputs("[keyboard] Event tap created after permission grant\n", stderr)
-                self.onAnnounce?("Keyboard commands active.")
+                if let established = self.onTapEstablished {
+                    established()
+                } else {
+                    self.onAnnounce?("Keyboard commands active.")
+                }
             }
         }
         retry.resume()

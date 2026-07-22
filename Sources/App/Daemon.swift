@@ -142,6 +142,9 @@ final class DaemonServer {
     // "dialogfocus-explained" / "zoomfollow-hinted")
     private var dialogFocusSetting: DialogFocus.Setting = .ask
     private let hoverSpeech = HoverSpeech()
+    // First-run welcome deferred because the event tap didn't exist yet
+    // (no Accessibility grant); spoken when the tap retry succeeds
+    private var welcomePending = false
     private let palette = CommandPalette()
     private var paletteEnabled: Bool
     // Palette state, main-queue-only: last buffer + its completion candidates
@@ -685,22 +688,27 @@ final class DaemonServer {
 
         if !safeMode { displayInverter?.start() }
 
-        // First-run welcome: marker written immediately so a crash mid-speech
-        // can never replay-loop it. Spoken via the READ path — Space-pausable,
-        // Escape-stoppable. (If tap creation failed, this replaces the queued
-        // permission announcement; the tap retry re-announces on success.)
-        if OnceMarker.firstTime("welcomed") {
-            DispatchQueue.main.async { [self] in
-                fputs("[marduk] first-run welcome\n", stderr)
-                // Arm the t/p/s learning-mode choice only AFTER the welcome
-                // finishes reading (the welcome IS a read — reading capture
-                // holds the keyboard until it ends — so arming earlier would
-                // fight it, and the window would tick during the long pitch).
-                speech.speak(HelpText.welcome) { [self] in
-                    keyboardMonitor?.armQuestion(keys: ["t", "p", "s"]) { [self] answer in
-                        handleWelcomeChoice(answer)
-                    }
-                }
+        // First-run welcome — but ONLY once the event tap exists. On the
+        // canonical fresh install there is no Accessibility grant yet: the
+        // welcome would end "press t, p, or s" with no tap to capture the
+        // answer (keys fall through to the frontmost app) and the consumed
+        // marker meant the orientation never replayed (field-audited gap).
+        // The marker is consumed at SPEAK time, so an ungranted install
+        // keeps its welcome for the retry — or the next daemon start.
+        keyboardMonitor?.onTapEstablished = { [self] in
+            if welcomePending {
+                welcomePending = false
+                runFirstRunWelcome()  // the welcome IS the "keyboard works" feedback
+            } else {
+                speech.announce("Keyboard commands active.")
+            }
+        }
+        if !OnceMarker.seen("welcomed") {
+            if keyboardMonitor?.tapAlive == true {
+                runFirstRunWelcome()
+            } else {
+                welcomePending = true
+                fputs("[marduk] first-run welcome deferred until tap exists\n", stderr)
             }
         }
 
@@ -825,6 +833,26 @@ final class DaemonServer {
             if let hint = DialogFocus.zoomHint(zoomFollowsFocus: zoomFollows),
                OnceMarker.firstTime("zoomfollow-hinted") {
                 speech.announce(hint)
+            }
+        }
+    }
+
+    /// Speak the first-run orientation and arm the t/p/s choice. Caller
+    /// guarantees the event tap is alive (the choice needs it). The marker
+    /// is written just before speaking — a crash mid-speech can never
+    /// replay-loop the welcome, but a tap-less boot never consumes it.
+    private func runFirstRunWelcome() {
+        DispatchQueue.main.async { [self] in
+            OnceMarker.mark("welcomed")
+            fputs("[marduk] first-run welcome\n", stderr)
+            // Arm the t/p/s learning-mode choice only AFTER the welcome
+            // finishes reading (the welcome IS a read — reading capture
+            // holds the keyboard until it ends — so arming earlier would
+            // fight it, and the window would tick during the long pitch).
+            speech.speak(HelpText.welcome) { [self] in
+                keyboardMonitor?.armQuestion(keys: ["t", "p", "s"]) { [self] answer in
+                    handleWelcomeChoice(answer)
+                }
             }
         }
     }

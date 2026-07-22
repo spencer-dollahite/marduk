@@ -30,7 +30,25 @@ jobs:
           fi
 
       - name: Test
-        run: swift test
+        run: swift test --enable-code-coverage
+
+      # Coverage is REPORTED, never gated. A percentage target invites
+      # tests written to move the number; this exists so "how much of
+      # this file does anything actually execute" has an answer instead
+      # of an estimate — and so a file at 0% is visible rather than
+      # assumed covered. Best-effort: never fails the build.
+      - name: Coverage by file
+        continue-on-error: true
+        run: |
+          BIN=$(swift build --show-bin-path)
+          PROF="$BIN/codecov/default.profdata"
+          XCTEST=$(find "$BIN" -name '*.xctest' -maxdepth 1 | head -1)
+          TARGET="$XCTEST/Contents/MacOS/$(basename "$XCTEST" .xctest)"
+          [ -f "$PROF" ] && [ -f "$TARGET" ] || { echo "no coverage data"; exit 0; }
+          xcrun llvm-cov report "$TARGET" -instr-profile "$PROF" \
+            -ignore-filename-regex='(Tests|\.build)/' 2>/dev/null \
+            | sort -k4 -n | tee coverage.txt
+          echo "::notice::least-covered files are listed first"
 
       # The closest a headless runner gets to E2E: the daemon boots
       # without Karabiner or any TCC grant (exactly a fresh install's

@@ -118,9 +118,23 @@ enum SpeechPreprocessor {
         var text = text
         if text.utf16.count > maxInputLength {
             let originalUTF16 = text.utf16.count
-            let cut = text.index(text.startIndex, offsetBy: maxInputLength,
-                                 limitedBy: text.endIndex) ?? text.endIndex
-            text = String(text[..<cut])
+            // Cut in the SAME units the gate measures. Offsetting by
+            // Characters kept up to ~11 UTF-16 units per grapheme (a family
+            // emoji is 11), so emoji-dense input sailed past the budget the
+            // cap exists to enforce — and that budget is the guard against
+            // the main-thread stall that froze the keyboard system-wide.
+            // Snapped back to a grapheme boundary so no cluster is split.
+            let utf16 = text.utf16
+            var mark = utf16.index(utf16.startIndex, offsetBy: maxInputLength)
+            var cut = String.Index(mark, within: text)
+            // The budget can land mid-grapheme (a surrogate pair, or inside
+            // a ZWJ sequence) — step back to the nearest real boundary so a
+            // cluster is never split.
+            while cut == nil, mark > utf16.startIndex {
+                mark = utf16.index(before: mark)
+                cut = String.Index(mark, within: text)
+            }
+            text = String(text[..<(cut ?? text.startIndex)])
             fputs("[verbalizer] input capped (\(originalUTF16) chars)\n", stderr)
         }
         var result = sanitize(text)

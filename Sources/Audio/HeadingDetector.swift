@@ -28,12 +28,22 @@ enum HeadingDetector {
         guard let body = weights.max(by: {
             ($0.value, $1.key) < ($1.value, $0.key)
         })?.key else { return [] }
-        // Half-point slack so float twins of the body size never rank
-        let candidateSizes = Set(runs.map(\.pointSize).filter { $0 > body + 0.5 })
+        // Half-point slack so float twins of the body size never rank.
+        // `isFinite` guards AX handing back nan/inf: a nan key can never be
+        // looked up again (nan != nan), so such a run would contribute
+        // weight under a key nothing can rank — a heading that exists in
+        // the table and is silently unreachable.
+        let candidateSizes = Set(runs.map(\.pointSize)
+            .filter { $0.isFinite && $0 > body + 0.5 })
         guard !candidateSizes.isEmpty else { return [] }
+        // Sizes beyond the sixth CLAMP to level 6 rather than dropping out.
+        // They used to fall through `guard let rank … else { continue }`,
+        // so in a document with seven or more distinct heading sizes the
+        // SMALLEST — which are also the most numerous — vanished from `]]`
+        // navigation entirely, with no log line.
+        let ranked = candidateSizes.sorted(by: >)
         let level = Dictionary(uniqueKeysWithValues:
-            candidateSizes.sorted(by: >).prefix(6).enumerated()
-                .map { ($0.element, $0.offset + 1) })
+            ranked.enumerated().map { ($0.element, min($0.offset + 1, 6)) })
 
         var result: [(offset: Int, level: Int)] = []
         var previous: FontRun?

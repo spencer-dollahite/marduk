@@ -111,19 +111,41 @@ enum SystemPronunciations {
     /// read BEFORE preprocessing so motions, search, and spell all see one
     /// consistent text. (Consequence: `z` spells the replacement — same deal
     /// as the verbalizer's rewrites.) IPA entries never touch the text.
+    /// ORDER-INDEPENDENT by construction: every match is found against the
+    /// ORIGINAL text and applied in one pass, so no entry can rewrite
+    /// another's output. Substituting progressively meant a chain (A→B,
+    /// B→C) resolved differently depending on the order macOS happened to
+    /// store the entries in — the same dictionary could read the document
+    /// two different ways.
+    ///
+    /// Overlaps resolve by LONGEST phrase first, then earliest position —
+    /// deterministic regardless of array order, and the intuitive reading
+    /// when a specific phrase sits inside a more general one.
     static func applyText(_ entries: [Entry], to text: String) -> String {
-        var result = text
+        var matches: [(range: NSRange, replacement: String, length: Int)] = []
         for entry in entries where entry.ipa == nil && !entry.replacement.isEmpty {
-            let ranges = wholeWordRanges(of: entry.phrase, in: result,
-                                         ignoreCase: entry.ignoreCase)
-            guard !ranges.isEmpty else { continue }
-            let mutable = NSMutableString(string: result)
-            for range in ranges.reversed() {
-                mutable.replaceCharacters(in: range, with: entry.replacement)
+            for range in wholeWordRanges(of: entry.phrase, in: text,
+                                         ignoreCase: entry.ignoreCase) {
+                matches.append((range, entry.replacement, entry.phrase.utf16.count))
             }
-            result = mutable as String
         }
-        return result
+        guard !matches.isEmpty else { return text }
+        matches.sort {
+            $0.range.location != $1.range.location
+                ? $0.range.location < $1.range.location
+                : $0.length > $1.length
+        }
+        var claimed: [(range: NSRange, replacement: String)] = []
+        var consumedUpTo = 0
+        for match in matches where match.range.location >= consumedUpTo {
+            claimed.append((match.range, match.replacement))
+            consumedUpTo = match.range.location + match.range.length
+        }
+        let mutable = NSMutableString(string: text)
+        for claim in claimed.reversed() {
+            mutable.replaceCharacters(in: claim.range, with: claim.replacement)
+        }
+        return mutable as String
     }
 
     /// IPA application: the processed read text with

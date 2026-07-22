@@ -244,6 +244,30 @@ enum ColonCommand: Equatable {
         ("dock", .toggle),
     ]
 
+    /// Spoken forms for keys that don't read aloud well. Anything absent
+    /// speaks as its own key.
+    static let spokenSettingNames: [String: String] = [
+        "escapehold": "escape hold",
+        "commandecho": "command echo",
+        "autoupdate": "auto update",
+        "checkhours": "check hours",
+        "speedkeys": "speed keys",
+        "togglesound": "toggle sound",
+        "readmotions": "read motions",
+        "dialogfocus": "dialog focus",
+        "pdfdark": "p d f dark",
+        "autoinvert": "auto invert",
+    ]
+
+    /// Every setting, spoken — GENERATED from the table, never written out
+    /// by hand. The hand-maintained copy of this sentence drifted to 25 of
+    /// 28 settings, so a user who mistyped a key was told that `position`,
+    /// `dialogfocus`, and `hints` did not exist.
+    static func spokenSettingList() -> String {
+        settings.map { spokenSettingNames[$0.key] ?? $0.key }
+            .joined(separator: ", ")
+    }
+
     static func kind(for key: String) -> SettingKind? {
         settings.first { $0.key == key }?.kind
     }

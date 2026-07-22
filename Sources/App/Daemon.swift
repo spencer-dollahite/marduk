@@ -2690,11 +2690,8 @@ final class DaemonServer {
             if matches.count > 1 {
                 fail("\(key) is ambiguous: \(matches.joined(separator: ", ")).")
             } else {
-                fail("Unknown setting \(key). Settings are rate, pitch, level, hashes, identifiers, "
-                    + "rescue, burst, escape hold, echo, command echo, palette, "
-                    + "auto update, check hours, border, pointer, thickness, "
-                    + "speed keys, toggle sound, read motions, dialogs, follow, "
-                    + "invert, p d f dark, auto invert, dock.")
+                fail("Unknown setting \(key). Settings are "
+                    + "\(ColonCommand.spokenSettingList()).")
             }
         }
     }

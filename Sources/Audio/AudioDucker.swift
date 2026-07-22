@@ -141,7 +141,12 @@ final class AudioDucker {
                         log("\(target.displayName) \(state), skipping volume duck")
                         continue
                     }
-                    let vol = getVolume(for: target)
+                    // No answer = no snapshot = no duck. Ducking without a
+                    // level to return to would strand the user's volume.
+                    guard let vol = getVolume(for: target) else {
+                        log("\(target.displayName) volume unreadable — skipping duck")
+                        continue
+                    }
                     originalVolumes[target] = vol
                     log("snapshot \(target.displayName) volume: \(vol)")
                     smoothRampAppVolume(target: target, from: vol, to: config.duckLevel)
@@ -454,14 +459,32 @@ final class AudioDucker {
 
     // MARK: - Volume Control
 
-    private func getVolume(for target: DuckTarget) -> Int {
+    /// nil when the app didn't answer. NEVER invent a level here: the
+    /// snapshot is what unduck restores TO, so a fabricated 100 silently
+    /// resets the user's music to full volume — permanently, and with no
+    /// symptom until they notice their volume keeps jumping.
+    private func getVolume(for target: DuckTarget) -> Int? {
         switch target {
         case .appleMusic:
-            return runAppleScript("tell application \"Music\" to get sound volume") ?? 100
+            return runAppleScript("tell application \"Music\" to get sound volume")
         case .spotify:
-            return runAppleScript("tell application \"Spotify\" to get sound volume") ?? 100
+            return runAppleScript("tell application \"Spotify\" to get sound volume")
         case .mediaKey:
             return 100 // media key doesn't have a volume level
+        }
+    }
+
+    /// The per-step volumes of a ramp. Pure so the two properties that
+    /// matter are testable: it NEVER traps (a hand-edited `rampSteps: 0`
+    /// used to hit `for i in 1...0` and take the daemon down on the first
+    /// duck — straight into a KeepAlive crash-loop), and the last step is
+    /// always exactly `to`, so a duck can't leave the volume adrift.
+    static func rampVolumes(from: Int, to: Int, steps: Int) -> [Int] {
+        let steps = max(1, steps)
+        return (1...steps).map { i in
+            let progress = Double(i) / Double(steps)
+            let vol = from + Int((Double(to - from) * progress).rounded())
+            return max(0, min(100, vol))
         }
     }
 
@@ -481,17 +504,16 @@ final class AudioDucker {
     /// Smooth app volume ramp using a single osascript process.
     private func smoothRampAppVolume(target: DuckTarget, from: Int, to: Int) {
         guard let appName = target.appName else { return }
-        let steps = config.rampSteps
-        let delayPerStep = Double(config.rampDurationMs) / Double(steps) / 1000.0
+        let volumes = Self.rampVolumes(from: from, to: to, steps: config.rampSteps)
+        let delayPerStep = Double(config.rampDurationMs)
+            / Double(volumes.count) / 1000.0
 
-        log("\(target.displayName) volume: \(from) -> \(to) in \(steps) steps")
+        log("\(target.displayName) volume: \(from) -> \(to) in \(volumes.count) steps")
 
         var script = "tell application \"\(appName)\"\n"
-        for i in 1...steps {
-            let progress = Double(i) / Double(steps)
-            let vol = from + Int(Double(to - from) * progress)
-            script += "  set sound volume to \(max(0, min(100, vol)))\n"
-            if i < steps {
+        for (i, vol) in volumes.enumerated() {
+            script += "  set sound volume to \(vol)\n"
+            if i < volumes.count - 1 {
                 script += "  delay \(delayPerStep)\n"
             }
         }

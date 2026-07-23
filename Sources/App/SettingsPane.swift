@@ -21,11 +21,32 @@ import ApplicationServices
 /// inside the section, no matching row exists and nothing is pressed.
 /// English-only, a Marduk-wide limit.
 enum SettingsPane {
-    private static let bundleID = "com.apple.systempreferences"
+    static let bundleID = "com.apple.systempreferences"
 
-    /// Poll budget for System Settings to launch and draw its pane.
-    private static let deadline: TimeInterval = 6
-    private static let pollInterval: TimeInterval = 0.3
+    /// Poll budget for System Settings to launch and draw its pane. `var`
+    /// for the seam only — tests shorten it so a descent can't outlive
+    /// the case that started it.
+    nonisolated(unsafe) static var deadline: TimeInterval = 6
+    nonisolated(unsafe) static var pollInterval: TimeInterval = 0.3
+
+    /// How the URL is handed to LaunchServices. Overridable for tests —
+    /// the `OnceMarker.dir` idiom — so a test can pin WHICH url a
+    /// command opens without actually opening System Settings on the
+    /// machine running the suite.
+    nonisolated(unsafe) static var launch: (String) -> Void = { url in
+        let opener = Process()
+        opener.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        opener.arguments = [url]
+        try? opener.run()
+    }
+
+    /// The Accessibility pane. Named so a test can assert the destination
+    /// survives edits — the anchor is vestigial (macOS ignores it; that
+    /// is the whole reason the AX descent exists), the PANE is the part
+    /// that must stay right.
+    static let accessibilityPaneURL =
+        "x-apple.systempreferences:com.apple.preference.universalaccess"
+        + "?SpeakSelectedText"
 
     /// Accessibility > Read & Speak Content — where the system
     /// pronunciation editor and the typing feedback switches live, and
@@ -37,19 +58,14 @@ enum SettingsPane {
                                     "spoken content"]
 
     static func openReadAndSpeakContent() {
-        Self.open("x-apple.systempreferences:com.apple.preference.universalaccess"
-                     + "?SpeakSelectedText",
-                  thenSelect: readAndSpeakNames)
+        Self.open(accessibilityPaneURL, thenSelect: readAndSpeakNames)
     }
 
     /// Open `url`, then navigate into the first section row whose name
     /// contains any of `rowTitles` (case-insensitive). Returns immediately;
     /// the descent runs off-main.
     static func open(_ url: String, thenSelect rowTitles: [String] = []) {
-        let opener = Process()
-        opener.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        opener.arguments = [url]
-        try? opener.run()
+        launch(url)
         guard !rowTitles.isEmpty else { return }
         // AX is synchronous IPC and this polls for seconds — never on the
         // main thread, which drives the event tap.
@@ -124,10 +140,10 @@ enum SettingsPane {
     /// row-shaped roles, so a miss can never press the whole window.
     private static func press(_ element: AXUIElement) -> Bool {
         var candidate: AXUIElement? = element
-        for level in 0..<4 {
+        for level in 0..<(ancestorLimit + 1) {
             guard let current = candidate else { return false }
-            if level == 0 || isRowShaped(current),
-               actions(of: current).contains(kAXPressAction),
+            if mayPress(level: level, role: role(of: current),
+                        actions: actions(of: current)),
                AXUIElementPerformAction(current,
                                         kAXPressAction as CFString) == .success {
                 return true
@@ -143,14 +159,35 @@ enum SettingsPane {
         return false
     }
 
-    private static func isRowShaped(_ element: AXUIElement) -> Bool {
+    /// How many ancestors above the naming element may be pressed.
+    static let ancestorLimit = 3
+
+    /// Row-shaped roles: the containers a section row is actually built
+    /// from. "AXLink" is spelled out — HIServices exports no
+    /// kAXLinkRole constant.
+    static let rowRoles = [kAXButtonRole, kAXRowRole, kAXCellRole,
+                           kAXGroupRole, kAXStaticTextRole, "AXLink"]
+
+    /// THE press policy, pure: may the element `level` steps above the
+    /// naming element be pressed? Level 0 is the named element itself —
+    /// it earned the press by carrying the name. Above it only
+    /// row-shaped containers qualify, and only for `ancestorLimit`
+    /// steps, so a label buried under the window can never walk up far
+    /// enough to press the window, the scroll area, or the whole list.
+    static func mayPress(level: Int, role: String?, actions: [String]) -> Bool {
+        guard level >= 0, level <= ancestorLimit else { return false }
+        guard actions.contains(kAXPressAction) else { return false }
+        guard level > 0 else { return true }
+        guard let role else { return false }
+        return rowRoles.contains(role)
+    }
+
+    private static func role(of element: AXUIElement) -> String? {
         var ref: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
-                  element, kAXRoleAttribute as CFString, &ref) == .success,
-              let role = ref as? String else { return false }
-        // "AXLink" spelled out: HIServices exports no kAXLinkRole constant.
-        return [kAXButtonRole, kAXRowRole, kAXCellRole, kAXGroupRole,
-                kAXStaticTextRole, "AXLink"].contains(role)
+                  element, kAXRoleAttribute as CFString, &ref) == .success
+        else { return nil }
+        return ref as? String
     }
 
     private static func actions(of element: AXUIElement) -> [String] {

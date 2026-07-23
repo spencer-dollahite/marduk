@@ -1349,16 +1349,14 @@ final class DaemonServer {
                 + "and words spoken as you type, in every app. Separately, "
                 + "colon config echo on makes Marduk speak keys typed in its "
                 + "own command panel.")
-            openURL("x-apple.systempreferences:com.apple.preference.universalaccess"
-                + "?SpeakSelectedText")
+            openSpokenContentSettings()
         case .pronunciation:
             // Marduk reads the system dictionary on every read, so the pane
             // IS Marduk's pronunciation editor — deep-link straight to it.
             speech.announce("Opening Read and Speak Content in System Settings. "
                 + "Add pronunciations there — Marduk uses every entry, "
                 + "including per-app ones, on its next read.")
-            openURL("x-apple.systempreferences:com.apple.preference.universalaccess"
-                + "?SpeakSelectedText")
+            openSpokenContentSettings()
         case .quit:
             // Clean exit 0 — under launchd (SuccessfulExit=false) this stays
             // stopped until next login or `marduk start`.
@@ -1930,6 +1928,14 @@ final class DaemonServer {
         opener.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         opener.arguments = [url]
         try? opener.run()
+    }
+
+    /// `:pronunciation` and `:typing` both mean the same destination —
+    /// Accessibility > Read & Speak Content. The URL anchor only reaches
+    /// the Accessibility LIST (the section is one unseen row further in),
+    /// so `SettingsPane` presses that row by name; the names are the table.
+    private func openSpokenContentSettings() {
+        SettingsPane.openReadAndSpeakContent()
     }
 
     /// "?" or a typing pause in COMMAND mode: speak what can come next.

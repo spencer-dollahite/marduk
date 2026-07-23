@@ -148,8 +148,9 @@ enum SettingsPane {
         guard AXUIElementCopyAttributeValue(
                   element, kAXRoleAttribute as CFString, &ref) == .success,
               let role = ref as? String else { return false }
+        // "AXLink" spelled out: HIServices exports no kAXLinkRole constant.
         return [kAXButtonRole, kAXRowRole, kAXCellRole, kAXGroupRole,
-                kAXStaticTextRole, kAXLinkRole].contains(role)
+                kAXStaticTextRole, "AXLink"].contains(role)
     }
 
     private static func actions(of element: AXUIElement) -> [String] {

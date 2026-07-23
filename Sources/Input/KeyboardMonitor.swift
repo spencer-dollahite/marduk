@@ -2112,20 +2112,32 @@ final class KeyboardMonitor {
         31, 32, 34, 35, 37, 38, 45, 46                              // o-z, roughly (minus k=40)
     ]
 
-    /// R — continuous reading: the focused element's FULL text from the
-    /// caret (or selection start) to the end, through the normal read
-    /// pipeline, so every reading-mode feature (motions, search, spell,
-    /// purple border) applies for free. Mirrors tryCreateVisualAXState's
-    /// extraction minus the settable-selection gate — reading needs no
-    /// writable selection. Apps without an AX text value (web areas,
-    /// canvas UIs) buzz and say so. Main-queue AX, 0.5s timeouts.
+    /// R — continuous reading: the FULL text of whatever document is in
+    /// view, from the caret (or selection start) to the end, through the
+    /// normal read pipeline, so every reading-mode feature (motions,
+    /// search, spell, purple border) applies for free.
+    ///
+    /// The LADDER, in order — each rung is platform-generic, no app is
+    /// named anywhere in it:
+    ///   1. the focused element's own AX text value
+    ///   2. an AXTextArea below the focused element (Notes focuses a
+    ///      wrapper view)
+    ///   3. the window's PDF file, via PDFKit (Preview)
+    ///   4. an AXTextArea below the WINDOW — reached when focus is
+    ///      nowhere useful or nowhere at all
+    ///   5. the window's web area (browsers), else the honest buzz
+    ///
+    /// Rungs 3-5 are what make R work on a document the user has merely
+    /// LOOKED at: a freshly opened window often reports NO focused UI
+    /// element at all, and this used to bail there with "No readable
+    /// document here" — the user had to click into the text or Cmd+A
+    /// first just to give the app a focused element to answer with
+    /// (field 2026-07-23, Pages and Preview). A missing focus is not a
+    /// missing document; it only means nobody has claimed the keyboard.
+    /// Main-queue AX for the focus rungs (0.5s timeouts), off-main for
+    /// the window walk.
     private func readDocumentFromCaret() {
         DispatchQueue.main.async { [self] in
-            func noDocument(_ why: String) {
-                fputs("[keyboard] R: \(why)\n", stderr)
-                Earcon.error()
-                onAnnounce?("No readable document here.")
-            }
             guard let app = NSWorkspace.shared.frontmostApplication else { return }
             let axApp = AXUIElementCreateApplication(app.processIdentifier)
             AXUIElementSetMessagingTimeout(axApp, 0.5)
@@ -2133,118 +2145,114 @@ final class KeyboardMonitor {
             var focusedRef: CFTypeRef?
             let focusErr = AXUIElementCopyAttributeValue(
                 axApp, kAXFocusedUIElementAttribute as CFString, &focusedRef)
-            guard focusErr == .success,
-                  let raw = focusedRef,
-                  CFGetTypeID(raw) == AXUIElementGetTypeID() else {
-                // Tell the TRUTH about a broken permission — "no readable
-                // document" sent the user hunting the wrong problem while
-                // the real one was a revoked Accessibility grant
-                if focusErr.rawValue == -25211 {
-                    Self.noteAXError(focusErr.rawValue)
-                    fputs("[keyboard] R: AX API disabled (-25211)\n", stderr)
-                    Earcon.error()
-                    return
-                }
-                return noDocument("no focused element (\(focusErr.rawValue))")
+            // Tell the TRUTH about a broken permission — "no readable
+            // document" sent the user hunting the wrong problem while
+            // the real one was a revoked Accessibility grant
+            if focusErr.rawValue == -25211 {
+                Self.noteAXError(focusErr.rawValue)
+                fputs("[keyboard] R: AX API disabled (-25211)\n", stderr)
+                Earcon.error()
+                return
             }
-            var element = raw as! AXUIElement
-            AXUIElementSetMessagingTimeout(element, 0.5)
-
-            var valueRef: CFTypeRef?
-            var valueErr = AXUIElementCopyAttributeValue(
-                element, kAXValueAttribute as CFString, &valueRef)
-            if valueErr != .success || (valueRef as? String)?.isEmpty != false {
-                // The focused element may be a CONTAINER (Notes focuses a
-                // wrapper view) — descend to the first real text area
-                // before giving up on the app entirely
-                if let textArea = Self.findDescendant(of: element,
-                                                      role: "AXTextArea",
-                                                      depthBudget: 8) {
+            if focusErr == .success, let raw = focusedRef,
+               CFGetTypeID(raw) == AXUIElementGetTypeID() {
+                var element = raw as! AXUIElement
+                AXUIElementSetMessagingTimeout(element, 0.5)
+                var text = Self.textValue(of: element)
+                if text == nil,
+                   let textArea = Self.findDescendant(
+                       of: element, role: "AXTextArea", depthBudget: 8) {
                     element = textArea
                     AXUIElementSetMessagingTimeout(element, 0.5)
-                    valueRef = nil
-                    valueErr = AXUIElementCopyAttributeValue(
-                        element, kAXValueAttribute as CFString, &valueRef)
-                    if valueErr == .success {
+                    text = Self.textValue(of: element)
+                    if text != nil {
                         fputs("[keyboard] R: descended to text area\n", stderr)
                     }
                 }
-            }
-            guard valueErr == .success,
-                  let text = valueRef as? String, !text.isEmpty else {
-                // No AX text — PDF viewers (Preview) expose almost none.
-                // Fall back to reading the FILE: the window's document
-                // path + PDFKit gives per-page text, and pages become
-                // first-class reading targets. Browsers expose no AX text
-                // VALUE either, but their web-area trees hold the visible
-                // text — the web-page path walks it (Reader views become
-                // clean article reads).
-                if !readPDFDocument(app: app) {
-                    readWebPage(app: app)
+                if let text {
+                    speakDocumentText(text, from: element)
+                    return
                 }
-                return
-            }
-
-            // Start position: the character under the mouse POINTER wins
-            // when it's over this element's text — in Terminal the shell
-            // caret is pinned to the prompt, so pointing is the only way
-            // to say "start here"; in editable apps clicking moves the
-            // caret to the pointer anyway, so the two rarely disagree.
-            // Falls back to the caret / selection start, then the top.
-            // Snapped to the word start, same landing rule as char-find.
-            var start = 0
-            // Start priority: an EXPLICIT selection outranks everything —
-            // Cmd+A then R means "read it all from the top", a selected
-            // word means "start here"; the user just said what they want
-            // (user-requested). A collapsed cursor (length 0) claims
-            // nothing and falls through to the pointer chain. The pointer
-            // is by definition ON SCREEN — an offset outside the visible
-            // character range is provably garbage (field: Terminal with a
-            // 9M-char scrollback answered RangeForPosition with ~2k, the
-            // top of the buffer, while the user pointed at the visible
-            // bottom). Reject it and let the row estimate — built FROM the
-            // visible range — take over. Then the caret, then the top.
-            var selection = CFRange(location: 0, length: 0)
-            var rangeRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(
-                   element, kAXSelectedTextRangeAttribute as CFString, &rangeRef
-               ) == .success,
-               let rr = rangeRef, CFGetTypeID(rr) == AXValueGetTypeID() {
-                _ = AXValueGetValue(rr as! AXValue, .cfRange, &selection)
-            }
-            let visibleRange = Self.visibleCharacterRange(of: element)
-            if selection.length > 0 {
-                start = max(0, selection.location)
-                fputs("[keyboard] R: starting at selection\n", stderr)
-            } else if let pointerOffset = Self.textOffsetAtPointer(in: element),
-               Self.validatedPointerOffset(pointerOffset,
-                                           visible: visibleRange) != nil {
-                start = pointerOffset
-                fputs("[keyboard] R: starting at pointer\n", stderr)
-            } else if let estimate = Self.pointerRowEstimate(in: element,
-                                                            text: text as NSString) {
-                start = estimate
-                fputs("[keyboard] R: starting at pointer (row estimate)\n", stderr)
             } else {
-                start = max(0, selection.location)  // caret position
+                fputs("[keyboard] R: no focused element "
+                    + "(\(focusErr.rawValue)) — trying the window\n", stderr)
             }
-            start = ReadNavigator.wordStart(in: text, at: start)
 
-            let ns = text as NSString
-            let remainder = ns.substring(from: min(start, ns.length))
-            guard !remainder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                fputs("[keyboard] R: nothing after the caret\n", stderr)
-                Earcon.error()
-                onAnnounce?("Nothing after the cursor to read.")
-                return
-            }
-            fputs("[keyboard] R: document read (\(remainder.count) of \(ns.length) chars)\n", stderr)
-            // Full text + start, not the sliced remainder: a huge document
-            // gets chunked into pages around the exact start offset, so
-            // pre-caret text stays reachable (gg = the true top).
-            onSpeakDocument?(text, start)
-            harvestRichTextHeadings(from: element, textLength: ns.length, start: start)
+            // No AX text from focus — PDF viewers (Preview) expose almost
+            // none, so read the FILE: the window's document path + PDFKit
+            // gives per-page text and pages become first-class reading
+            // targets. Then the window walk (a document canvas whose text
+            // area nobody has focused), then the web area — browsers
+            // expose no AX text VALUE either, but their trees hold the
+            // visible text (Reader views become clean article reads).
+            if readPDFDocument(app: app) { return }
+            readWindowDocument(app: app)
         }
+    }
+
+    /// Speak an element's text as a document read: pick the start offset,
+    /// hand the FULL text to the read pipeline, then harvest headings.
+    /// Main-thread (AX + the read handoff).
+    private func speakDocumentText(_ text: String, from element: AXUIElement) {
+        // Start position: the character under the mouse POINTER wins
+        // when it's over this element's text — in Terminal the shell
+        // caret is pinned to the prompt, so pointing is the only way
+        // to say "start here"; in editable apps clicking moves the
+        // caret to the pointer anyway, so the two rarely disagree.
+        // Falls back to the caret / selection start, then the top.
+        // Snapped to the word start, same landing rule as char-find.
+        var start = 0
+        // Start priority: an EXPLICIT selection outranks everything —
+        // Cmd+A then R means "read it all from the top", a selected
+        // word means "start here"; the user just said what they want
+        // (user-requested). A collapsed cursor (length 0) claims
+        // nothing and falls through to the pointer chain. The pointer
+        // is by definition ON SCREEN — an offset outside the visible
+        // character range is provably garbage (field: Terminal with a
+        // 9M-char scrollback answered RangeForPosition with ~2k, the
+        // top of the buffer, while the user pointed at the visible
+        // bottom). Reject it and let the row estimate — built FROM the
+        // visible range — take over. Then the caret, then the top.
+        var selection = CFRange(location: 0, length: 0)
+        var rangeRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+               element, kAXSelectedTextRangeAttribute as CFString, &rangeRef
+           ) == .success,
+           let rr = rangeRef, CFGetTypeID(rr) == AXValueGetTypeID() {
+            _ = AXValueGetValue(rr as! AXValue, .cfRange, &selection)
+        }
+        let visibleRange = Self.visibleCharacterRange(of: element)
+        if selection.length > 0 {
+            start = max(0, selection.location)
+            fputs("[keyboard] R: starting at selection\n", stderr)
+        } else if let pointerOffset = Self.textOffsetAtPointer(in: element),
+           Self.validatedPointerOffset(pointerOffset,
+                                       visible: visibleRange) != nil {
+            start = pointerOffset
+            fputs("[keyboard] R: starting at pointer\n", stderr)
+        } else if let estimate = Self.pointerRowEstimate(in: element,
+                                                        text: text as NSString) {
+            start = estimate
+            fputs("[keyboard] R: starting at pointer (row estimate)\n", stderr)
+        } else {
+            start = max(0, selection.location)  // caret position
+        }
+        start = ReadNavigator.wordStart(in: text, at: start)
+
+        let ns = text as NSString
+        let remainder = ns.substring(from: min(start, ns.length))
+        guard !remainder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            fputs("[keyboard] R: nothing after the caret\n", stderr)
+            Earcon.error()
+            onAnnounce?("Nothing after the cursor to read.")
+            return
+        }
+        fputs("[keyboard] R: document read (\(remainder.count) of \(ns.length) chars)\n", stderr)
+        // Full text + start, not the sliced remainder: a huge document
+        // gets chunked into pages around the exact start offset, so
+        // pre-caret text stays reachable (gg = the true top).
+        onSpeakDocument?(text, start)
+        harvestRichTextHeadings(from: element, textLength: ns.length, start: start)
     }
 
     /// Rich-text heading harvest — the rung that gives Notes and TextEdit
@@ -2406,6 +2414,167 @@ final class KeyboardMonitor {
         return range.location
     }
 
+    /// An element's AX text value, or nil when it has none (unsupported
+    /// attribute, wrong type, or empty).
+    private static func textValue(of element: AXUIElement) -> String? {
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  element, kAXValueAttribute as CFString, &valueRef) == .success,
+              let text = valueRef as? String, !text.isEmpty else { return nil }
+        return text
+    }
+
+    /// The window R should read: the focused one, else the main one, else
+    /// the first in the list. A window the user is LOOKING at need not be
+    /// the focused one — an app that has just opened a document, or one
+    /// whose focus went to a panel, still answers main/first, and "there
+    /// is a document in view" is the whole premise of R.
+    private static func documentWindow(of axApp: AXUIElement) -> AXUIElement? {
+        for attribute in [kAXFocusedWindowAttribute, kAXMainWindowAttribute] {
+            var ref: CFTypeRef?
+            if AXUIElementCopyAttributeValue(
+                   axApp, attribute as CFString, &ref) == .success,
+               let raw = ref, CFGetTypeID(raw) == AXUIElementGetTypeID() {
+                return (raw as! AXUIElement)
+            }
+        }
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { return nil }
+        return windows.first
+    }
+
+    /// Window rung for R: find the document text WITHOUT the app's help.
+    /// Reached when focus yielded nothing — most often because the user
+    /// has only looked at the window, never clicked into it, so the app
+    /// reports no focused element at all (Pages, Preview; field
+    /// 2026-07-23). Falls through to the web rung when the window holds
+    /// no document text, so browsers and the honest buzz are unaffected.
+    /// The walk is OFF-MAIN (same reason as the web walk: a wide AX walk
+    /// on main would stall tap dispatch); the read hops back.
+    private func readWindowDocument(app: NSRunningApplication) {
+        let pid = app.processIdentifier
+        DispatchQueue.global(qos: .utility).async { [self] in
+            guard let found = Self.windowDocumentText(pid: pid) else {
+                DispatchQueue.main.async { [self] in
+                    guard let app = NSRunningApplication(processIdentifier: pid) else {
+                        Earcon.error()
+                        onAnnounce?("No readable document here.")
+                        return
+                    }
+                    readWebPage(app: app)
+                }
+                return
+            }
+            DispatchQueue.main.async { [self] in
+                if let element = found.element {
+                    AXUIElementSetMessagingTimeout(element, 0.5)
+                    speakDocumentText(found.text, from: element)
+                } else {
+                    // Canvas harvest: no single text element owns it, so
+                    // there is no caret, selection, or offset to honor —
+                    // read from the top, which is what "start reading
+                    // this document" means anyway.
+                    fputs("[keyboard] R: window canvas read "
+                        + "(\(found.text.count) chars)\n", stderr)
+                    onSpeakDocument?(found.text, 0)
+                }
+            }
+        }
+    }
+
+    /// The document text inside the front window, by AX walk. Two rungs:
+    ///
+    /// 1. the LONGEST AXTextArea value below the window — a document body
+    ///    beats a sidebar note or a comment box, and length is the only
+    ///    app-neutral way to say "that's the document";
+    /// 2. failing that, the static text below a document CANVAS
+    ///    (AXLayoutArea, as iWork-style page canvases publish, else the
+    ///    largest scroll area) — canvases expose their text as leaves
+    ///    with no text area anywhere. Floored at 200 chars, the same
+    ///    thin-harvest floor the web walk uses, so chrome and labels
+    ///    can't masquerade as a document.
+    ///
+    /// A window hosting a web area returns nil on purpose: that is a web
+    /// read, and the web rung walks it properly (anchors, headings,
+    /// Reader views). Otherwise a stray `<textarea>` on a page would win
+    /// over the article. Budgeted like every other walk (0.25s element
+    /// timeouts, node and depth caps). Off-main only.
+    private static func windowDocumentText(pid: pid_t)
+        -> (element: AXUIElement?, text: String)? {
+        let axApp = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(axApp, 0.25)
+        guard let window = documentWindow(of: axApp) else {
+            fputs("[keyboard] R: no window to walk\n", stderr)
+            return nil
+        }
+        if findDescendant(of: window, role: "AXWebArea", depthBudget: 12) != nil {
+            return nil  // web read — the web rung owns it
+        }
+
+        var best: (element: AXUIElement, text: String)?
+        var nodeBudget = 600
+        collectTextAreas(from: window, best: &best,
+                         nodeBudget: &nodeBudget, depth: 12)
+        if let best {
+            fputs("[keyboard] R: window text area (\(best.text.count) chars)\n", stderr)
+            return (best.element, best.text)
+        }
+
+        guard let canvas = findDescendant(of: window, role: "AXLayoutArea",
+                                          depthBudget: 12)
+                ?? findDescendant(of: window, role: "AXScrollArea",
+                                  depthBudget: 12) else { return nil }
+        var parts: [(text: String, element: AXUIElement)] = []
+        var headingMarks: [(partIndex: Int, level: Int)] = []
+        var canvasBudget = 3000
+        collectText(from: canvas, into: &parts, headingMarks: &headingMarks,
+                    nodeBudget: &canvasBudget, depth: 40)
+        let joined = parts.map(\.text).joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard joined.count > 200 else {
+            fputs("[keyboard] R: window canvas harvest thin "
+                + "(\(joined.count) chars)\n", stderr)
+            return nil
+        }
+        return (nil, joined)
+    }
+
+    /// Longest AXTextArea value below `element`. Unlike findDescendant
+    /// this can't stop at the first hit: the first text area in a window
+    /// is as likely to be a search field's sibling or an empty footnote
+    /// as the document.
+    private static func collectTextAreas(
+        from element: AXUIElement,
+        best: inout (element: AXUIElement, text: String)?,
+        nodeBudget: inout Int, depth: Int
+    ) {
+        guard depth > 0, nodeBudget > 0 else { return }
+        nodeBudget -= 1
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        var roleRef: CFTypeRef?
+        _ = AXUIElementCopyAttributeValue(
+            element, kAXRoleAttribute as CFString, &roleRef)
+        if roleRef as? String == "AXTextArea" {
+            if let text = textValue(of: element),
+               text.count > (best?.text.count ?? 0) {
+                best = (element, text)
+            }
+            return  // a text area's children are its own text, not another document
+        }
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  element, kAXChildrenAttribute as CFString, &childrenRef
+              ) == .success,
+              let children = childrenRef as? [AXUIElement] else { return }
+        for child in children {
+            guard nodeBudget > 0 else { return }
+            collectTextAreas(from: child, best: &best,
+                             nodeBudget: &nodeBudget, depth: depth - 1)
+        }
+    }
+
     /// Web-page fallback for R — ANY browser (Safari, Firefox, and the
     /// Chromium family get the same treatment):
     ///
@@ -2534,16 +2703,11 @@ final class KeyboardMonitor {
             axApp, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         Thread.sleep(forTimeInterval: 0.3) // let the tree populate
 
-        var windowRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-                  axApp, kAXFocusedWindowAttribute as CFString, &windowRef
-              ) == .success,
-              let rawWindow = windowRef,
-              CFGetTypeID(rawWindow) == AXUIElementGetTypeID() else { return nil }
+        guard let window = documentWindow(of: axApp) else { return nil }
 
         // Find the web area, then collect text below it
         guard let webArea = findDescendant(
-            of: rawWindow as! AXUIElement, role: "AXWebArea", depthBudget: 12
+            of: window, role: "AXWebArea", depthBudget: 12
         ) else { return nil }
 
         var parts: [(text: String, element: AXUIElement)] = []
@@ -2659,13 +2823,7 @@ final class KeyboardMonitor {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(axApp, 0.5)
 
-        var windowRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-                  axApp, kAXFocusedWindowAttribute as CFString, &windowRef
-              ) == .success,
-              let rawWindow = windowRef,
-              CFGetTypeID(rawWindow) == AXUIElementGetTypeID() else { return false }
-        let window = rawWindow as! AXUIElement
+        guard let window = Self.documentWindow(of: axApp) else { return false }
         AXUIElementSetMessagingTimeout(window, 0.5)
 
         var documentRef: CFTypeRef?

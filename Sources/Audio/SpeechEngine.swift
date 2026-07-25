@@ -854,12 +854,30 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// them — `loadPageWindow` restores it alongside the paged state.
     private var readSession = 0
 
-    /// Where the read is right now, in a form that survives a window
-    /// rebuild. Uses `backAnchor` rather than the raw position: at speed
-    /// the boundary callbacks run ahead of comprehension, which is why
-    /// every back motion in this file anchors the same way.
+    /// Where the current READ SEGMENT began, in a form that survives a
+    /// window rebuild — `readBase`: the read's own start offset, or the
+    /// target of the last jump. The last position the USER chose, never
+    /// where the voice has drifted to since.
+    ///
+    /// Vim records the cursor position at jump time and for vim that is
+    /// the same thing — its cursor only moves when you move it. A read
+    /// moves on its own, continuously, so recording the live position
+    /// files a place nobody picked: press `gg` thirty seconds into a read
+    /// and Ctrl+O came back thirty seconds in, not to the cursor you
+    /// started from (field 2026-07-25). Under the old `backAnchor` it was
+    /// worse than wrong, it was inconsistent — the anchor is `readBase`
+    /// for the first 1.5s of a segment and the drifting position after,
+    /// so the same gesture landed differently depending on how long you
+    /// had been listening.
+    ///
+    /// Anchored at the segment start, the list is exactly the chain of
+    /// places asked for — caret start → `gg` → search landing → … —
+    /// walked backward by Ctrl+O and forward by Ctrl+I. Back MOTIONS
+    /// (`b`, `{`, `(`, `0`, `F`) keep their own `backAnchor` grace: that
+    /// window exists so repeated taps travel instead of treading water,
+    /// which is a different problem from where a jump came from.
     private var currentJumpPosition: JumpList.Position {
-        let anchor = backAnchor
+        let anchor = readBase
         guard let window = readPaged else { return .plain(offset: anchor) }
         let localPage = window.pageIndex(at: anchor)
         return .paged(page: pagedWindowFirst + localPage + 1,

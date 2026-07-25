@@ -790,14 +790,17 @@ final class DaemonServer {
     /// would recreate the event-tap freeze the input cap fixed) and ride
     /// the paged machinery — every part of any size document reachable
     /// while preprocessing stays bounded. `start` is the exact UTF-16
-    /// offset the voice begins at; on paged reads the text before it
-    /// stays reachable (gg = the true top).
+    /// offset the voice begins at, and on BOTH paths the text before it
+    /// stays reachable (gg = the true top): the paged path splits it into
+    /// pages of its own, the plain path hands the whole document to the
+    /// engine and starts the voice at the offset. Never slice here — a
+    /// pre-sliced read is a read whose top the user can never get back to.
     private func speakDocument(_ text: String, start: Int) {
         longReadGeneration += 1
         let ns = text as NSString
         guard PagedText.exceedsWindow(ns.length) else {
             startingRead(paged: false) { [self] in
-                speech.speak(ns.substring(from: max(0, min(start, ns.length)))) { [self] in
+                speech.speak(text, startingAt: start) { [self] in
                     contentReadEnded()
                 }
             }

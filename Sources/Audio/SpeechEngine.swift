@@ -182,7 +182,19 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
 
     // MARK: - Public API
 
-    func speak(_ text: String, completion: (() -> Void)? = nil) {
+    /// Speak a content read. `startingAt` is a UTF-16 offset into `text`
+    /// where the VOICE begins — a document read starts at the caret or the
+    /// pointer, not the top. Everything before it is still RETAINED as
+    /// readText, so the whole document stays navigable: `gg` reaches the
+    /// true top, `b`/`{`/`(` walk above the start, `{count}%` and Ctrl+G
+    /// measure the document rather than the remainder, and Ctrl+O returns
+    /// to where the read began (the jump records its origin). Before this,
+    /// the caller sliced the text at the start offset and everything above
+    /// it was simply thrown away — only reads big enough to be chunked into
+    /// synthetic pages (`PagedText.chunking(_:from:)`, the Terminal case)
+    /// kept it.
+    func speak(_ text: String, startingAt start: Int = 0,
+               completion: (() -> Void)? = nil) {
         // The user's system pronunciation dictionary, fresh each read so
         // Settings edits apply immediately. Typed entries rewrite the text
         // (before preprocessing — one consistent text for motions, search,
@@ -193,16 +205,37 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
             voiceLanguage: voice?.language,
             frontmostBundleID: frontmostAppProvider?())
         readIPAEntries = pronunciations.filter { $0.ipa != nil }
-        let substituted = SystemPronunciations.applyText(pronunciations, to: text)
-        let processed = SpeechPreprocessor.process(substituted, settings: preprocessor)
+        let settings = preprocessor
+        let prepare = { (part: String) -> String in
+            SpeechPreprocessor.process(
+                SystemPronunciations.applyText(pronunciations, to: part),
+                settings: settings)
+        }
+        // Split the RAW text, never the processed one: substitution and
+        // preprocessing both change lengths, so a raw offset means nothing
+        // in the processed string. Each half is prepared exactly as the
+        // whole would be — the spoken tail is byte-identical to what the
+        // old pre-sliced call produced, so the read itself is unchanged —
+        // and splitJoiner re-supplies the separator the normalizer strips
+        // from each half's edge.
+        let ns = text as NSString
+        let cut = max(0, min(start, ns.length))
+        let head = cut > 0 ? prepare(ns.substring(to: cut)) : ""
+        let spoken = prepare(cut > 0 ? ns.substring(from: cut) : text)
         // Guard sits before stop(): invisible-junk input is a true no-op and
         // doesn't kill an in-progress read. Completion must still fire — the
-        // inline CLI blocks on it.
-        guard !processed.isEmpty else {
+        // inline CLI blocks on it. Judged on the SPOKEN half: a document
+        // whose retained prefix survives preprocessing but whose remainder
+        // doesn't has nothing to say.
+        guard !spoken.isEmpty else {
             fputs("[verbalizer] nothing speakable after preprocessing, skipping\n", stderr)
             completion?()
             return
         }
+        let joiner = head.isEmpty ? ""
+            : SpeechPreprocessor.splitJoiner(afterPrefix: ns.substring(to: cut))
+        let processed = head + joiner + spoken
+        let base = (head as NSString).length + (joiner as NSString).length
         stop()
         // A NEW read supersedes any prior stop request. Cleared after
         // stop() precisely because stop() is what sets it.
@@ -219,10 +252,13 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         pagedSynthetic = false
         readHeadings = []  // stale headings die with the old read
         pdfHeadings = []
-        readBase = 0
-        readPosition = 0
+        // The voice starts at the split, not at offset 0 — exactly the
+        // shape respeak() uses, so every boundary callback maps back into
+        // full-document coordinates through readBase.
+        readBase = base
+        readPosition = base
         segmentStartedAt = Date()
-        startSpeaking(makeReadUtterance(processed), completion: completion)
+        startSpeaking(makeReadUtterance(spoken), completion: completion)
         readActive = true
     }
 

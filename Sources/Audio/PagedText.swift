@@ -169,8 +169,10 @@ struct PagedText: Equatable {
     /// Chunk a WHOLE document while preserving an exact start offset: text
     /// before `start` and from `start` chunk separately, so the returned
     /// startPage (1-based) begins exactly at `start` — R keeps its word-
-    /// start precision while gg reaches the true top (pre-caret text,
-    /// unreachable on plain reads) and G the true end.
+    /// start precision while gg reaches the true top and G the true end.
+    /// The plain path reaches the same place by a different route: it
+    /// hands the engine the whole document and starts the voice at the
+    /// offset (`SpeechEngine.speak(_:startingAt:)`).
     static func chunking(_ text: String, from start: Int,
                          targetPageSize: Int = syntheticPageSize)
         -> (paged: PagedText, startPage: Int) {

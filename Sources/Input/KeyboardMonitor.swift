@@ -2259,11 +2259,12 @@ final class KeyboardMonitor {
             return
         }
         fputs("[keyboard] R: document read (\(remainder.count) of \(ns.length) chars)\n", stderr)
-        // Full text + start, not the sliced remainder: a huge document
-        // gets chunked into pages around the exact start offset, so
-        // pre-caret text stays reachable (gg = the true top).
+        // Full text + start, never the sliced remainder: a huge document
+        // gets chunked into pages around the exact start offset, a plain
+        // one is retained whole with the voice starting at the offset —
+        // either way pre-caret text stays reachable (gg = the true top).
         onSpeakDocument?(text, start)
-        harvestRichTextHeadings(from: element, textLength: ns.length, start: start)
+        harvestRichTextHeadings(from: element, textLength: ns.length)
     }
 
     /// Rich-text heading harvest — the rung that gives Notes and TextEdit
@@ -2271,14 +2272,17 @@ final class KeyboardMonitor {
     /// and degrades to zero headings: the honest buzz, no code path).
     /// Fires AFTER the read dispatched, off-main, never blocking speech:
     /// one parameterized attributed-string fetch over the whole value,
-    /// font runs → HeadingDetector (size-prominence, pure) → line
-    /// indices rebased to the spoken remainder (the plain document path
-    /// speaks substring(from: start)) → the same onHarvestHeadings
-    /// bridge the web path uses. Plain reads only: a document over one
-    /// window rides synthetic pages, whose global-offset mapping is a
-    /// future rung. Any fetch failure returns silently — motions buzz.
+    /// font runs → HeadingDetector (size-prominence, pure) → WHOLE-
+    /// document line indices → the same onHarvestHeadings bridge the web
+    /// path uses. The lines used to be filtered and rebased to the start
+    /// offset, because the plain path spoke `substring(from: start)`; it
+    /// now retains the whole document, so headings above the start are
+    /// both correctly placed and reachable (]] [[ after a gg). Plain
+    /// reads only: a document over one window rides synthetic pages,
+    /// whose global-offset mapping is a future rung. Any fetch failure
+    /// returns silently — motions buzz.
     private func harvestRichTextHeadings(from element: AXUIElement,
-                                         textLength: Int, start: Int) {
+                                         textLength: Int) {
         guard textLength <= PagedText.windowBudget else {
             fputs("[keyboard] R: heading harvest skipped (paged read)\n", stderr)
             return
@@ -2298,12 +2302,9 @@ final class KeyboardMonitor {
             let found = HeadingDetector.headings(runs: Self.fontRuns(in: attributed))
             guard !found.isEmpty else { return }
             let text = attributed.string
-            let baseLine = Self.lineIndex(of: start, in: text)
-            let lines = found.filter { $0.offset >= start }.map {
-                (line: Self.lineIndex(of: $0.offset, in: text) - baseLine,
-                 level: $0.level)
+            let lines = found.map {
+                (line: Self.lineIndex(of: $0.offset, in: text), level: $0.level)
             }
-            guard !lines.isEmpty else { return }
             fputs("[keyboard] R: rich-text headings (\(lines.count))\n", stderr)
             DispatchQueue.main.async { [self] in
                 guard (readGenerationProvider?() ?? 0) == generation else { return }

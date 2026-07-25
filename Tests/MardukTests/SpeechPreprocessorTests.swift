@@ -374,6 +374,76 @@ final class SpeechPreprocessorTests: XCTestCase {
         XCTAssertTrue(out.hasPrefix("word word"))
     }
 
+    // MARK: - Split reads (gg reaches the true top on plain reads)
+
+    // A document read starts at the caret but retains the whole document,
+    // so the two halves are processed separately and rejoined. The join
+    // has to reproduce what processing the whole text would have emitted:
+    // normalizeWhitespace strips each half's edge whitespace, so a bare
+    // concatenation fuses the prefix's last word onto the suffix's first.
+
+    func testSplitJoinerRebuildsTheStrippedSeparator() {
+        XCTAssertEqual(SpeechPreprocessor.splitJoiner(afterPrefix: "one two "), " ")
+        XCTAssertEqual(SpeechPreprocessor.splitJoiner(afterPrefix: "one\ttwo\t"), " ")
+        XCTAssertEqual(SpeechPreprocessor.splitJoiner(afterPrefix: "a line\n"), "\n")
+        XCTAssertEqual(SpeechPreprocessor.splitJoiner(afterPrefix: "a line \n  "), "\n")
+    }
+
+    func testSplitJoinerIsEmptyMidWord() {
+        // A split inside a word (a defensive AX offset) leaves halves that
+        // really are adjacent — inserting a space would speak two words
+        XCTAssertEqual(SpeechPreprocessor.splitJoiner(afterPrefix: "hello"), "")
+        XCTAssertEqual(SpeechPreprocessor.splitJoiner(afterPrefix: ""), "")
+    }
+
+    func testSplitJoinerNeverMakesABlankLine() {
+        // The normalizer collapses every whitespace run to ONE break, so
+        // processed read text has no blank lines and ReadNavigator uses
+        // lines for { }. A "\n\n" here would be the document's only blank
+        // line and would flip paragraph motion to two giant blocks.
+        for prefix in ["para one.\n\n", "para one.\n\n\n\n", "para one.\r\n\r\n"] {
+            XCTAssertEqual(SpeechPreprocessor.splitJoiner(afterPrefix: prefix), "\n",
+                           "blank-line run must still join as a single break")
+        }
+    }
+
+    func testProcessingInHalvesMatchesProcessingTheWhole() {
+        // The invariant the split read rests on: retaining the pre-caret
+        // text must not change a single character of the read.
+        let document = """
+        The Title Line
+
+        First paragraph with a symbol -> and some parseHTMLBody_v2 code.
+        Second line of the same paragraph.
+
+        Third paragraph, after a blank line.
+        """
+        let ns = document as NSString
+        let whole = SpeechPreprocessor.process(document, settings: .default)
+        // Every word start is a legal caret landing (R snaps to wordStart)
+        for cut in 0..<ns.length where cut == 0
+            || ns.character(at: cut - 1) == 0x20 || ns.character(at: cut - 1) == 0x0A {
+            let head = SpeechPreprocessor.process(ns.substring(to: cut), settings: .default)
+            let tail = SpeechPreprocessor.process(ns.substring(from: cut), settings: .default)
+            let joiner = head.isEmpty ? ""
+                : SpeechPreprocessor.splitJoiner(afterPrefix: ns.substring(to: cut))
+            XCTAssertEqual(head + joiner + tail, whole,
+                           "split at \(cut) must rebuild the whole processed text")
+        }
+    }
+
+    func testSplitTailIsWhatTheOldSlicedCallSpoke() {
+        // The spoken half is processed on its own, so the read itself is
+        // byte-identical to the pre-slicing behaviour — only the retained
+        // context above the caret is new.
+        let document = "Above the caret.\nBelow the caret -> here."
+        let ns = document as NSString
+        let cut = (ns.range(of: "Below")).location
+        XCTAssertEqual(
+            SpeechPreprocessor.process(ns.substring(from: cut), settings: .default),
+            SpeechPreprocessor.process("Below the caret -> here.", settings: .default))
+    }
+
     func testHashAbbreviationWinsOverSplitting() {
         // A digest is collapsed by the hash stage before the splitter runs —
         // mixed-case hex like DeadBeef… must not come out camel-split

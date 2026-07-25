@@ -445,6 +445,41 @@ enum SpeechPreprocessor {
         return out
     }
 
+    /// The separator that rejoins the two halves of a read processed in
+    /// parts (a document read that starts at the caret: the text before it
+    /// is still retained so `gg` reaches the true top, but a raw offset has
+    /// no meaning in the processed string, so each half is processed on its
+    /// own and rejoined here).
+    ///
+    /// `normalizeWhitespace` strips each half's edge whitespace, so a bare
+    /// `head + tail` would fuse the prefix's last word onto the suffix's
+    /// first. Re-emit exactly what processing the WHOLE text would have
+    /// emitted for that whitespace run: one newline if the run held any,
+    /// otherwise a space — and nothing at all when the split landed
+    /// mid-word, where the two halves really are adjacent.
+    ///
+    /// Never a blank line, however many the raw text had: the normalizer
+    /// collapses every run to a single break, so processed read text
+    /// contains no blank lines at all and `ReadNavigator` falls back to
+    /// lines for `{`/`}`. A "\n\n" here would be the document's ONLY blank
+    /// line and would flip paragraph motion into two-giant-blocks mode.
+    static func splitJoiner(afterPrefix prefix: String) -> String {
+        var sawNewline = false
+        var sawWhitespace = false
+        for scalar in prefix.unicodeScalars.reversed() {
+            switch scalar {
+            case "\n", "\r":
+                sawNewline = true
+                sawWhitespace = true
+            case " ", "\t":
+                sawWhitespace = true
+            default:
+                return sawNewline ? "\n" : (sawWhitespace ? " " : "")
+            }
+        }
+        return sawNewline ? "\n" : (sawWhitespace ? " " : "")
+    }
+
     // MARK: - Tables
 
     static let maxSpokenLength = 50_000  // internal: tests pin cap ordering

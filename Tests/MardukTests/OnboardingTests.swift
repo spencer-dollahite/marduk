@@ -163,4 +163,66 @@ final class OnboardingTests: XCTestCase {
         XCTAssertTrue(OnceMarker.mark("pdfdark-noticed"))
         XCTAssertTrue(OnceMarker.seen("pdfdark-noticed"))
     }
+
+    // MARK: - Counted markers (the fading NORMAL-mode buzz hint)
+
+    /// The buzz hint speaks the first `buzzHintLimit` times EVER and then
+    /// goes quiet. The count has to survive restarts — an in-memory tally
+    /// would hand every restart three fresh explanations.
+    func testCountedMarkerPersistsAcrossRestarts() {
+        let original = OnceMarker.dir
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("oncemarker-count-\(UUID().uuidString)")
+        OnceMarker.dir = scratch
+        defer {
+            OnceMarker.dir = original
+            try? FileManager.default.removeItem(at: scratch)
+        }
+
+        let id = KeyboardMonitor.buzzHintMarker
+        XCTAssertEqual(OnceMarker.count(id), 0, "fresh install has spoken none")
+
+        // Each "restart" reloads the count from disk, the way
+        // KeyboardMonitor.buzzHintsSpoken is seeded at construction.
+        var spokenTotal = 0
+        for _ in 0..<3 {
+            var spoken = OnceMarker.count(id)
+            // Two buzzes per session; only the ones under the limit explain.
+            for _ in 0..<2 where spoken < KeyboardMonitor.buzzHintLimit {
+                spoken += 1
+                spokenTotal += 1
+                OnceMarker.setCount(id, spoken)
+            }
+        }
+        XCTAssertEqual(spokenTotal, KeyboardMonitor.buzzHintLimit,
+                       "six buzzes across three sessions explain exactly three times")
+        XCTAssertEqual(OnceMarker.count(id), KeyboardMonitor.buzzHintLimit)
+
+        // A later session is silent: the count is already spent.
+        XCTAssertFalse(OnceMarker.count(id) < KeyboardMonitor.buzzHintLimit)
+    }
+
+    /// A counted marker is still a marker: `seen` sees it, `clear` replays
+    /// it (support and development reset hints by hand with `rm`).
+    func testCountedMarkerInteropsWithTheBooleanAPI() {
+        let original = OnceMarker.dir
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("oncemarker-interop-\(UUID().uuidString)")
+        OnceMarker.dir = scratch
+        defer {
+            OnceMarker.dir = original
+            try? FileManager.default.removeItem(at: scratch)
+        }
+
+        let id = KeyboardMonitor.buzzHintMarker
+        OnceMarker.setCount(id, 2)
+        XCTAssertTrue(OnceMarker.seen(id))
+        OnceMarker.clear(id)
+        XCTAssertEqual(OnceMarker.count(id), 0, "cleared marker replays the hint")
+
+        // An EMPTY file — what the boolean `mark` writes — counts as one, so
+        // retrofitting counting onto a boolean marker never replays from zero.
+        OnceMarker.mark(id)
+        XCTAssertEqual(OnceMarker.count(id), 1)
+    }
 }

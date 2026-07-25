@@ -247,7 +247,15 @@ final class KeyboardMonitor {
     // After an auto-expand ("posi" → "config position "), the user may still
     // be typing the rest of the word — those chars are absorbed, not appended.
     private var commandAbsorbTail: [Character] = []
-    private var didSpeakColonHint = false
+    /// How many times the NORMAL-mode buzz has explained itself. After
+    /// `buzzHintLimit` the buzz is bare — the earcon alone says "not a
+    /// command" and a user who has heard the sentence three times knows
+    /// what it means; repeating it forever would talk over their work.
+    /// Cached in memory because the tap callback reads it (never file I/O
+    /// there) and flushed to the marker on the main queue after each hint.
+    private var buzzHintsSpoken = OnceMarker.count(KeyboardMonitor.buzzHintMarker)
+    static let buzzHintMarker = "buzz-hints"
+    static let buzzHintLimit = 3
 
     // `s` — Marduk-native pointer hover speech (HoverSpeech, daemon-owned):
     // the reading voice at the user's rate/pitch, replacing the macOS
@@ -1682,14 +1690,17 @@ final class KeyboardMonitor {
             if Self.alphaKeyCodes.contains(keycode) {
                 // Non-command letter key in NORMAL mode: it does nothing (and is
                 // suppressed so it isn't typed). Beep so the user notices they're
-                // in NORMAL mode and may want INSERT. First buzz of the session
-                // also points at :help — new users hit this constantly without
-                // knowing what the buzzer means.
-                let firstBuzz = !didSpeakColonHint
-                didSpeakColonHint = true
+                // in NORMAL mode and may want INSERT. The first few buzzes EVER
+                // (Self.buzzHintLimit, counted across restarts) also point at the
+                // command panel — new users hit this constantly without knowing
+                // what the buzzer means; after that the buzz stands alone.
+                let explain = buzzHintsSpoken < Self.buzzHintLimit
+                if explain { buzzHintsSpoken += 1 }
+                let spoken = buzzHintsSpoken
                 DispatchQueue.main.async { [self] in
                     Earcon.error()
-                    if firstBuzz {
+                    if explain {
+                        OnceMarker.setCount(Self.buzzHintMarker, spoken)
                         // Fixed-length earcon (~0.11s), not speech — the
                         // stagger just keeps the buzz audible before speech.
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [self] in

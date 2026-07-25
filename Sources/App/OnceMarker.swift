@@ -51,4 +51,36 @@ enum OnceMarker {
         mark(name)
         return true
     }
+
+    // MARK: - Counted markers
+    //
+    // Some guidance should FADE rather than fire exactly once: the NORMAL-mode
+    // buzz explains itself the first few times and then goes quiet (the user
+    // has learned what the buzzer means by then). Same dotfile, holding a
+    // small decimal count instead of being empty — the `.boot-attempts`
+    // idiom, minus the time window. Counts must PERSIST: an in-memory tally
+    // resets on every restart, and self-updates restart the daemon often
+    // enough that "the first three times" would mean "three times forever"
+    // (the same trap `Onboarding.lastHintAt` fell into).
+
+    /// The count recorded for `name`, 0 if never recorded. An existing file
+    /// that doesn't parse as a number counts as 1 — a marker written by the
+    /// boolean `mark` above has been "seen" once, so retrofitting counting
+    /// onto a boolean marker never replays it from zero.
+    static func count(_ name: String) -> Int {
+        guard let text = try? String(contentsOf: url(name), encoding: .utf8) else {
+            return 0
+        }
+        return Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 1
+    }
+
+    /// Record `value` as the count for `name`. Writes the caller's
+    /// authoritative number rather than read-modify-writing, so a caller
+    /// keeping the tally in memory (the event tap, which must never read
+    /// files) can flush it from any queue without racing itself.
+    static func setCount(_ name: String, _ value: Int) {
+        try? FileManager.default.createDirectory(at: dir,
+                                                 withIntermediateDirectories: true)
+        try? "\(value)".write(to: url(name), atomically: true, encoding: .utf8)
+    }
 }

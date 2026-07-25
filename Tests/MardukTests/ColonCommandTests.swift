@@ -165,11 +165,9 @@ final class ColonCommandTests: XCTestCase {
 
     // Auto-accept and unique-prefix expansion both assume no grammar word
     // swallows another — guard the settings table as it grows.
-    // MARK: - Staged pickers (:voices, :invertapps)
+    // MARK: - Staged pickers (:voices, :invertappslist)
 
-    /// Unique-prefix expansion breaks if one command name prefixes
-    /// another — the same trap that forbids a `invertapplist` SETTING,
-    /// since `invert` is already a settings key.
+    /// Unique-prefix expansion breaks if one command name prefixes another.
     func testNoCommandNameIsPrefixOfAnother() {
         let names = ColonCommand.commandNames
         for a in names {
@@ -179,11 +177,70 @@ final class ColonCommandTests: XCTestCase {
         }
     }
 
-    func testInvertAppsIsNotASettingKey() {
-        // It must be a COMMAND: as a setting it would collide with the
-        // existing "invert" key and fail testNoSettingKeyIsPrefixOfAnother
-        XCTAssertTrue(ColonCommand.commandNames.contains("invertapps"))
-        XCTAssertFalse(ColonCommand.settings.map(\.key).contains("invertapps"))
+    /// The inversion family, final shape: `invertapps` (on/off) and
+    /// `smartinvert` are settings; the app LIST is the `invertappslist`
+    /// picker (a command, NOT a setting). `invertapps` MUST stay out of a
+    /// key that `invertappslist` would then prefix — so the list can never
+    /// be a settings key. Guard the whole arrangement.
+    func testInversionNamingIsConsistentAndCollisionFree() {
+        let keys = ColonCommand.settings.map(\.key)
+        XCTAssertTrue(keys.contains("invertapps"))
+        XCTAssertTrue(keys.contains("smartinvert"))
+        XCTAssertTrue(keys.contains("preferdarkinpreview"))
+        // The old key names are gone.
+        XCTAssertFalse(keys.contains("invert"))
+        XCTAssertFalse(keys.contains("autoinvert"))
+        XCTAssertFalse(keys.contains("pdfdark"))
+        // The list is a picker command, never a setting (it would be
+        // prefixed by `invertapps`, breaking testNoSettingKeyIsPrefixOfAnother).
+        XCTAssertTrue(ColonCommand.commandNames.contains("invertappslist"))
+        XCTAssertFalse(keys.contains("invertappslist"))
+        XCTAssertTrue(ColonCommand.pickerCommands.contains("invertappslist"))
+        // `:config invertapps on` is the toggle; `invert`/`invertapp` uniquely
+        // prefix it (the picker is not a setting, so it can't make it ambiguous).
+        XCTAssertEqual(ColonCommand.parse("config invertapps on"),
+                       .config(key: "invertapps", value: "on"))
+        XCTAssertEqual(ColonCommand.parse("config invert on"),
+                       .config(key: "invertapps", value: "on"))
+    }
+
+    /// The user wanted the whole family under `:config` — the app-list
+    /// picker included. `:config invertappslist …` collapses to the bare
+    /// picker stage, while `:config invertapps …` stays the toggle. The
+    /// boundary is exactly at the shared prefix.
+    func testConfigNamespacedPickerRoutesToBarePicker() {
+        // Toggle side — a real setting key wins, so these are NOT pickers.
+        XCTAssertNil(ColonCommand.strippedPickerBuffer("config invertapps"))
+        XCTAssertNil(ColonCommand.strippedPickerBuffer("config invert"))
+        XCTAssertNil(ColonCommand.strippedPickerBuffer("config rate 200"))
+        // An AMBIGUOUS settings prefix must not be hijacked into the picker
+        // mid-type: "i" could still become `identifiers` or `invertapps`.
+        XCTAssertNil(ColonCommand.strippedPickerBuffer("config i"))
+        XCTAssertNil(ColonCommand.strippedPickerBuffer("config inv"))
+        XCTAssertNil(ColonCommand.strippedPickerBuffer("config invertapp"))
+        // Picker side — collapses to the bare form.
+        XCTAssertEqual(ColonCommand.strippedPickerBuffer("config invertappslist"),
+                       "invertappslist ")
+        XCTAssertEqual(ColonCommand.strippedPickerBuffer("config invertappsl"),
+                       "invertappslist ")
+        XCTAssertEqual(ColonCommand.strippedPickerBuffer("config invertappslist term"),
+                       "invertappslist term")
+        XCTAssertEqual(ColonCommand.strippedPickerBuffer("set invertappslist"),
+                       "invertappslist ")
+        XCTAssertEqual(ColonCommand.strippedPickerBuffer("conf invertappslist"),
+                       "invertappslist ")
+        // Bare picker is returned as identity (callers treat both alike).
+        XCTAssertEqual(ColonCommand.strippedPickerBuffer("invertappslist pag"),
+                       "invertappslist pag")
+        XCTAssertEqual(ColonCommand.strippedPickerBuffer("voices dan"), "voices dan")
+        // Auto-accept drops a namespaced picker straight into the stage.
+        XCTAssertEqual(ColonCommand.autoResolve("config invertappslist"),
+                       .expand("invertappslist "))
+        // The namespaced picker keeps COMMAND mode open on Return.
+        XCTAssertTrue(ColonCommand.staysOpenOnReturn("config invertappslist"))
+        XCTAssertTrue(ColonCommand.staysOpenOnReturn("config invertappslist pag"))
+        // The toggle does not.
+        XCTAssertFalse(ColonCommand.staysOpenOnReturn("config invertapps on"))
     }
 
     func testPickersExpandInsteadOfExecuting() {
@@ -191,8 +248,8 @@ final class ColonCommandTests: XCTestCase {
             XCTAssertTrue(ColonCommand.expandingCommands.contains(picker),
                           "\(picker) must expand to a stage")
         }
-        XCTAssertEqual(ColonCommand.autoResolve("invertapps"),
-                       .expand("invertapps "))
+        XCTAssertEqual(ColonCommand.autoResolve("invertappslist"),
+                       .expand("invertappslist "))
         XCTAssertEqual(ColonCommand.autoResolve("voices"), .expand("voices "))
     }
 
@@ -201,8 +258,8 @@ final class ColonCommandTests: XCTestCase {
     func testStaysOpenOnReturnCoversPickersAndSearch() {
         XCTAssertTrue(ColonCommand.staysOpenOnReturn("/paus"))
         XCTAssertTrue(ColonCommand.staysOpenOnReturn("voices"))
-        XCTAssertTrue(ColonCommand.staysOpenOnReturn("invertapps"))
-        XCTAssertTrue(ColonCommand.staysOpenOnReturn("invertapps pag"))
+        XCTAssertTrue(ColonCommand.staysOpenOnReturn("invertappslist"))
+        XCTAssertTrue(ColonCommand.staysOpenOnReturn("invertappslist pag"))
         XCTAssertFalse(ColonCommand.staysOpenOnReturn("config rate 200"))
         XCTAssertFalse(ColonCommand.staysOpenOnReturn("help"))
         XCTAssertFalse(ColonCommand.staysOpenOnReturn(""))
@@ -212,14 +269,20 @@ final class ColonCommandTests: XCTestCase {
         let apps = [(name: "Pages", identifier: "com.apple.iWork.Pages"),
                     (name: "Numbers", identifier: "com.apple.iWork.Numbers"),
                     (name: "Terminal", identifier: "com.apple.Terminal")]
-        let all = CommandCompleter.candidates(for: "invertapps ", values: [:],
+        let all = CommandCompleter.candidates(for: "invertappslist ", values: [:],
                                               apps: apps)
         XCTAssertEqual(all.count, 3)
-        XCTAssertEqual(all.first?.completion, "invertapps com.apple.iWork.Pages")
+        XCTAssertEqual(all.first?.completion, "invertappslist com.apple.iWork.Pages")
 
-        let filtered = CommandCompleter.candidates(for: "invertapps term", values: [:],
+        let filtered = CommandCompleter.candidates(for: "invertappslist term", values: [:],
                                                    apps: apps)
         XCTAssertEqual(filtered.first?.display, "Terminal")
+
+        // The `:config`-namespaced spelling produces the SAME bare rows.
+        let namespaced = CommandCompleter.candidates(for: "config invertappslist term",
+                                                     values: [:], apps: apps)
+        XCTAssertEqual(namespaced.first?.display, "Terminal")
+        XCTAssertEqual(namespaced.first?.completion, "invertappslist com.apple.Terminal")
     }
 
     /// Tab/click fills the full bundle ID into the buffer; that row must
@@ -227,7 +290,7 @@ final class ColonCommandTests: XCTestCase {
     func testAppPickerKeepsExactIdentifierRow() {
         let apps = [(name: "Pages", identifier: "com.apple.iWork.Pages")]
         let rows = CommandCompleter.candidates(
-            for: "invertapps com.apple.iwork.pages", values: [:], apps: apps)
+            for: "invertappslist com.apple.iwork.pages", values: [:], apps: apps)
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(rows.first?.display, "Pages")
     }
@@ -338,7 +401,7 @@ final class ColonCommandTests: XCTestCase {
         "tip — a random feature tip",
         "config — change a setting",
         "voices — choose the reading voice",
-        "invertapps — choose which apps invert the display",
+        "invertappslist — choose which apps invert the display",
         "pronunciation — open the system pronunciation editor",
         "typing — open the system typing feedback settings",
         "quit — stop Marduk",
@@ -365,7 +428,7 @@ final class ColonCommandTests: XCTestCase {
         XCTAssertEqual(completions("tu"), [display("tutorial")])
         XCTAssertEqual(completions("t"), [display("tutorial"), display("tip"),
                                           display("typing")])
-        XCTAssertEqual(completions("i"), [display("invertapps")])
+        XCTAssertEqual(completions("i"), [display("invertappslist")])
         XCTAssertEqual(completions("z"), [])
     }
 

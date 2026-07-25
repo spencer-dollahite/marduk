@@ -21,7 +21,7 @@ enum InversionPolicy {
     /// after reconciling belief with reality — the caller adopts it either
     /// way, which is what keeps a stale flag from surviving a decision.
     enum Decision: Equatable {
-        /// Neither invert nor autoinvert is on — never touch the display.
+        /// Neither invertapps nor smartinvert is on — never touch the display.
         case inactive
         /// Inside the toggle lockout; the heartbeat will re-ask.
         case lockedOut

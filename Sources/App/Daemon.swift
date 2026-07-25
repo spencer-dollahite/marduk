@@ -235,7 +235,7 @@ final class DaemonServer {
         displayInverter = DisplayInverter(invertApps: config.display.invertForApps)
         // OPT-IN: inversion fires keystrokes and Automation prompts —
         // never a surprise default (the built-in app list only matters
-        // once the user says :config invert on)
+        // once the user says :config invertapps on)
         displayInverter?.invertEnabled = config.display.invertEnabled ?? false
         displayInverter?.pdfDarkStyle = DisplayInverter.PDFDarkStyle(
             rawValue: config.display.pdfDark ?? "") ?? .auto
@@ -1285,12 +1285,15 @@ final class DaemonServer {
 
         // Staged picker accept — Return takes the highlighted row, dmenu
         // style (the tap keeps COMMAND mode alive for these, like "/").
-        if let picker = ColonCommand.pickerCommands.first(where: { raw.hasPrefix($0) }) {
+        // Normalize first so a `:config invertappslist …` buffer that
+        // reached submit unexpanded still routes to the bare picker.
+        let pickerBuf = ColonCommand.strippedPickerBuffer(raw) ?? raw
+        if let picker = ColonCommand.pickerCommands.first(where: { pickerBuf.hasPrefix($0) }) {
             // A buffer holding a full identifier (Tab/click filled it) is
             // already a decision — apply it without consulting the selection.
             // Identifiers are reverse-DNS; typed filter text can't contain
             // dots (the tap has no "." key in commandKeyChars).
-            let arg = raw.dropFirst(picker.count).trimmingCharacters(in: .whitespaces)
+            let arg = pickerBuf.dropFirst(picker.count).trimmingCharacters(in: .whitespaces)
             if arg.contains(".") {
                 keyboardMonitor?.endCommandMode()
                 applyPickerRow(picker, identifier: arg)
@@ -1336,7 +1339,7 @@ final class DaemonServer {
             }
             lastTipIndex = index
             speech.speak("Tip: " + HelpText.tips[index])
-        case .voices, .invertApps:
+        case .voices, .invertAppsList:
             // Unreachable in practice — every picker-prefixed buffer is
             // intercepted above before parse. Compiler exhaustiveness only.
             break
@@ -1948,8 +1951,10 @@ final class DaemonServer {
         }
         // Pickers list dozens of rows (voices, every installed app) — don't
         // recite them all; arrows walk them one at a time anyway
+        let pickerSnapshot = ColonCommand.strippedPickerBuffer(commandBufferSnapshot)
+            ?? commandBufferSnapshot
         if ColonCommand.pickerCommands.contains(where: {
-            commandBufferSnapshot.hasPrefix($0)
+            pickerSnapshot.hasPrefix($0)
         }), displays.count > 8 {
             let more = displays.count - 6
             displays = Array(displays.prefix(6)) + ["and \(more) more"]
@@ -2262,7 +2267,7 @@ final class DaemonServer {
     private func applyPickerRow(_ picker: String, identifier: String) {
         switch picker {
         case "voices": applyVoice(identifier: identifier)
-        case "invertapps": toggleInvertApp(identifier: identifier)
+        case "invertappslist": toggleInvertApp(identifier: identifier)
         default: break
         }
     }
@@ -2271,8 +2276,8 @@ final class DaemonServer {
         switch picker {
         case "voices":
             announceVoicesPicker()
-        case "invertapps":
-            speech.announce("invert apps. Choose an app to invert the display "
+        case "invertappslist":
+            speech.announce("invert apps list. Choose an app to invert the display "
                 + "while it is in front. Return adds it, or removes it if it "
                 + "is already on the list.")
         default: break
@@ -2361,10 +2366,12 @@ final class DaemonServer {
         displayInverter?.invertApps = Set(list)  // live, no restart
         fputs("[display] invert list: \(removing ? "removed" : "added") "
             + "\(identifier) (\(list.count) total)\n", stderr)
-        let inversionOn = (config.display.invertEnabled ?? false)
-            || (config.display.autoInvert ?? false)
+        // The list is driven ONLY by the invertapps toggle now — smart
+        // invert samples unlisted apps and never consults this list, so it
+        // can't stand in for the switch here.
+        let inversionOn = config.display.invertEnabled ?? false
         let caveat = inversionOn ? ""
-            : " Inverting is switched off, so run colon config invert on to use it."
+            : " Invert apps is switched off, so run colon config invert apps on to use it."
         speech.announce(removing
             ? "\(name) removed. It no longer inverts the display."
             : "\(name) added. The display will invert while it is in front.\(caveat)")
@@ -2608,22 +2615,24 @@ final class DaemonServer {
             speech.announce(on ? "Follow along on. The view tracks the read."
                                : "Follow along off.")
 
-        case "invert":
+        case "invertapps":
             guard let on = toggle() else { return fail("Say on or off.") }
             displayInverter?.invertEnabled = on
             if !on { displayInverter?.revertIfInverted() }
             config.display.invertEnabled = on
             ConfigLoader.save(config)
-            if on && config.display.invertForApps.isEmpty
-                && !(config.display.autoInvert ?? false) {
-                speech.announce("Display inversion on, but no apps are listed. "
-                    + "Add bundle identifiers to invert for apps in config "
-                    + "dot json, or turn on auto invert.")
+            if on && config.display.invertForApps.isEmpty {
+                speech.announce("Invert apps on. Packet Tracer and Pages are "
+                    + "built in and will darken the display while they are in "
+                    + "front. Add more with colon config invert apps list.")
             } else {
-                speech.announce(on ? "Display inversion on." : "Display inversion off.")
+                speech.announce(on
+                    ? "Invert apps on. Listed apps darken the display while "
+                        + "they are in front."
+                    : "Invert apps off.")
             }
 
-        case "pdfdark":
+        case "preferdarkinpreview":
             guard let style = DisplayInverter.PDFDarkStyle(rawValue: value) else {
                 return fail("Say auto, on, or off.")
             }
@@ -2633,13 +2642,13 @@ final class DaemonServer {
             displayInverter?.applyPreviewDarkModeIfFront()
             switch style {
             case .auto:
-                speech.announce("P D F dark auto: dark P D Fs whenever your "
-                    + "Mac is in dark mode.")
+                speech.announce("Prefer dark in preview, auto: dark P D Fs "
+                    + "whenever your Mac is in dark mode.")
             case .on:
-                speech.announce("P D F dark on. Preview documents switch to "
-                    + "dark view.")
+                speech.announce("Prefer dark in preview, on. Preview documents "
+                    + "switch to dark view.")
             case .off:
-                speech.announce("P D F dark off.")
+                speech.announce("Prefer dark in preview, off.")
             }
 
         case "dock":
@@ -2653,7 +2662,7 @@ final class DaemonServer {
                     + "it — marduk stop, or colon quit, keeps it stopped."
                 : "Marduk is hidden from the Dock and Force Quit again.")
 
-        case "autoinvert":
+        case "smartinvert":
             guard let on = toggle() else { return fail("Say on or off.") }
             displayInverter?.autoInvert = on
             config.display.autoInvert = on
@@ -2670,18 +2679,18 @@ final class DaemonServer {
                     opener.arguments = ["x-apple.systempreferences:"
                         + "com.apple.preference.security?Privacy_ScreenCapture"]
                     try? opener.run()
-                    speech.announce("Auto invert on, but Marduk needs the Screen "
+                    speech.announce("Smart invert on, but Marduk needs the Screen "
                         + "Recording permission first. I opened that Settings "
                         + "pane: find Marduk in the list, turn it on, and choose "
                         + "quit and reopen when macOS offers — Marduk restarts "
                         + "itself. If Marduk is not listed yet, switch apps once "
                         + "and it will appear.")
                 } else {
-                    speech.announce("Auto invert on. Bright apps invert, dark "
+                    speech.announce("Smart invert on. Bright apps invert, dark "
                         + "apps revert, measured as you switch.")
                 }
             } else {
-                speech.announce("Auto invert off.")
+                speech.announce("Smart invert off.")
             }
 
         case "readmotions":
@@ -2783,9 +2792,9 @@ final class DaemonServer {
             "dialogfocus": dialogFocusSetting.rawValue,
             "hints": (config.onboarding?.hints ?? true) ? "on" : "off",
             "follow": (keyboardMonitor?.followEnabled ?? true) ? "on" : "off",
-            "invert": (config.display.invertEnabled ?? false) ? "on" : "off",
-            "pdfdark": config.display.pdfDark ?? "auto",
-            "autoinvert": (config.display.autoInvert ?? false) ? "on" : "off",
+            "invertapps": (config.display.invertEnabled ?? false) ? "on" : "off",
+            "preferdarkinpreview": config.display.pdfDark ?? "auto",
+            "smartinvert": (config.display.autoInvert ?? false) ? "on" : "off",
             "dock": (config.display.dockIcon ?? false) ? "on" : "off",
         ]
     }
@@ -2836,8 +2845,10 @@ final class DaemonServer {
         }
         commandBufferSnapshot = buffer
         // App rows are enumerated only while the app picker is open — a
-        // disk walk on every keystroke of every command would be absurd
-        let apps = buffer.hasPrefix("invertapps") ? invertAppOptions() : []
+        // disk walk on every keystroke of every command would be absurd.
+        // Recognize the bare AND `:config`-namespaced picker buffer.
+        let apps = (ColonCommand.strippedPickerBuffer(buffer)?.hasPrefix("invertappslist") ?? false)
+            ? invertAppOptions() : []
         commandCandidates = CommandCompleter.candidates(for: buffer, values: settingValues(),
                                                         voices: voiceOptions, apps: apps)
         commandSelected = 0

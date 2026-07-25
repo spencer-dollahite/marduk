@@ -5,8 +5,10 @@ import ScreenCaptureKit
 
 /// Display management for bright apps in a dark-mode workflow. Two tools:
 ///
-/// 1. FULL-DISPLAY INVERSION for apps that are hopelessly light (Pages,
-///    Packet Tracer): inverts the moment a listed app is seen in front;
+/// 1. FULL-DISPLAY INVERSION for coded/listed apps that are hopelessly
+///    light (`:config invertapps`; Pages, Packet Tracer, plus the
+///    :invertapps picker's list): inverts the moment a listed app is seen
+///    in front;
 ///    un-inverts ONLY via the 2s heartbeat poll, after 6 continuous
 ///    seconds of the holder being gone. Events may invert; they may NEVER
 ///    revert — an entire evening of field logs proved every event-shaped
@@ -16,24 +18,29 @@ import ScreenCaptureKit
 ///    ("Use Dark Appearance for PDF" on macOS 26) — pressed directly via
 ///    the AX menu bar (no shortcut needed) whenever Preview comes front or
 ///    opens a new window, checkmark consulted first so an already-dark
-///    window is never toggled back to light. `pdfdark auto` (DEFAULT)
+///    window is never toggled back to light. `preferdarkinpreview auto`
+///    (DEFAULT)
 ///    follows the system appearance — dark theme users get dark PDFs with
 ///    zero setup, light theme leaves Preview alone — reacting live to
 ///    theme flips; on/off override. English menu titles only (Marduk-wide
 ///    limitation).
 ///
-/// 3. AUTO-DETECTION (`:config autoinvert`, needs the Screen Recording
-///    permission — requested on enable): apps NOT in the list are measured
-///    on activation — a 64px ScreenCaptureKit screenshot of the frontmost
-///    window, mean channel brightness against `display.autoInvertThreshold`
-///    (percent, default 70) — and inverted or reverted accordingly. Listed
-///    apps skip the measurement and invert instantly; Preview is skipped
-///    when pdfdark handles it. macOS periodically re-confirms screen
-///    capture grants — the price of the magic, disclosed in the tip.
+/// 3. SMART INVERT / AUTO-DETECTION (`:config smartinvert`, needs the
+///    Screen Recording permission — requested on enable): apps NOT already
+///    inverted by invertapps are measured on activation — a 64px
+///    ScreenCaptureKit screenshot of the frontmost window, mean channel
+///    brightness against `display.autoInvertThreshold` (percent, default
+///    70) — and inverted or reverted accordingly. Apps the invertapps
+///    switch is actively inverting skip the measurement and invert
+///    instantly; Preview is skipped when preferdarkinpreview handles it. macOS
+///    periodically re-confirms screen capture grants — the price of the
+///    magic, disclosed in the tip.
 ///
+/// The two invert switches are INDEPENDENT: invertapps drives only the
+/// coded list, smartinvert only the sampling; neither implies the other.
 /// Everything defaults OFF/empty — visual surprises make terrible first
-/// impressions — and applies live via `:config invert` / `:config pdfdark`
-/// / `:config autoinvert`.
+/// impressions — and applies live via `:config invertapps` /
+/// `:config preferdarkinpreview` / `:config smartinvert`.
 // @unchecked Sendable: the codebase's standard workaround — the brightness
 // Task hops off-main; mutable state it touches is a threshold read and a
 // log-once flag, and all decisions re-enter main before acting.
@@ -46,16 +53,21 @@ final class DisplayInverter: @unchecked Sendable {
     var invertEnabled = true
 
     /// Is the inversion subsystem live at all? EITHER switch opts you in —
-    /// turning on `autoinvert` is plainly a request to have the display
-    /// inverted, and requiring a second, differently-named switch to make
-    /// it do anything is a trap users fall into (field 2026-07-22).
+    /// this gates whether the heartbeat runs and whether events may act.
+    /// It does NOT decide WHICH mechanism fires: invertapps
+    /// (`invertEnabled`) owns the coded list, smartinvert (`autoInvert`)
+    /// owns sampling, and each is checked at its own call site.
     ///
-    /// This MUST gate inverting and reverting identically. Before it, the
-    /// raw-activation fast path inverted listed apps with no `invert`
-    /// check at all while the heartbeat that reverts them was gated —
-    /// so with `invert` off, Pages would invert and NOTHING could ever
-    /// hand the display back. That stranded inversion is what later got
-    /// toggled onto a normal screen and blinded the user.
+    /// This MUST gate inverting and reverting identically — or, where they
+    /// differ, invert must be the NARROWER gate (revert can always safely
+    /// undo). Before this existed, the raw-activation fast path inverted
+    /// listed apps with no switch check at all while the heartbeat that
+    /// reverts them was gated — so with the app-list switch off, Pages
+    /// would invert and NOTHING could ever hand the display back. That
+    /// stranded inversion is what later got toggled onto a normal screen
+    /// and blinded the user. The coded-list invert is now gated on
+    /// `invertEnabled` at each call site (narrower than inversionActive),
+    /// while revert stays on inversionActive — the safe direction.
     var inversionActive: Bool {
         InversionPolicy.isActive(invertEnabled: invertEnabled, autoInvert: autoInvert)
     }
@@ -187,11 +199,14 @@ final class DisplayInverter: @unchecked Sendable {
             guard let self,
                   let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
                   let bundleID = app.bundleIdentifier else { return }
-            // FAST PATH: listed apps invert on the raw event — eager
-            // inversion is always safe (reverting is the heartbeat's, and
-            // an extra invert of a listed app is simply correct). Preview
-            // dark-PDF likewise. Only auto-measurement rides the dwell.
-            if self.isListed(bundleID) {
+            // FAST PATH: coded/listed apps invert on the raw event while
+            // invertapps is on — eager inversion is always safe (reverting
+            // is the heartbeat's, and an extra invert of a listed app is
+            // simply correct). With invertapps OFF the list is inert, so a
+            // listed app falls through and gets sampled by smartinvert on
+            // the dwell like anything else. Preview dark-PDF likewise. Only
+            // auto-measurement rides the dwell.
+            if self.isListed(bundleID) && self.invertEnabled {
                 self.lastHolderSeen = Date()
                 self.fastConfirmGeneration += 1  // holder is back — abort any burst
                 // Post-revert guard: our own revert kicks Qt rebuilds whose
@@ -278,24 +293,25 @@ final class DisplayInverter: @unchecked Sendable {
             + "\(Self.builtInInvertPrefixes.count) built-in, PDF dark "
             + "\(pdfDarkStyle.rawValue), hotkey-fast)\n", stderr)
         // The whole decision chain in one greppable line. Everything below
-        // returns SILENTLY when invert is off, which made a misconfigured
-        // master switch look identical to a broken inverter (field
-        // 2026-07-22 — hours were spent on a display that was simply
+        // returns SILENTLY when both switches are off, which made a
+        // misconfigured master switch look identical to a broken inverter
+        // (field 2026-07-22 — hours were spent on a display that was simply
         // never enabled).
-        fputs("[display] config: invert=\(invertEnabled ? "ON" : "OFF") "
-            + "autoinvert=\(autoInvert ? "ON" : "OFF") "
+        fputs("[display] config: invertapps=\(invertEnabled ? "ON" : "OFF") "
+            + "smartinvert=\(autoInvert ? "ON" : "OFF") "
             + "threshold=\(String(format: "%.2f", autoInvertThreshold)) "
             + "theme=\(Self.systemIsDark() ? "dark" : "light") "
             + "listed=\(invertApps.sorted().joined(separator: ",")) "
             + "builtin=\(Self.builtInInvertPrefixes.joined(separator: ","))\n",
             stderr)
         if !inversionActive {
-            fputs("[display] NOTE: invert and autoinvert are both OFF — "
-                + "nothing will ever invert. Run: marduk config invert on\n",
+            fputs("[display] NOTE: invertapps and smartinvert are both OFF — "
+                + "nothing will ever invert. Run: marduk config invertapps on\n",
                 stderr)
         } else if autoInvert && !invertEnabled {
-            fputs("[display] active via autoinvert (invert itself is off) — "
-                + "listed apps still invert on sight\n", stderr)
+            fputs("[display] active via smartinvert only (invertapps is off) — "
+                + "the coded list is inert; listed apps are judged by "
+                + "brightness like any other\n", stderr)
         }
     }
 
@@ -336,7 +352,7 @@ final class DisplayInverter: @unchecked Sendable {
         fputs("[display] Reverted inversion on stop\n", stderr)
     }
 
-    /// Live `:config invert off` mid-invert must hand the display back.
+    /// Live `:config invertapps off` mid-invert must hand the display back.
     func revertIfInverted() {
         guard InversionPolicy.shouldRevertOnExit(believed: isInverted,
                                                  actual: Self.displayIsInverted(),
@@ -358,7 +374,7 @@ final class DisplayInverter: @unchecked Sendable {
         }
     }
 
-    /// Live `:config pdfdark` change (or a theme flip) with Preview
+    /// Live `:config preferdarkinpreview` change (or a theme flip) with Preview
     /// already front applies now.
     func applyPreviewDarkModeIfFront() {
         guard previewDarkActive,
@@ -420,11 +436,14 @@ final class DisplayInverter: @unchecked Sendable {
             guard let self,
                   let app = NSWorkspace.shared.frontmostApplication,
                   let bundleID = app.bundleIdentifier else { return }
-            // FAST PATH: listed apps invert on the raw event — eager
-            // inversion is always safe (reverting is the heartbeat's, and
-            // an extra invert of a listed app is simply correct). Preview
-            // dark-PDF likewise. Only auto-measurement rides the dwell.
-            if self.isListed(bundleID) {
+            // FAST PATH: coded/listed apps invert on the raw event while
+            // invertapps is on — eager inversion is always safe (reverting
+            // is the heartbeat's, and an extra invert of a listed app is
+            // simply correct). With invertapps OFF the list is inert, so a
+            // listed app falls through and gets sampled by smartinvert on
+            // the dwell like anything else. Preview dark-PDF likewise. Only
+            // auto-measurement rides the dwell.
+            if self.isListed(bundleID) && self.invertEnabled {
                 self.lastHolderSeen = Date()
                 self.fastConfirmGeneration += 1  // holder is back — abort any burst
                 // Post-revert guard: our own revert kicks Qt rebuilds whose
@@ -487,14 +506,19 @@ final class DisplayInverter: @unchecked Sendable {
     private func handleAppActivated(_ bundleID: String, pid: pid_t) {
         fputs("[display] front=\(bundleID) listed=\(isListed(bundleID)) "
             + "active=\(inversionActive) "
-            + "autoinvert=\(autoInvert ? "on" : "off") "
+            + "smartinvert=\(autoInvert ? "on" : "off") "
             + "inverted=\(isInverted)\n", stderr)
         if inversionActive {
-            // Events may INVERT (snappier than waiting for the heartbeat):
-            // the list is unconditional certainty, auto-measurement judges
-            // unlisted apps. Events NEVER revert — that's the heartbeat's
+            // Events may INVERT (snappier than waiting for the heartbeat).
+            // The two switches drive DISJOINT mechanisms: `invertEnabled`
+            // (:config invertapps) inverts the coded/listed apps with
+            // certainty; `autoInvert` (:config smartinvert) measures the
+            // brightness of everything else. A listed app is only "coded"
+            // while invertapps is on — with it off it's just another app
+            // for smart invert to judge on its merits, so it falls through
+            // to sampling. Events NEVER revert — that's the heartbeat's
             // monopoly (poll()).
-            if isListed(bundleID) {
+            if isListed(bundleID) && invertEnabled {
                 lastHolderSeen = Date()
                 ensureInverted(true, holder: bundleID, reason: bundleID)
             } else if autoInvert, bundleID != Self.previewBundle || !previewDarkActive,
@@ -562,7 +586,12 @@ final class DisplayInverter: @unchecked Sendable {
         guard inversionActive,
               let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         else { return }
-        if isListed(front) {
+        // Only the invertapps switch keeps a LISTED app inverted via the
+        // list. A smart-inverted app (listed or not) is renewed below as
+        // the holder — so narrowing this branch can never strand it, and
+        // reverting stays governed by inversionActive (the safe direction:
+        // invert narrow, revert broad).
+        if isListed(front) && invertEnabled {
             lastHolderSeen = Date()
             ensureInverted(true, holder: front, reason: front)
         } else if isInverted {
@@ -603,8 +632,8 @@ final class DisplayInverter: @unchecked Sendable {
         switch decision {
         case .inactive:
             fputs("[display] want \(wanted ? "invert" : "revert") (\(reason)) "
-                + "but both invert and autoinvert are OFF — run: "
-                + "marduk config invert on\n", stderr)
+                + "but both invertapps and smartinvert are OFF — run: "
+                + "marduk config invertapps on\n", stderr)
             return
         case .lockedOut:
             // One change, then silence — deferred wants converge via the
@@ -705,7 +734,7 @@ final class DisplayInverter: @unchecked Sendable {
     /// The Automation grant (Marduk → System Events) is DENIED — every
     /// inversion is a silent no-op until the user re-allows it. Speak it
     /// once per session and let the daemon open the right Settings pane;
-    /// a lost permission must introduce itself (the pdfdark principle).
+    /// a lost permission must introduce itself (the preferdarkinpreview principle).
     private var automationDeniedReported = false
     private func reportAutomationDenied() {
         guard !automationDeniedReported else { return }

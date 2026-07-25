@@ -94,9 +94,9 @@ final class CrossCoreInvariantTests: XCTestCase {
             XCTAssertNotNil(DialogSentinel.Level(rawValue: value),
                             "dialogs '\(value)' has no Level case")
         }
-        for value in choices("pdfdark") {
+        for value in choices("preferdarkinpreview") {
             XCTAssertNotNil(DisplayInverter.PDFDarkStyle(rawValue: value),
-                            "pdfdark '\(value)' has no PDFDarkStyle case")
+                            "preferdarkinpreview '\(value)' has no PDFDarkStyle case")
         }
         for value in choices("position") {
             XCTAssertNotNil(CommandPalette.PositionMode(rawValue: value),

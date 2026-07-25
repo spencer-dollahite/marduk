@@ -84,9 +84,10 @@ enum HelpText {
         Colon commands: help. commands. tutorial. tip, one random feature \
         tip. config, change a setting. voices, choose the reading voice — \
         arrows preview each voice in its own sound, Return picks it. \
-        invert apps, choose which apps darken the display — the app you \
+        invert apps list, choose which apps darken the display — the app you \
         were just in comes first, so Return alone adds it, and Return on \
-        one already listed removes it. \
+        one already listed removes it. Also reachable as colon config invert \
+        apps list. \
         pronunciation, open the system pronunciation editor — Marduk \
         speaks every entry you add there the way you taught it. \
         typing, open the system typing feedback settings — macOS can \
@@ -126,14 +127,15 @@ enum HelpText {
         pointer to a feature you might not have found yet. follow, on or \
         off: the app's view tracks the read — Preview turns to the page \
         you jump to, and reader articles scroll with the voice. \
-        invert, on or off, off by \
-        default: flip the display for bright apps — Packet Tracer and \
-        Pages are built in, add more in the config file — and restore \
-        it when you leave them. p d f dark, \
-        one word, auto, on, or off: Preview documents switch to dark view \
-        by themselves — auto follows your system theme. auto invert, one word, on or off: measure each app's \
+        invert apps, one word, on or off, off by \
+        default: the master switch for darkening the coded apps — Packet \
+        Tracer and Pages are built in, add your own with colon config invert \
+        apps list — restoring the display when you leave them. prefer dark in \
+        preview, one word, auto, on, or off: Preview documents switch to dark view \
+        by themselves — auto follows your system theme. smart invert, one word, on or off: measure each app's \
         real brightness with a tiny screenshot and invert only when it is \
-        actually bright — needs the Screen Recording permission. dock, on \
+        actually bright — needs the Screen Recording permission. It judges \
+        the apps invert apps does not cover. dock, on \
         or off: show Marduk in the Dock, the app switcher, and the Force \
         Quit window.
         """
@@ -160,7 +162,7 @@ enum HelpText {
         "Media pauses during reads and resumes after, only if it was actually playing. Music apps get volume-ducked instead of paused.",
         "If you can see some of the screen, colon config border on frames it in the mode color: red for NORMAL, green for INSERT, blue for VISUAL. Colon config pointer on adds a dot at the mouse that stays visible while zoomed in.",
         "Colon voices opens a voice picker. Arrow through the list and each voice introduces itself in its own sound; Return keeps the one you are hearing.",
-        "If an app is painfully bright, colon invert apps adds it to the list that darkens the whole display while it is in front. The app you were just in is the first choice, so Return alone adds it — and Return on an app already listed takes it back off.",
+        "If an app is painfully bright, colon config invert apps list adds it to the list that darkens the whole display while it is in front. The app you were just in is the first choice, so Return alone adds it — and Return on an app already listed takes it back off. Turn the whole feature on with colon config invert apps on.",
         "With colon config speed keys on, Option up arrow and Option down arrow change the speech rate on the spot, ten words per minute at a time. Hold the key to glide.",
         "In Firefox reader mode, n hands the reading to Firefox's own narrator: your music pauses, Marduk goes quiet, and Firefox reads the page. Press n again or Escape to bring the music back.",
         "On any article in Firefox, 8 does the whole ritual at once: opens reader mode, pauses your music, and starts Firefox narrating. 8 again closes it all back down.",
@@ -175,8 +177,8 @@ enum HelpText {
         "With Karabiner installed, Marduk runs its own Karabiner profile while active and hands yours back the moment it stops, even on a crash. Your read button reaches Marduk while it is up, and falls back to macOS Speak Selection whenever it is down. Nothing to switch by hand.",
         "When a password prompt, permission dialog, or sheet appears — even outside your zoomed view — Marduk announces it, with the dialog's title when it has one. Colon config dialogs system limits this to the central OS prompts; off silences it.",
         "Apple's premium voices sound more natural and run entirely on your Mac, free, no account. Download one like Ava in System Settings, Accessibility, Read and Speak Content, System Voice, Manage Voices — then audition it with colon voices. Fair warning: at fast speaking rates, the classic enhanced voices often stay clearer.",
-        "Cisco Packet Tracer and Pages stay blinding white even in dark mode. Say colon config invert on and Marduk flips the whole display dark while they are in front, flipping back the moment you leave. It needs the Invert Colors shortcut enabled in Keyboard Settings, under Accessibility.",
-        "Working dark? Marduk notices: with your Mac in dark mode, every PDF you open in Preview switches to dark view by itself. Colon config p d f dark off if you want your PDFs paper-white. Colon config auto invert on goes further: it measures each app's real brightness and inverts the display only when the content is actually blinding — a black slide deck in Keynote stays exactly as you styled it.",
+        "Cisco Packet Tracer and Pages stay blinding white even in dark mode. Say colon config invert apps on and Marduk flips the whole display dark while they are in front, flipping back the moment you leave. It needs the Invert Colors shortcut enabled in Keyboard Settings, under Accessibility.",
+        "Working dark? Marduk notices: with your Mac in dark mode, every PDF you open in Preview switches to dark view by itself. Colon config prefer dark in preview off if you want your PDFs paper-white. Colon config smart invert on goes further: for the apps that invert apps does not cover, it measures each one's real brightness and inverts the display only when the content is actually blinding — a black slide deck in Keynote stays exactly as you styled it.",
         "The view follows the voice: jump a PDF read to page three and Preview turns to page three, read a Reader article and it scrolls along like a teleprompter. Colon config follow off keeps the view still.",
         "Code names read as natural words: read Document From Caret, not one long mumble, and user id count without hearing underscore twice. Colon config identifiers off brings back the raw forms.",
         "Press i during a read and the reading keeps going while you type — notes while you listen. Hold Escape to give the keyboard back to the read; hold it again to stop. Option Escape kills the audio without leaving your typing.",

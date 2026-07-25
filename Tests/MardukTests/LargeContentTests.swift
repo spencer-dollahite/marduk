@@ -37,6 +37,43 @@ final class LargeContentTests: XCTestCase {
             1234, visible: NSRange(location: 0, length: 0)), 1234)
     }
 
+    // MARK: - Deliberate caret vs prompt caret
+
+    // R's start priority puts facts before guesses: an insertion point the
+    // user placed beats the row estimate (a clamped vertical fraction that
+    // answers even when the pointer is nowhere near the text), while a
+    // prompt caret pinned to the end of a buffer claims nothing and lets
+    // the pointer carry the read.
+
+    func testInteriorCaretIsDeliberate() {
+        let doc = "First line of the document.\nSecond line.\nThird line." as NSString
+        XCTAssertEqual(KeyboardMonitor.deliberateCaret(28, in: doc), 28)
+    }
+
+    func testPromptCaretAtTheEndClaimsNothing() {
+        // Terminal: the caret rides the prompt at the end of the scrollback
+        let buffer = "…lots of scrollback\nuser@mac ~ % " as NSString
+        XCTAssertNil(KeyboardMonitor.deliberateCaret(buffer.length, in: buffer))
+        // Trailing newline / spaces after it are still "nothing after"
+        let trailing = "output line\n\n   \n" as NSString
+        XCTAssertNil(KeyboardMonitor.deliberateCaret(11, in: trailing))
+    }
+
+    func testZeroCaretClaimsNothing() {
+        // Indistinguishable from an app that never answered the attribute
+        let doc = "Some document text." as NSString
+        XCTAssertNil(KeyboardMonitor.deliberateCaret(0, in: doc))
+    }
+
+    func testCaretLookaheadIsBounded() {
+        // Main-thread work beside the event tap: answering "is there
+        // content after the caret" must not walk a 9M-char scrollback
+        let huge = (String(repeating: " ", count: 9_000_000) + "prompt") as NSString
+        let start = Date()
+        XCTAssertNil(KeyboardMonitor.deliberateCaret(1, in: huge, lookahead: 4_096))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 0.5)
+    }
+
     // MARK: - Preprocessor: regular content untouched, large content bounded
 
     func testContentUnderCapPassesThroughWhole() {

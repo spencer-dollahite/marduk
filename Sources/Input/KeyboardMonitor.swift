@@ -2222,8 +2222,18 @@ final class KeyboardMonitor {
         // character range is provably garbage (field: Terminal with a
         // 9M-char scrollback answered RangeForPosition with ~2k, the
         // top of the buffer, while the user pointed at the visible
-        // bottom). Reject it and let the row estimate — built FROM the
-        // visible range — take over. Then the caret, then the top.
+        // bottom). Reject it and fall onward.
+        //
+        // Then a DELIBERATE caret (`deliberateCaret` — an interior
+        // insertion point the user placed, as opposed to a prompt sitting
+        // at the end of a buffer), and only then the row estimate — built
+        // FROM the visible range, and a guess. Facts before guesses: the
+        // row estimate used to come first and R in Pages started several
+        // lines below the blinking cursor (field 2026-07-25), because
+        // Pages answers no range-for-position while the clamped fraction
+        // always answers something. Terminal is untouched: its caret sits
+        // at the prompt with nothing after it, claims nothing, and the
+        // row estimate still carries the read. Then the top.
         var selection = CFRange(location: 0, length: 0)
         var rangeRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(
@@ -2233,6 +2243,7 @@ final class KeyboardMonitor {
             _ = AXValueGetValue(rr as! AXValue, .cfRange, &selection)
         }
         let visibleRange = Self.visibleCharacterRange(of: element)
+        let ns = text as NSString
         if selection.length > 0 {
             start = max(0, selection.location)
             fputs("[keyboard] R: starting at selection\n", stderr)
@@ -2241,8 +2252,11 @@ final class KeyboardMonitor {
                                        visible: visibleRange) != nil {
             start = pointerOffset
             fputs("[keyboard] R: starting at pointer\n", stderr)
-        } else if let estimate = Self.pointerRowEstimate(in: element,
-                                                        text: text as NSString) {
+        } else if let caret = Self.deliberateCaret(max(0, selection.location),
+                                                   in: ns) {
+            start = caret
+            fputs("[keyboard] R: starting at the caret\n", stderr)
+        } else if let estimate = Self.pointerRowEstimate(in: element, text: ns) {
             start = estimate
             fputs("[keyboard] R: starting at pointer (row estimate)\n", stderr)
         } else {
@@ -2250,7 +2264,6 @@ final class KeyboardMonitor {
         }
         start = ReadNavigator.wordStart(in: text, at: start)
 
-        let ns = text as NSString
         let remainder = ns.substring(from: min(start, ns.length))
         guard !remainder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             fputs("[keyboard] R: nothing after the caret\n", stderr)
@@ -2329,12 +2342,44 @@ final class KeyboardMonitor {
         return runs
     }
 
-    /// Row-estimate fallback for pointer starts when the app doesn't
-    /// answer range-for-position (Terminal, empirically): the pointer's
-    /// vertical fraction of the element's frame picks a line inside the
-    /// VISIBLE character range. Terminal rows are uniform height, so this
-    /// is line-accurate — all a "start here" gesture needs (the wordStart
-    /// snap afterwards lands cleanly).
+    /// A collapsed caret the user PLACED, as opposed to one that merely
+    /// sits wherever output stopped. Pure, unit-tested. Two shapes carry
+    /// no information and fall through to the pointer:
+    ///
+    /// - offset 0, indistinguishable from an app that doesn't answer
+    ///   `kAXSelectedTextRangeAttribute` at all (the CFRange is
+    ///   zero-initialised, and a failed copy leaves it that way), and
+    /// - a caret with nothing but whitespace after it — a shell prompt
+    ///   pinned to the end of the buffer, or the end of a document.
+    ///   Terminal's caret is ALWAYS there, which is the whole reason the
+    ///   pointer outranks the caret in the first place.
+    ///
+    /// Anything else is a deliberate insertion point: the user clicked
+    /// there, and "read from here" means from THERE — not from a line
+    /// picked out of the pointer's vertical fraction of the frame. Field
+    /// 2026-07-25: R in Pages started several lines below the blinking
+    /// cursor on every press (`starting at pointer (row estimate)` in the
+    /// log), because Pages doesn't answer range-for-position and the
+    /// row-estimate GUESS outranked the caret FACT.
+    ///
+    /// The lookahead is bounded: this runs on the main thread beside the
+    /// event tap, and "is there content after the caret" must not scan a
+    /// 9M-char Terminal scrollback to answer.
+    static func deliberateCaret(_ location: Int, in text: NSString,
+                                lookahead: Int = 4096) -> Int? {
+        guard location > 0, location < text.length else { return nil }
+        let end = min(text.length, location + max(1, lookahead))
+        for i in location..<end {
+            switch text.character(at: i) {
+            case 0x20, 0x09, 0x0A, 0x0D, 0xA0:  // space, tab, LF, CR, NBSP
+                continue
+            default:
+                return location
+            }
+        }
+        return nil
+    }
+
     /// Pure sanity check, unit-tested: a pointer-derived text offset must
     /// lie within the element's visible character range (nil range = no
     /// information, trust the offset). Returns nil for garbage.
@@ -2361,6 +2406,17 @@ final class KeyboardMonitor {
         return NSRange(location: visible.location, length: visible.length)
     }
 
+    /// Row-estimate fallback for pointer starts when the app doesn't
+    /// answer range-for-position (Terminal, empirically): the pointer's
+    /// vertical fraction of the element's frame picks a line inside the
+    /// VISIBLE character range. Terminal rows are uniform height, so this
+    /// is line-accurate — all a "start here" gesture needs (the wordStart
+    /// snap afterwards lands cleanly).
+    ///
+    /// It is a GUESS, and the fraction is clamped, so it answers even when
+    /// the pointer is nowhere near the text — which is why a deliberate
+    /// caret now outranks it (`deliberateCaret`). It stays the last resort
+    /// for the apps whose caret says nothing.
     private static func pointerRowEstimate(in element: AXUIElement,
                                            text: NSString) -> Int? {
         var posRef: CFTypeRef?

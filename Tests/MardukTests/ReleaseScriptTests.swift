@@ -69,6 +69,25 @@ final class ReleaseScriptTests: XCTestCase {
         }
     }
 
+    /// The release must be assembled OUTSIDE the repo root. Everything after
+    /// assembly re-signs and staples that bundle, and `<repo>/Marduk.app` is
+    /// what launchd executes on a source install — an in-place
+    /// `codesign --force` rewrites a running process's executable, and the
+    /// daemon returns as code macOS will not vouch for: Accessibility denied,
+    /// tap dead, uncurable short of removing and re-adding the entry (which
+    /// works only because revoking a grant kills the process). Field-
+    /// confirmed 2026-07-25 — every `dd` release cost the maintainer the
+    /// grant. Nothing else in the repo would notice this regressing.
+    func testReleaseAssemblesOutsideTheLiveBundle() throws {
+        let script = try releaseScript()
+        XCTAssertTrue(script.contains("marduk bundle --output"),
+                      "release.sh must assemble to a staging dir, never the "
+                      + "repo root — it re-signs what it assembles, and on a "
+                      + "source install that is the running daemon's bundle")
+        XCTAssertFalse(script.contains("APP=\"Marduk.app\""),
+                       "APP must point at the staging copy, not <repo>/Marduk.app")
+    }
+
     /// The monotonic guard must compare against BOTH the shipped version
     /// and the newest tag. Dropping either lets a version through that is
     /// older than one of them.

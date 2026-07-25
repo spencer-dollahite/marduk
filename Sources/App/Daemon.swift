@@ -3080,12 +3080,18 @@ final class DaemonServer {
                 return
             }
             fputs("[update] Build clean\n", stderr)
+            var signingProblem: String? = nil
             guard let bundleExec = Bundler.assemble(binaryPath: dir + "/.build/debug/marduk",
-                                                    projectDir: dir) else {
+                                                    projectDir: dir,
+                                                    onSigningProblem: { signingProblem = $0 })
+            else {
                 fputs("[update] Bundle assembly failed\n", stderr)
                 failed()
                 return
             }
+            // Read once, on this queue, so the announcement below captures a
+            // let rather than a var written from another thread.
+            let signingIssue = signingProblem
 
             // Migration: the installed plist still points at the old bare
             // binary. The daemon cannot bootout itself (deadlock) — write
@@ -3153,7 +3159,16 @@ final class DaemonServer {
                     }
                     restartOnce()
                 }
-                if migration {
+                if let signingIssue {
+                    // Speaks even on the SILENT auto-update path: this update
+                    // costs the user their Accessibility grant, and finding
+                    // that out as a dead keyboard — with no idea which of the
+                    // day's events caused it — is exactly the outage this
+                    // warning exists to prevent.
+                    fputs("[update] signing problem: \(signingIssue)\n", stderr)
+                    speech.announce("Update complete. "
+                        + Codesign.SignOutcome.spokenWarning) { restartOnce() }
+                } else if migration {
                     speech.announce("Update complete. Marduk is now an app "
                         + "bundle. If keyboard commands stop, grant "
                         + "Accessibility to Marduk again.") { restartOnce() }

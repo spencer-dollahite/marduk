@@ -38,9 +38,28 @@ enum Bundler {
     /// is never modified in place — a running daemon keeps its inode
     /// through the swap. Returns the bundle executable path, nil on failure
     /// (in which case the previous bundle, if any, is untouched).
-    static func assemble(binaryPath: String, projectDir: String) -> String? {
+    /// `onSigningProblem` reports a bundle that was assembled but is NOT
+    /// signed in a way TCC will recognise — the caller decides how loudly to
+    /// say so (the daemon speaks it, the CLI prints it). Assembly still
+    /// succeeds: a contributor without a certificate must be able to build.
+    ///
+    /// `outputDir` places the bundle somewhere OTHER than the repo root.
+    /// `release.sh` needs this: it re-signs and staples what it assembles,
+    /// and doing that at the default path mutates the very bundle launchd is
+    /// executing from. Rewriting a running process's executable invalidates
+    /// its code pages, and the daemon comes back up as code macOS will not
+    /// vouch for — Accessibility denied, tap dead, and the retry loop cannot
+    /// heal it because the process's identity was settled at exec. Field
+    /// 2026-07-25: every `dd` release cost the user their Accessibility
+    /// grant, curable only by removing and re-adding the entry (which kills
+    /// the daemon and forces a genuinely fresh start). The swap below is
+    /// safe by design; an in-place `codesign --force` is not.
+    static func assemble(binaryPath: String, projectDir: String,
+                         outputDir: String? = nil,
+                         onSigningProblem: ((String) -> Void)? = nil) -> String? {
         let fm = FileManager.default
-        let bundle = bundlePath(projectDir: projectDir)
+        let destDir = outputDir ?? projectDir
+        let bundle = bundlePath(projectDir: destDir)
         let staging = bundle + ".new"
         let old = bundle + ".old"
         let contents = staging + "/Contents"
@@ -97,8 +116,14 @@ enum Bundler {
         }
 
         // Signing the staging bundle seals the nested executable; failure is
-        // non-fatal (parity with the bare binary's unsigned fallback).
-        Codesign.sign(bundleAt: staging)
+        // non-fatal (parity with the bare binary's unsigned fallback) but no
+        // longer SILENT. An unverified signature means the swapped-in bundle
+        // is a new client to TCC, and the user will have to remove and
+        // re-add Marduk under Accessibility — toggling the existing entry
+        // does nothing, because the stale requirement lives in that row.
+        if case .problem(let reason) = Codesign.sign(bundleAt: staging) {
+            onSigningProblem?(reason)
+        }
 
         // Atomic swap: the running daemon (if executing from the old bundle)
         // keeps its inode; unlinking .old is safe.
@@ -115,7 +140,7 @@ enum Bundler {
         }
 
         fputs("[bundle] assembled \(bundle)\n", stderr)
-        return executablePath(projectDir: projectDir)
+        return executablePath(projectDir: destDir)
     }
 
     // MARK: - Icon (drawn in code — no binary assets in the repo)

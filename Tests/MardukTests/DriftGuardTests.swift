@@ -95,6 +95,58 @@ final class DriftGuardTests: XCTestCase {
                       "the pinned requirement no longer pins a team OU")
     }
 
+    /// The requirement is BARE TEXT; the `-R=` join at each call site is what
+    /// tells codesign "this is text, not a file path". A leading `=` on the
+    /// constant doubles that marker, and codesign then fails to PARSE the
+    /// requirement — exiting non-zero, which reads exactly like a failed
+    /// verification. That shipped: every downloaded DMG failed to self-install
+    /// while the source channel (which never runs the gate) looked healthy.
+    func testRequirementIsBareTextNotSelfMarked() {
+        XCTAssertFalse(Codesign.requirement.hasPrefix("="),
+                       "the -R= join supplies the inline marker; a second one "
+                       + "makes codesign fail to parse the requirement")
+        XCTAssertTrue(Codesign.requirement.hasPrefix("identifier "),
+                      "requirement text should start with the identifier clause")
+    }
+
+    /// Both gate builders must join the marker the same way. They are in
+    /// different files and only agree by convention.
+    func testEveryRequirementGateSuppliesExactlyOneInlineMarker() {
+        let gates = Codesign.verificationGates(bundleAt: "/tmp/Marduk.app")
+            + ReleaseUpdater.verificationGates(staging: "/tmp/Marduk.app")
+        let requirementArgs = gates.flatMap { $0 }.filter { $0.hasPrefix("-R") }
+        XCTAssertFalse(requirementArgs.isEmpty, "no gate tests the requirement any more")
+        for arg in requirementArgs {
+            XCTAssertEqual(arg, "-R=" + Codesign.requirement,
+                           "malformed requirement argument: \(arg)")
+            XCTAssertFalse(arg.hasPrefix("-R=="),
+                           "doubled inline marker — codesign cannot parse this")
+        }
+    }
+
+    /// One predicate, used to both PRODUCE and VERIFY. The local signer and
+    /// the download verifier must pin the SAME requirement: if they drift,
+    /// a locally assembled bundle can stop satisfying what TCC stored while
+    /// both paths still report success — and the user pays for it by
+    /// re-adding Marduk under Accessibility after every update.
+    func testSignerAndDownloadVerifierPinOneRequirement() {
+        XCTAssertEqual(ReleaseUpdater.requirement, Codesign.requirement)
+    }
+
+    /// The LOCAL sign gates must not assert notarization. A developer build
+    /// is signed but never notarized, so an spctl gate would fail on every
+    /// machine and the warning would become noise everyone learns to ignore
+    /// — which is how the silent-signing failure survived this long.
+    func testLocalSignGatesCheckTheRequirementButNotNotarization() {
+        let gates = Codesign.verificationGates(bundleAt: "/tmp/Marduk.app")
+        XCTAssertFalse(gates.contains { $0.contains("/usr/sbin/spctl") },
+                       "a local build is not notarized — spctl would always fail")
+        XCTAssertTrue(gates.contains { $0.contains("-R=" + Codesign.requirement) },
+                      "the local sign path no longer verifies against the pinned requirement")
+        XCTAssertTrue(gates.allSatisfy { $0.last == "/tmp/Marduk.app" },
+                      "a gate is not checking the path it was handed")
+    }
+
     /// `isNewer` compares against `Marduk.version`. An unparseable version
     /// makes it answer false for EVERYTHING — silently disabling
     /// self-update for every release-channel user, with no error anywhere.

@@ -30,8 +30,14 @@ enum ReleaseUpdater {
     /// Pinned designated requirement: OUR bundle identifier, signed with
     /// a Developer ID certificate belonging to OUR team. A perfectly
     /// valid signature from anyone else fails this.
-    static let requirement = "=identifier \"com.marduk.daemon\" and anchor apple generic "
-        + "and certificate leaf[subject.OU] = X56UYJ5NDJ"
+    ///
+    /// Deliberately the SAME constant the local signer pins (`Codesign`):
+    /// one predicate that every Marduk build — downloaded or locally
+    /// assembled — must satisfy. If these two ever drift apart, a locally
+    /// built bundle can stop matching what TCC stored while every gate
+    /// still reports success, and the user pays for it in re-granted
+    /// Accessibility permissions.
+    static let requirement = Codesign.requirement
 
     /// The asset URL for a tag. VERSIONED, never the floating `latest`
     /// link — the swap must install exactly the tag that was checked and

@@ -52,6 +52,22 @@ func printVersion() {
     print("Marduk \(Marduk.version) (Daemon Mode)")
 }
 
+/// A bundle that assembled but carries no signature TCC will recognise. Said
+/// plainly, and with the remedy, because the symptom arrives days later as a
+/// dead keyboard: toggling the existing Accessibility entry off and on does
+/// NOT help — the stale code requirement lives in that row.
+func signingWarning(_ reason: String) {
+    fputs("""
+        WARNING: \(reason).
+          The bundle is assembled but not signed in a way macOS recognises as
+          the same app, so its Accessibility permission will not survive this
+          update. Remove Marduk under System Settings > Privacy & Security >
+          Accessibility and add it again (or run:
+          tccutil reset Accessibility com.marduk.daemon).
+
+        """, stderr)
+}
+
 func listVoices() {
     let voices = AVSpeechSynthesisVoice.speechVoices()
         .filter { $0.language.hasPrefix("en") }
@@ -338,7 +354,8 @@ case "install":
     } else if let dir = Bundler.projectDir(fromExecutable: binary)
         ?? (FileManager.default.fileExists(atPath: "Package.swift")
                 ? FileManager.default.currentDirectoryPath : nil),
-       let bundleExec = Bundler.assemble(binaryPath: binary, projectDir: dir) {
+       let bundleExec = Bundler.assemble(binaryPath: binary, projectDir: dir,
+                                         onSigningProblem: { signingWarning($0) }) {
         installTarget = bundleExec
     } else {
         fputs("WARNING: no project directory — installing the bare binary "
@@ -394,8 +411,23 @@ case "bundle":
         fputs("Error: cannot resolve the binary or project directory.\n", stderr)
         exit(1)
     }
+    // `--output <dir>` assembles somewhere other than the repo root. The
+    // release pipeline MUST use it: it re-signs and staples the bundle it
+    // is handed, and at the default path that is the live bundle launchd
+    // runs — mutating it in place is what has been costing the maintainer
+    // the Accessibility grant on every `dd` release.
+    var bundleOutput: String? = nil
+    if let flag = CommandLine.arguments.firstIndex(of: "--output") {
+        guard flag + 1 < CommandLine.arguments.count else {
+            fputs("Error: --output needs a directory.\n", stderr)
+            exit(1)
+        }
+        bundleOutput = CommandLine.arguments[flag + 1]
+    }
     guard let assembled = Bundler.assemble(binaryPath: bundleBinary,
-                                           projectDir: bundleProjectDir) else {
+                                           projectDir: bundleProjectDir,
+                                           outputDir: bundleOutput,
+                                           onSigningProblem: { signingWarning($0) }) else {
         exit(1)
     }
     print(assembled)
@@ -437,7 +469,8 @@ case "update":
     fputs("[update] Build clean\n", stderr)
     let updateCwd = FileManager.default.currentDirectoryPath
     guard let updateBundleExec = Bundler.assemble(
-        binaryPath: updateCwd + "/.build/debug/marduk", projectDir: updateCwd) else {
+        binaryPath: updateCwd + "/.build/debug/marduk", projectDir: updateCwd,
+        onSigningProblem: { signingWarning($0) }) else {
         fputs("[update] Bundle assembly failed\n", stderr)
         exit(1)
     }

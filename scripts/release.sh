@@ -62,8 +62,21 @@ echo "==> Building (release configuration)"
 swift build -c release
 
 echo "==> Assembling bundle"
-.build/release/marduk bundle > /dev/null
-APP="Marduk.app"
+# ASSEMBLE OUTSIDE THE REPO. Everything below re-signs and staples this
+# bundle, and the default path (<repo>/Marduk.app) is the bundle launchd is
+# executing from on a source install. `codesign --force` rewrites the
+# executable in place, which invalidates a running process's code pages and
+# brings the daemon back as code macOS will not vouch for: Accessibility
+# denied, event tap dead, and the 10s tap-retry cannot heal it because the
+# process's identity was settled at exec. The only cure was removing the
+# Accessibility entry and re-adding it — which works because revoking a
+# grant KILLS the process, forcing a genuinely fresh start (toggling the
+# entry off and on does not, which is exactly why it never helped).
+# Field-confirmed 2026-07-25: every `dd` release cost the grant.
+BUILD_DIR=$(mktemp -d -t marduk-release)
+trap 'rm -rf "$BUILD_DIR"' EXIT
+.build/release/marduk bundle --output "$BUILD_DIR" > /dev/null
+APP="$BUILD_DIR/Marduk.app"
 [[ -d "$APP" ]] || { echo "error: bundle assembly failed" >&2; exit 1; }
 
 echo "==> Distribution signing (hardened runtime + timestamp)"

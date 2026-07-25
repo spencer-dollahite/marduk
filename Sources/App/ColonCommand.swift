@@ -8,7 +8,7 @@ enum ColonCommand: Equatable {
     case tip
     case config(key: String, value: String)
     case voices
-    case invertApps
+    case invertAppsList
     case pronunciation
     case typing
     case quit
@@ -24,7 +24,7 @@ enum ColonCommand: Equatable {
 
     // No name may be a prefix of another — auto-accept relies on it
     static let commandNames = ["help", "commands", "tutorial", "tip", "config",
-                               "voices", "invertapps", "pronunciation", "typing",
+                               "voices", "invertappslist", "pronunciation", "typing",
                                "quit", "restart", "update", "uninstall", "log",
                                "feedback", "bug", "security"]
 
@@ -37,19 +37,61 @@ enum ColonCommand: Equatable {
     /// TABLE, not a code path: `voices` used to own eight hardcoded
     /// `hasPrefix("voices")` checks across three files, so a second picker
     /// would have meant a second copy of all of them.
-    static let pickerCommands: Set<String> = ["voices", "invertapps"]
+    static let pickerCommands: Set<String> = ["voices", "invertappslist"]
+
+    /// Pickers that ALSO answer under `:config` (the user asked for the
+    /// whole inversion family to be `:config`-namespaced). These are NOT
+    /// settings-table keys — a picker manages a list, not a key=value, and
+    /// `invertapps` (the toggle) is a prefix of `invertappslist`, which the
+    /// settings-prefix rule forbids. Instead `strippedPickerBuffer` rewrites
+    /// `:config invertappslist …` down to the bare `:invertappslist …` form
+    /// so ONE set of picker plumbing serves both. Bare still works too.
+    static let configPickers: Set<String> = ["invertappslist"]
 
     /// Commands that EXPAND to "<name> " rather than executing — every
     /// picker, plus `config` (which wants a key next).
     static let expandingCommands: Set<String> = pickerCommands.union(["config"])
+
+    /// A picker buffer normalized to its BARE form (`"invertappslist …"`),
+    /// recognizing both the bare spelling and the `:config`-namespaced one
+    /// (`"config invertappslist …"` / `"set inv…"`, `config` itself
+    /// prefix-expanded). Returns nil when the buffer targets no picker.
+    ///
+    /// Disambiguation at the `invertapps` (toggle) vs `invertappslist`
+    /// (picker) boundary uses the same exact/unique-prefix rule as
+    /// everywhere else, and a real settings key ALWAYS wins: `config
+    /// invertapps` (and shorter) is the toggle; `config invertappsl…` is the
+    /// picker. So the toggle is never shadowed by the picker.
+    static func strippedPickerBuffer(_ buffer: String) -> String? {
+        let lowered = buffer.lowercased()
+        let tokens = lowered.split(separator: " ").map(String.init)
+        guard let first = tokens.first else { return nil }
+        // Already bare — hand it back unchanged (trailing space and filter
+        // preserved), so callers can treat bare and namespaced alike.
+        if pickerCommands.contains(first) { return lowered }
+        // `:config <picker> …` / `:set <picker> …`, config prefix-expanded.
+        let head = first == "set" ? "config" : expand(first, in: commandNames + ["set"])
+        guard head == "config", tokens.count >= 2 else { return nil }
+        let keyTok = tokens[1]
+        // A settings key — exact, a unique prefix, OR still being typed
+        // toward (an ambiguous prefix like "i", which could become
+        // `identifiers` or `invertapps`) — is the TOGGLE path, never the
+        // picker. Only a keyTok that NO setting could complete falls through
+        // (`invertappsl…`, past where `invertapps` diverges), so the toggle
+        // is never hijacked mid-type.
+        if settings.contains(where: { $0.key.hasPrefix(keyTok) }) { return nil }
+        guard let picker = expand(keyTok, in: Array(configPickers)) else { return nil }
+        let remainder = tokens.dropFirst(2).joined(separator: " ")
+        let trailing = lowered.hasSuffix(" ") ? " " : ""
+        return remainder.isEmpty ? "\(picker) " : "\(picker) \(remainder)\(trailing)"
+    }
 
     /// Does this buffer keep COMMAND mode open on Return? Pickers accept a
     /// row rather than submitting, and "/" is the fuzzy search. The event
     /// tap asks this instead of testing command names itself.
     static func staysOpenOnReturn(_ buffer: String) -> Bool {
         if buffer.hasPrefix("/") { return true }
-        let first = buffer.lowercased().split(separator: " ").first.map(String.init)
-        return first.map(pickerCommands.contains) ?? false
+        return strippedPickerBuffer(buffer) != nil
     }
 
     static func parse(_ raw: String) -> ColonCommand {
@@ -84,8 +126,8 @@ enum ColonCommand: Equatable {
             // palette selection before ever parsing, so bare .voices is
             // only reached as a fallback.
             return .voices
-        case "invertapps":
-            return .invertApps
+        case "invertappslist":
+            return .invertAppsList
         case "pronunciation":
             return .pronunciation
         case "typing":
@@ -160,6 +202,14 @@ enum ColonCommand: Equatable {
         // A trailing space means "next token not started" — nothing to resolve
         guard !lowered.isEmpty, !lowered.hasSuffix(" ") else { return .none }
         let tokens = lowered.split(separator: " ").map(String.init)
+
+        // A `:config`-namespaced picker collapses straight into the bare
+        // picker stage (`config invertappslist` → `invertappslist `), so the
+        // rest of the picker plumbing sees only the bare form. `nil` /
+        // identity means "not a namespaced picker" — fall through.
+        if let bare = strippedPickerBuffer(lowered), bare != lowered {
+            return .expand(bare)
+        }
 
         switch tokens.count {
         case 1:
@@ -238,9 +288,20 @@ enum ColonCommand: Equatable {
         ("dialogfocus", .choice(["ask", "always", "off"])),
         ("hints", .toggle),   // progressive onboarding hints + questions
         ("follow", .toggle),
-        ("invert", .toggle),
-        ("pdfdark", .choice(["auto", "on", "off"])),
-        ("autoinvert", .toggle),
+        // Two INDEPENDENT inversion switches, deliberately decoupled:
+        // `invertapps` (on/off) drives ONLY the coded/listed apps (Pages,
+        // Packet Tracer, plus the `:config invertappslist` picker's list)
+        // via the Invert Colors hotkey; `smartinvert` drives ONLY
+        // brightness sampling of UNLISTED apps. Neither implies the other.
+        // The LIST is edited through the `invertappslist` picker (a command,
+        // reachable as `:config invertappslist`), NOT a settings key —
+        // `invertapps` is a prefix of `invertappslist`, which the
+        // settings-prefix rule forbids for keys. Preview's dark PDFs stay
+        // their own `preferdarkinpreview` switch — a menu-item press, not
+        // display inversion.
+        ("invertapps", .toggle),
+        ("preferdarkinpreview", .choice(["auto", "on", "off"])),
+        ("smartinvert", .toggle),
         ("dock", .toggle),
     ]
 
@@ -255,8 +316,9 @@ enum ColonCommand: Equatable {
         "togglesound": "toggle sound",
         "readmotions": "read motions",
         "dialogfocus": "dialog focus",
-        "pdfdark": "p d f dark",
-        "autoinvert": "auto invert",
+        "preferdarkinpreview": "prefer dark in preview",
+        "smartinvert": "smart invert",
+        "invertapps": "invert apps",
     ]
 
     /// Every setting, spoken — GENERATED from the table, never written out
@@ -290,7 +352,7 @@ enum CommandCompleter {
         "tip": "a random feature tip",
         "config": "change a setting",
         "voices": "choose the reading voice",
-        "invertapps": "choose which apps invert the display",
+        "invertappslist": "choose which apps invert the display",
         "pronunciation": "open the system pronunciation editor",
         "typing": "open the system typing feedback settings",
         "quit": "stop Marduk",
@@ -381,7 +443,15 @@ enum CommandCompleter {
     static func candidates(for buffer: String, values: [String: String],
                            voices: [(name: String, identifier: String)] = [],
                            apps: [(name: String, identifier: String)] = []) -> [Candidate] {
-        let lowered = buffer.lowercased()
+        var lowered = buffer.lowercased()
+
+        // A `:config`-namespaced picker reuses the bare-picker completion
+        // path — rewrite it down to the bare form first (identity for a
+        // buffer that is already bare; only `config invertappslist …`
+        // changes). Never touches "/" search or plain settings buffers.
+        if !lowered.hasPrefix("/"), let bare = ColonCommand.strippedPickerBuffer(lowered) {
+            lowered = bare
+        }
 
         // "/query" — fuzzy search across the whole catalog (commands +
         // every config setting), ranked by match tightness

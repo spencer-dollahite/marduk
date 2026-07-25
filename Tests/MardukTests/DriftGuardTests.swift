@@ -13,8 +13,8 @@ import XCTest
 final class DriftGuardTests: XCTestCase {
 
     /// Normalize for spoken-vs-written comparison: the spoken reference
-    /// says "invert apps" and "p d f dark" where the tables say
-    /// "invertapps" and "pdfdark".
+    /// says "invert apps" and "prefer dark in preview" where the tables say
+    /// "invertapps" and "preferdarkinpreview".
     private func lettersOnly(_ text: String) -> String {
         text.lowercased().filter { $0.isLetter || $0.isNumber }
     }

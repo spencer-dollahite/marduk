@@ -2131,8 +2131,9 @@ final class KeyboardMonitor {
     /// The LADDER, in order — each rung is platform-generic, no app is
     /// named anywhere in it:
     ///   1. the focused element's own AX text value
-    ///   2. an AXTextArea below the focused element (Notes focuses a
-    ///      wrapper view)
+    ///   2. the LONGEST AXTextArea below the focused element (Notes
+    ///      focuses a wrapper view; length is what tells the document
+    ///      body from a title box sharing that wrapper)
     ///   3. the window's PDF file, via PDFKit (Preview)
     ///   4. an AXTextArea below the WINDOW — reached when focus is
     ///      nowhere useful or nowhere at all
@@ -2145,8 +2146,8 @@ final class KeyboardMonitor {
     /// first just to give the app a focused element to answer with
     /// (field 2026-07-23, Pages and Preview). A missing focus is not a
     /// missing document; it only means nobody has claimed the keyboard.
-    /// Main-queue AX for the focus rungs (0.5s timeouts), off-main for
-    /// the window walk.
+    /// Main-queue AX for the single-attribute reads (0.5s timeouts),
+    /// off-main for every WALK — the focused-container descent included.
     private func readDocumentFromCaret() {
         DispatchQueue.main.async { [self] in
             guard let app = NSWorkspace.shared.frontmostApplication else { return }
@@ -2167,38 +2168,69 @@ final class KeyboardMonitor {
             }
             if focusErr == .success, let raw = focusedRef,
                CFGetTypeID(raw) == AXUIElementGetTypeID() {
-                var element = raw as! AXUIElement
+                let element = raw as! AXUIElement
                 AXUIElementSetMessagingTimeout(element, 0.5)
-                var text = Self.textValue(of: element)
-                if text == nil,
-                   let textArea = Self.findDescendant(
-                       of: element, role: "AXTextArea", depthBudget: 8) {
-                    element = textArea
-                    AXUIElementSetMessagingTimeout(element, 0.5)
-                    text = Self.textValue(of: element)
-                    if text != nil {
-                        fputs("[keyboard] R: descended to text area\n", stderr)
-                    }
-                }
-                if let text {
+                // Rung 1 is one attribute read — cheap enough for main.
+                if let text = Self.textValue(of: element) {
                     speakDocumentText(text, from: element)
                     return
                 }
-            } else {
-                fputs("[keyboard] R: no focused element "
-                    + "(\(focusErr.rawValue)) — trying the window\n", stderr)
+                // Rung 2 is a WALK, so it goes off-main like every other
+                // wide AX walk here, and the ladder resumes on its way back.
+                DispatchQueue.global(qos: .utility).async { [self] in
+                    let area = Self.longestTextArea(below: element, depth: 8)
+                    DispatchQueue.main.async { [self] in
+                        guard let area else {
+                            continueDocumentLadder(app: app, fallback: nil)
+                            return
+                        }
+                        AXUIElementSetMessagingTimeout(area.element, 0.5)
+                        fputs("[keyboard] R: descended to text area "
+                            + "(\(area.text.count) chars)\n", stderr)
+                        // A descent is a GUESS — nobody focused that text
+                        // area, we picked it — so a thin one doesn't get to
+                        // end the ladder. Pages, opened and not clicked
+                        // into, focuses a wrapper whose text areas include a
+                        // 14-character title box: R read those 14 characters
+                        // and stopped while the body sat one branch over
+                        // (field 2026-07-25). Set it aside, keep descending;
+                        // if nothing better turns up it is still read,
+                        // because a genuinely tiny document is still a
+                        // document. The FOCUSED element's own value (rung 1)
+                        // is never second-guessed this way — that one is a
+                        // fact the user established, not our guess.
+                        guard area.text.count < Self.documentTextFloor else {
+                            speakDocumentText(area.text, from: area.element)
+                            return
+                        }
+                        fputs("[keyboard] R: descended text is thin — "
+                            + "trying the window\n", stderr)
+                        continueDocumentLadder(app: app, fallback: area)
+                    }
+                }
+                return
             }
 
-            // No AX text from focus — PDF viewers (Preview) expose almost
-            // none, so read the FILE: the window's document path + PDFKit
-            // gives per-page text and pages become first-class reading
-            // targets. Then the window walk (a document canvas whose text
-            // area nobody has focused), then the web area — browsers
-            // expose no AX text VALUE either, but their trees hold the
-            // visible text (Reader views become clean article reads).
-            if readPDFDocument(app: app) { return }
-            readWindowDocument(app: app)
+            fputs("[keyboard] R: no focused element "
+                + "(\(focusErr.rawValue)) — trying the window\n", stderr)
+            continueDocumentLadder(app: app, fallback: nil)
         }
+    }
+
+    /// The rungs below focus. PDF viewers (Preview) expose almost no AX
+    /// text, so read the FILE: the window's document path + PDFKit gives
+    /// per-page text and pages become first-class reading targets. Then
+    /// the window walk (a document canvas whose text area nobody has
+    /// focused), then the web area — browsers expose no AX text VALUE
+    /// either, but their trees hold the visible text (Reader views become
+    /// clean article reads). `fallback` is a thin focused harvest that
+    /// outranks nothing but the buzz. Main thread.
+    private func continueDocumentLadder(
+        app: NSRunningApplication,
+        fallback: (element: AXUIElement, text: String)?
+    ) {
+        if readPDFDocument(app: app) { return }
+        readWindowDocument(app: app, fallback: fallback)
     }
 
     /// Speak an element's text as a document read: pick the start offset,
@@ -2521,22 +2553,30 @@ final class KeyboardMonitor {
     /// no document text, so browsers and the honest buzz are unaffected.
     /// The walk is OFF-MAIN (same reason as the web walk: a wide AX walk
     /// on main would stall tap dispatch); the read hops back.
-    private func readWindowDocument(app: NSRunningApplication) {
+    private func readWindowDocument(
+        app: NSRunningApplication,
+        fallback: (element: AXUIElement, text: String)? = nil
+    ) {
         let pid = app.processIdentifier
         DispatchQueue.global(qos: .utility).async { [self] in
             guard let found = Self.windowDocumentText(pid: pid) else {
                 DispatchQueue.main.async { [self] in
                     guard let app = NSRunningApplication(processIdentifier: pid) else {
-                        Earcon.error()
-                        onAnnounce?("No readable document here.")
+                        failReadDocument(fallback)
                         return
                     }
-                    readWebPage(app: app)
+                    readWebPage(app: app, fallback: fallback)
                 }
                 return
             }
             DispatchQueue.main.async { [self] in
-                if let element = found.element {
+                // The window walk answered, but the same length rule that
+                // picks the document inside it applies BETWEEN rungs: a
+                // window text area shorter than the focused one we set
+                // aside is the sidebar, not the document.
+                if let fallback, fallback.text.count > found.text.count {
+                    failReadDocument(fallback)
+                } else if let element = found.element {
                     AXUIElementSetMessagingTimeout(element, 0.5)
                     speakDocumentText(found.text, from: element)
                 } else {
@@ -2601,12 +2641,44 @@ final class KeyboardMonitor {
                     nodeBudget: &canvasBudget, depth: 40)
         let joined = parts.map(\.text).joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard joined.count > 200 else {
+        guard joined.count > documentTextFloor else {
             fputs("[keyboard] R: window canvas harvest thin "
                 + "(\(joined.count) chars)\n", stderr)
             return nil
         }
         return (nil, joined)
+    }
+
+    /// How much text a harvest needs before it counts as "the document".
+    /// Below this a harvest is chrome, a label, or a title box — used by
+    /// the web walk, the canvas walk, and the focused-container descent.
+    static let documentTextFloor = 200
+
+    /// The LONGEST AXTextArea at or below `element` — the same rule the
+    /// window walk uses one level up, applied to the focused container.
+    /// Budgeted like every other walk here (nodes, depth, 0.25s element
+    /// timeouts) and it stops at each text area. Off-main only.
+    private static func longestTextArea(below element: AXUIElement, depth: Int)
+        -> (element: AXUIElement, text: String)? {
+        var best: (element: AXUIElement, text: String)?
+        var nodeBudget = 300
+        collectTextAreas(from: element, best: &best,
+                         nodeBudget: &nodeBudget, depth: depth)
+        return best
+    }
+
+    /// The ladder ran out. Speak the thin focused harvest if one was set
+    /// aside — a genuinely tiny document is still a document — else the
+    /// honest buzz.
+    private func failReadDocument(_ fallback: (element: AXUIElement, text: String)?) {
+        guard let fallback else {
+            Earcon.error()
+            onAnnounce?("No readable document here.")
+            return
+        }
+        fputs("[keyboard] R: nothing better than the focused text "
+            + "(\(fallback.text.count) chars)\n", stderr)
+        speakDocumentText(fallback.text, from: fallback.element)
     }
 
     /// Longest AXTextArea value below `element`. Unlike findDescendant
@@ -2667,14 +2739,17 @@ final class KeyboardMonitor {
         "com.apple.Safari": "tell application \"Safari\" to get text of front document",
     ]
 
-    private func readWebPage(app: NSRunningApplication) {
+    private func readWebPage(
+        app: NSRunningApplication,
+        fallback: (element: AXUIElement, text: String)? = nil
+    ) {
         let pid = app.processIdentifier
         let fallbackScript = app.bundleIdentifier
             .flatMap { Self.scriptedTextFallbacks[$0] }
         fputs("[keyboard] R: web-area extraction\n", stderr)
         DispatchQueue.global(qos: .utility).async { [self] in
             if let harvest = Self.webAreaVisibleText(pid: pid),
-               harvest.text.count > 200 {
+               harvest.text.count > Self.documentTextFloor {
                 fputs("[keyboard] R: web-area walk (\(harvest.text.count) chars, "
                     + "\(harvest.anchors.count) anchors, "
                     + "\(harvest.headings.count) headings)\n", stderr)
@@ -2690,8 +2765,7 @@ final class KeyboardMonitor {
             guard let script = fallbackScript else {
                 fputs("[keyboard] R: web-area walk thin, no fallback for this app\n", stderr)
                 DispatchQueue.main.async { [self] in
-                    Earcon.error()
-                    onAnnounce?("No readable document here.")
+                    failReadDocument(fallback)
                 }
                 return
             }
@@ -2740,8 +2814,7 @@ final class KeyboardMonitor {
             }
             DispatchQueue.main.async { [self] in
                 guard let text, !text.isEmpty else {
-                    Earcon.error()
-                    onAnnounce?("No readable document here.")
+                    failReadDocument(fallback)
                     return
                 }
                 fputs("[keyboard] R: Safari page (\(text.count) chars)\n", stderr)

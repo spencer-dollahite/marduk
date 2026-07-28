@@ -180,6 +180,75 @@ final class InversionPolicyTests: XCTestCase {
         XCTAssertTrue(InversionPolicy.isActive(invertEnabled: true, autoInvert: true))
     }
 
+    // MARK: - Manual-revert respect
+
+    private let settle: TimeInterval = 3.0
+
+    /// 2026-07-28: the user manually reverted an inverted Pages (a dialog
+    /// they needed to read) and the heartbeat re-fired the toggle over
+    /// them every beat. The exact drift signature — believed inverted,
+    /// owned, actually not — must be read as the user's hand. Enumerated.
+    func testManualRevertDetectedOnlyOnOwnedDriftToLight() {
+        for believed in bools {
+            for actual in bools {
+                for owned in bools {
+                    let detected = InversionPolicy.manualRevertDetected(
+                        believed: believed, actual: actual, owned: owned,
+                        sinceLastToggle: 99, settle: settle)
+                    XCTAssertEqual(detected, believed && owned && !actual,
+                                   "believed=\(believed) actual=\(actual) "
+                                   + "owned=\(owned)")
+                }
+            }
+        }
+    }
+
+    /// Right after OUR toggle, belief says inverted while the keystroke
+    /// may not have landed — that's a failed toggle, not the user. The
+    /// settle window (past verifyInversion's 2s resync) keeps a broken
+    /// shortcut from silently disabling inversion via a false override.
+    func testFailedToggleInsideSettleIsNotAManualRevert() {
+        XCTAssertFalse(InversionPolicy.manualRevertDetected(
+            believed: true, actual: false, owned: true,
+            sinceLastToggle: settle - 0.01, settle: settle))
+        XCTAssertTrue(InversionPolicy.manualRevertDetected(
+            believed: true, actual: false, owned: true,
+            sinceLastToggle: settle, settle: settle))
+    }
+
+    /// After verifyInversion reclassifies a toggle that never landed
+    /// (belief and ownership both dropped), the same display state must
+    /// not read as a manual revert — it's a genuine invert-me situation.
+    func testVerifyResyncedFailureIsNotAManualRevert() {
+        XCTAssertFalse(InversionPolicy.manualRevertDetected(
+            believed: false, actual: false, owned: false,
+            sinceLastToggle: 99, settle: settle))
+    }
+
+    /// The override binds to ONE app: everything else inverts as normal,
+    /// the holder is suppressed while its absence stays short, and a
+    /// return after a real absence is a fresh visit that inverts again.
+    func testOverrideStatePerApp() {
+        let away: TimeInterval = 30
+        XCTAssertEqual(InversionPolicy.overrideState(
+            front: "com.apple.iWork.Pages", holder: nil,
+            sinceSeen: 0, away: away), .none)
+        XCTAssertEqual(InversionPolicy.overrideState(
+            front: "com.netacad.PacketTracer", holder: "com.apple.iWork.Pages",
+            sinceSeen: 0, away: away), .none)
+        XCTAssertEqual(InversionPolicy.overrideState(
+            front: "com.apple.iWork.Pages", holder: "com.apple.iWork.Pages",
+            sinceSeen: 5, away: away), .suppressed)
+        // The clock refreshes every beat the holder is front, so exactly
+        // `away` means "just left and came straight back" — still theirs
+        XCTAssertEqual(InversionPolicy.overrideState(
+            front: "com.apple.iWork.Pages", holder: "com.apple.iWork.Pages",
+            sinceSeen: away, away: away), .suppressed)
+        XCTAssertEqual(InversionPolicy.overrideState(
+            front: "com.apple.iWork.Pages", holder: "com.apple.iWork.Pages",
+            sinceSeen: away + 0.01, away: away), .expired)
+    }
+
     /// The structural guarantee: for every config permutation, the ability
     /// to invert and the ability to revert are the SAME answer. If these
     /// could ever differ, an inversion could be created that nothing was

@@ -64,4 +64,49 @@ enum InversionPolicy {
     static func isActive(invertEnabled: Bool, autoInvert: Bool) -> Bool {
         invertEnabled || autoInvert
     }
+
+    // MARK: - Manual-revert respect
+
+    /// Did the USER revert the display out from under us?
+    ///
+    /// We believed the display was inverted, we OWN that inversion, and
+    /// reality says it is not — the only hand that produces that state is
+    /// the user's own Invert Colors key (field 2026-07-28: a dialog over
+    /// an inverted Pages made the user revert manually, and the heartbeat
+    /// re-fired the toggle over them every beat — a fight).
+    ///
+    /// `settle` keeps a FAILED toggle of our own from masquerading as a
+    /// manual revert: right after we fire, belief says inverted while the
+    /// keystroke may not have landed yet. `verifyInversion` resyncs that
+    /// case at 2s (belief and ownership both drop), so any detection past
+    /// 3s is genuinely the user's doing.
+    static func manualRevertDetected(believed: Bool, actual: Bool, owned: Bool,
+                                     sinceLastToggle: TimeInterval,
+                                     settle: TimeInterval) -> Bool {
+        believed && owned && !actual && sinceLastToggle >= settle
+    }
+
+    /// While a manual revert is being respected, what does the override
+    /// mean for the app now in front?
+    enum OverrideState: Equatable {
+        /// Not the overridden app — invert as normal.
+        case none
+        /// The overridden app, and it hasn't been away long enough — the
+        /// user's choice still stands.
+        case suppressed
+        /// The overridden app returns after a real absence — a fresh
+        /// visit, invert again.
+        case expired
+    }
+
+    /// `sinceSeen` is time since the overridden app was last seen front
+    /// (refreshed every heartbeat while it stays there), so the absence
+    /// clock only runs while the user is genuinely elsewhere — a hop to a
+    /// dialog and back never re-inverts.
+    static func overrideState(front: String, holder: String?,
+                              sinceSeen: TimeInterval,
+                              away: TimeInterval) -> OverrideState {
+        guard front == holder else { return .none }
+        return sinceSeen > away ? .expired : .suppressed
+    }
 }

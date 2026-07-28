@@ -14,6 +14,10 @@ import ScreenCaptureKit
 ///    revert — an entire evening of field logs proved every event-shaped
 ///    signal (activation, dwell, settle, window stack, leases) eventually
 ///    lies, in both directions, for both Qt and native apps.
+///    MANUAL-REVERT RESPECT: the user un-inverting with their own key
+///    (dialogs are the classic reason) is adopted, never fought — that app
+///    stays un-inverted until it's been out of the foreground 30
+///    continuous seconds or relaunches, then inverts again fresh.
 /// 2. PREVIEW DARK PDFs: Preview's per-window dark-appearance menu item
 ///    ("Use Dark Appearance for PDF" on macOS 26) — pressed directly via
 ///    the AX menu bar (no shortcut needed) whenever Preview comes front or
@@ -189,6 +193,9 @@ final class DisplayInverter: @unchecked Sendable {
         // user's (or a stranded pref), never ours to undo.
         isInverted = Self.displayIsInverted()
         weOwnInversion = false
+        // Ctrl+Option+M off/on reuses this instance — re-engaging is a
+        // fresh visit everywhere, so no stale override survives it
+        manualOverrideHolder = nil
         fputs("[display] seeded: display inverted = \(isInverted)\n", stderr)
 
         observer = NSWorkspace.shared.notificationCenter.addObserver(
@@ -206,7 +213,8 @@ final class DisplayInverter: @unchecked Sendable {
             // listed app falls through and gets sampled by smartinvert on
             // the dwell like anything else. Preview dark-PDF likewise. Only
             // auto-measurement rides the dwell.
-            if self.isListed(bundleID) && self.invertEnabled {
+            if self.isListed(bundleID) && self.invertEnabled
+                && !self.manualOverrideActive(for: bundleID) {
                 self.lastHolderSeen = Date()
                 self.fastConfirmGeneration += 1  // holder is back — abort any burst
                 // Post-revert guard: our own revert kicks Qt rebuilds whose
@@ -268,6 +276,13 @@ final class DisplayInverter: @unchecked Sendable {
             if self.isInverted, bundleID == self.invertHolder {
                 self.fastConfirmGeneration += 1
                 self.ensureInverted(false, holder: nil, reason: "\(bundleID) quit")
+            }
+            if bundleID == self.manualOverrideHolder {
+                // Death ends the visit the user's revert belonged to — a
+                // relaunch gets first contact again
+                self.manualOverrideHolder = nil
+                fputs("[display] \(bundleID) quit — manual override cleared\n",
+                      stderr)
             }
         }
 
@@ -443,7 +458,8 @@ final class DisplayInverter: @unchecked Sendable {
             // listed app falls through and gets sampled by smartinvert on
             // the dwell like anything else. Preview dark-PDF likewise. Only
             // auto-measurement rides the dwell.
-            if self.isListed(bundleID) && self.invertEnabled {
+            if self.isListed(bundleID) && self.invertEnabled
+                && !self.manualOverrideActive(for: bundleID) {
                 self.lastHolderSeen = Date()
                 self.fastConfirmGeneration += 1  // holder is back — abort any burst
                 // Post-revert guard: our own revert kicks Qt rebuilds whose
@@ -519,10 +535,15 @@ final class DisplayInverter: @unchecked Sendable {
             // to sampling. Events NEVER revert — that's the heartbeat's
             // monopoly (poll()).
             if isListed(bundleID) && invertEnabled {
-                lastHolderSeen = Date()
-                ensureInverted(true, holder: bundleID, reason: bundleID)
+                if !manualOverrideActive(for: bundleID) {
+                    lastHolderSeen = Date()
+                    ensureInverted(true, holder: bundleID, reason: bundleID)
+                }
+                // Overridden: the user chose this app's appearance — it
+                // inverts by neither mechanism, so no sampling fallthrough
             } else if autoInvert, bundleID != Self.previewBundle || !previewDarkActive,
-                      bundleID != Bundle.main.bundleIdentifier {
+                      bundleID != Bundle.main.bundleIdentifier,
+                      !manualOverrideActive(for: bundleID) {
                 evaluateBrightness(bundleID: bundleID, pid: pid)
             }
         }
@@ -558,6 +579,49 @@ final class DisplayInverter: @unchecked Sendable {
     private var fastConfirmGeneration = 0
     private var lastRevertAt = Date.distantPast
 
+    // MANUAL-REVERT RESPECT: the display drifting light while we own an
+    // inversion means the user pressed their OWN Invert Colors key — a
+    // dialog they need to read, a preference, their call. Before this,
+    // the heartbeat re-fired the toggle over them every beat (field
+    // 2026-07-28: "Marduk fights me"). Detection lives in ensureInverted
+    // (the funnel every invert want passes through); while the override
+    // holds, that app inverts by NEITHER mechanism — coded list or
+    // brightness sample. Re-arm: the app has been out of the foreground
+    // manualOverrideAway continuous seconds and returns (a fresh visit),
+    // or it quits (death clears the override — a relaunch gets first
+    // contact again, the Preview-treated-docs precedent).
+    private var manualOverrideHolder: String?
+    private var manualOverrideLastSeen = Date.distantPast
+    private static let manualOverrideAway: TimeInterval = 30
+    /// Detection waits this long past our own toggle so verifyInversion's
+    /// 2s resync has already reclassified a keystroke that never landed —
+    /// a broken shortcut must read as "toggle failed", never "user
+    /// reverted".
+    private static let manualRevertSettle: TimeInterval = 3.0
+
+    /// Is this app's inversion suppressed by a manual revert? Side
+    /// effects on purpose: seeing the holder front refreshes its absence
+    /// clock, and a return after a real absence clears the override so
+    /// the caller inverts again.
+    private func manualOverrideActive(for bundleID: String) -> Bool {
+        switch InversionPolicy.overrideState(
+            front: bundleID, holder: manualOverrideHolder,
+            sinceSeen: Date().timeIntervalSince(manualOverrideLastSeen),
+            away: Self.manualOverrideAway) {
+        case .none:
+            return false
+        case .expired:
+            fputs("[display] \(bundleID) is back after "
+                + "\(Int(Self.manualOverrideAway))s+ away — manual override "
+                + "expired, inverting again\n", stderr)
+            manualOverrideHolder = nil
+            return false
+        case .suppressed:
+            manualOverrideLastSeen = Date()
+            return true
+        }
+    }
+
     private func beginFastRevertConfirm() {
         fastConfirmGeneration += 1
         let generation = fastConfirmGeneration
@@ -591,7 +655,11 @@ final class DisplayInverter: @unchecked Sendable {
         // the holder — so narrowing this branch can never strand it, and
         // reverting stays governed by inversionActive (the safe direction:
         // invert narrow, revert broad).
-        if isListed(front) && invertEnabled {
+        // Checked for EVERY front app, not just listed ones: a sampled
+        // (unlisted) override holder renews its absence clock here each
+        // beat too — sitting in an app must never count as being away.
+        let overridden = manualOverrideActive(for: front)
+        if isListed(front) && invertEnabled && !overridden {
             lastHolderSeen = Date()
             ensureInverted(true, holder: front, reason: front)
         } else if isInverted {
@@ -615,7 +683,6 @@ final class DisplayInverter: @unchecked Sendable {
     private static let toggleLockout: TimeInterval = 1.5
 
     private func ensureInverted(_ wanted: Bool, holder: String?, reason: String) {
-        if wanted { invertHolder = holder }
         // THE TOGGLE IS BLIND: it flips whatever the display is ACTUALLY
         // doing, not what we believe — so reality is read up front and the
         // whole judgment lives in the pure InversionPolicy, where every
@@ -623,6 +690,25 @@ final class DisplayInverter: @unchecked Sendable {
         // state even when we turn out to be inactive is a trivial
         // NSWorkspace property read.
         let actual = Self.displayIsInverted()
+        // An owned inversion that reality says is GONE was reverted by the
+        // user's own key — adopt their choice and stand down for this app
+        // instead of re-firing the toggle over them.
+        if wanted, let holder,
+           InversionPolicy.manualRevertDetected(
+               believed: isInverted, actual: actual, owned: weOwnInversion,
+               sinceLastToggle: Date().timeIntervalSince(lastToggleAt),
+               settle: Self.manualRevertSettle) {
+            isInverted = false
+            weOwnInversion = false
+            invertHolder = nil
+            manualOverrideHolder = holder
+            manualOverrideLastSeen = Date()
+            fputs("[display] manual revert detected (\(reason)) — respecting "
+                + "it; \(holder) re-inverts after \(Int(Self.manualOverrideAway))s "
+                + "away or a relaunch\n", stderr)
+            return
+        }
+        if wanted { invertHolder = holder }
         let decision = InversionPolicy.resolve(
             wanted: wanted, believed: isInverted, actual: actual,
             active: inversionActive,

@@ -2172,16 +2172,29 @@ final class KeyboardMonitor {
                 AXUIElementSetMessagingTimeout(element, 0.5)
                 // Rung 1 is one attribute read — cheap enough for main.
                 if let text = Self.textValue(of: element) {
-                    speakDocumentText(text, from: element)
+                    readFocusedText(text, from: element)
                     return
                 }
                 // Rung 2 is a WALK, so it goes off-main like every other
                 // wide AX walk here, and the ladder resumes on its way back.
                 DispatchQueue.global(qos: .utility).async { [self] in
                     let area = Self.longestTextArea(below: element, depth: 8)
+                    // Embedded tables are SEPARATE subtrees the text-area
+                    // harvest never visits — hunt them from the window
+                    // (they're often the text area's far siblings).
+                    let tables = Self.collectTableTexts(
+                        below: Self.tableRoot(for: element))
+                    if !tables.isEmpty {
+                        fputs("[keyboard] R: table harvest (\(tables.count), "
+                            + "\(TableText.totalLength(tables)) chars)\n", stderr)
+                    }
                     DispatchQueue.main.async { [self] in
                         guard let area else {
-                            continueDocumentLadder(app: app, fallback: nil)
+                            continueDocumentLadder(
+                                app: app,
+                                fallback: tables.isEmpty ? nil
+                                    : DocumentHarvest(element: nil, text: "",
+                                                      tables: tables))
                             return
                         }
                         AXUIElementSetMessagingTimeout(area.element, 0.5)
@@ -2198,14 +2211,22 @@ final class KeyboardMonitor {
                         // because a genuinely tiny document is still a
                         // document. The FOCUSED element's own value (rung 1)
                         // is never second-guessed this way — that one is a
-                        // fact the user established, not our guess.
-                        guard area.text.count < Self.documentTextFloor else {
-                            speakDocumentText(area.text, from: area.element)
+                        // fact the user established, not our guess. The
+                        // floor counts body + tables: a title box beside a
+                        // big table IS the document (field 2026-07-29).
+                        guard area.text.count + TableText.totalLength(tables)
+                                < Self.documentTextFloor else {
+                            speakDocumentText(area.text, from: area.element,
+                                              tables: tables)
                             return
                         }
                         fputs("[keyboard] R: descended text is thin — "
                             + "trying the window\n", stderr)
-                        continueDocumentLadder(app: app, fallback: area)
+                        continueDocumentLadder(
+                            app: app,
+                            fallback: DocumentHarvest(element: area.element,
+                                                      text: area.text,
+                                                      tables: tables))
                     }
                 }
                 return
@@ -2215,6 +2236,17 @@ final class KeyboardMonitor {
                 + "(\(focusErr.rawValue)) — trying the window\n", stderr)
             continueDocumentLadder(app: app, fallback: nil)
         }
+    }
+
+    /// A set-aside document harvest riding the ladder down: a thin
+    /// focused text and/or the tables found beside it — outranks nothing
+    /// but the buzz. `element` nil means no single text element owns the
+    /// harvest (table-only), so there is no caret or pointer to honor and
+    /// the read starts at the top.
+    struct DocumentHarvest {
+        let element: AXUIElement?
+        let text: String
+        let tables: [String]
     }
 
     /// The rungs below focus. PDF viewers (Preview) expose almost no AX
@@ -2227,16 +2259,62 @@ final class KeyboardMonitor {
     /// outranks nothing but the buzz. Main thread.
     private func continueDocumentLadder(
         app: NSRunningApplication,
-        fallback: (element: AXUIElement, text: String)?
+        fallback: DocumentHarvest?
     ) {
         if readPDFDocument(app: app) { return }
         readWindowDocument(app: app, fallback: fallback)
     }
 
+    /// Rung 1's speak, with the one exception that may delay it: a
+    /// U+FFFC attachment anchor in the focused text is the app saying
+    /// "an embedded object lives here" — the object's content (a table's
+    /// cells) is published as a SEPARATE AX subtree, never in this
+    /// string, so an anchor is worth a budgeted off-main table hunt
+    /// before speaking. No anchor = the instant path stays instant
+    /// (Terminal and every plain text app never pay for the walk).
+    private func readFocusedText(_ text: String, from element: AXUIElement) {
+        // Bounded scan: this runs on MAIN, and rung 1 is where Terminal
+        // once delivered a 9M-char scrollback (the preprocessor-cap
+        // incident). A document that big is paged anyway; an anchor past
+        // 100k scalars can wait for a closer read.
+        guard text.unicodeScalars.prefix(100_000)
+                .contains(where: { $0.value == 0xFFFC }) else {
+            speakDocumentText(text, from: element)
+            return
+        }
+        fputs("[keyboard] R: attachment anchor in focused text — "
+            + "hunting tables\n", stderr)
+        let root = Self.tableRoot(for: element)
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let tables = Self.collectTableTexts(below: root)
+            if !tables.isEmpty {
+                fputs("[keyboard] R: table harvest (\(tables.count), "
+                    + "\(TableText.totalLength(tables)) chars)\n", stderr)
+            }
+            DispatchQueue.main.async { [self] in
+                speakDocumentText(text, from: element, tables: tables)
+            }
+        }
+    }
+
+    /// Where to hunt a document's tables: the containing window when AX
+    /// will name it — tables are usually the text area's FAR siblings,
+    /// not its neighbors — else the element itself. One attribute read.
+    private static func tableRoot(for element: AXUIElement) -> AXUIElement {
+        var windowRef: CFTypeRef?
+        _ = AXUIElementCopyAttributeValue(
+            element, kAXWindowAttribute as CFString, &windowRef)
+        if let raw = windowRef, CFGetTypeID(raw) == AXUIElementGetTypeID() {
+            return (raw as! AXUIElement)
+        }
+        return element
+    }
+
     /// Speak an element's text as a document read: pick the start offset,
     /// hand the FULL text to the read pipeline, then harvest headings.
     /// Main-thread (AX + the read handoff).
-    private func speakDocumentText(_ text: String, from element: AXUIElement) {
+    private func speakDocumentText(_ text: String, from element: AXUIElement,
+                                   tables: [String] = []) {
         // Start position: the character under the mouse POINTER wins
         // when it's over this element's text — in Terminal the shell
         // caret is pinned to the prompt, so pointing is the only way
@@ -2296,20 +2374,27 @@ final class KeyboardMonitor {
         }
         start = ReadNavigator.wordStart(in: text, at: start)
 
-        let remainder = ns.substring(from: min(start, ns.length))
+        // Tables append AFTER the offset math: every AX-derived offset
+        // above (selection, pointer, caret, row estimate) indexes the
+        // element's own value, and appending is exactly what keeps that
+        // prefix byte-identical (see TableText).
+        let full = TableText.merged(document: text, tables: tables)
+        let fullNS = full as NSString
+        let remainder = fullNS.substring(from: min(start, fullNS.length))
         guard !remainder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             fputs("[keyboard] R: nothing after the caret\n", stderr)
             Earcon.error()
             onAnnounce?("Nothing after the cursor to read.")
             return
         }
-        fputs("[keyboard] R: document read (\(remainder.count) of \(ns.length) chars)\n", stderr)
+        fputs("[keyboard] R: document read (\(remainder.count) of \(fullNS.length) chars)\n", stderr)
         // Full text + start, never the sliced remainder: a huge document
         // gets chunked into pages around the exact start offset, a plain
         // one is retained whole with the voice starting at the offset —
         // either way pre-caret text stays reachable (gg = the true top).
-        onSpeakDocument?(text, start)
-        harvestRichTextHeadings(from: element, textLength: ns.length)
+        onSpeakDocument?(full, start)
+        harvestRichTextHeadings(from: element, textLength: ns.length,
+                                spokenLength: fullNS.length)
     }
 
     /// Rich-text heading harvest — the rung that gives Notes and TextEdit
@@ -2325,10 +2410,17 @@ final class KeyboardMonitor {
     /// both correctly placed and reachable (]] [[ after a gg). Plain
     /// reads only: a document over one window rides synthetic pages,
     /// whose global-offset mapping is a future rung. Any fetch failure
-    /// returns silently — motions buzz.
+    /// returns silently — motions buzz. Two lengths on purpose:
+    /// `textLength` is the ELEMENT's own value (the attributed fetch
+    /// ranges over it — asking past its end fails the whole fetch), while
+    /// `spokenLength` is what the read will actually speak, tables
+    /// included — the paged-or-plain question belongs to that one.
+    /// Heading line indices stay valid either way: appended tables never
+    /// move a line in the body prefix.
     private func harvestRichTextHeadings(from element: AXUIElement,
-                                         textLength: Int) {
-        guard textLength <= PagedText.windowBudget else {
+                                         textLength: Int,
+                                         spokenLength: Int) {
+        guard spokenLength <= PagedText.windowBudget else {
             fputs("[keyboard] R: heading harvest skipped (paged read)\n", stderr)
             return
         }
@@ -2555,7 +2647,7 @@ final class KeyboardMonitor {
     /// on main would stall tap dispatch); the read hops back.
     private func readWindowDocument(
         app: NSRunningApplication,
-        fallback: (element: AXUIElement, text: String)? = nil
+        fallback: DocumentHarvest? = nil
     ) {
         let pid = app.processIdentifier
         DispatchQueue.global(qos: .utility).async { [self] in
@@ -2573,12 +2665,16 @@ final class KeyboardMonitor {
                 // The window walk answered, but the same length rule that
                 // picks the document inside it applies BETWEEN rungs: a
                 // window text area shorter than the focused one we set
-                // aside is the sidebar, not the document.
-                if let fallback, fallback.text.count > found.text.count {
+                // aside is the sidebar, not the document. Tables count on
+                // both sides — they're document content wherever found.
+                if let fallback,
+                   fallback.text.count + TableText.totalLength(fallback.tables)
+                       > found.text.count + TableText.totalLength(found.tables) {
                     failReadDocument(fallback)
                 } else if let element = found.element {
                     AXUIElementSetMessagingTimeout(element, 0.5)
-                    speakDocumentText(found.text, from: element)
+                    speakDocumentText(found.text, from: element,
+                                      tables: found.tables)
                 } else {
                     // Canvas harvest: no single text element owns it, so
                     // there is no caret, selection, or offset to honor —
@@ -2586,7 +2682,8 @@ final class KeyboardMonitor {
                     // this document" means anyway.
                     fputs("[keyboard] R: window canvas read "
                         + "(\(found.text.count) chars)\n", stderr)
-                    onSpeakDocument?(found.text, 0)
+                    onSpeakDocument?(TableText.merged(document: found.text,
+                                                      tables: found.tables), 0)
                 }
             }
         }
@@ -2610,7 +2707,7 @@ final class KeyboardMonitor {
     /// over the article. Budgeted like every other walk (0.25s element
     /// timeouts, node and depth caps). Off-main only.
     private static func windowDocumentText(pid: pid_t)
-        -> (element: AXUIElement?, text: String)? {
+        -> (element: AXUIElement?, text: String, tables: [String])? {
         let axApp = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(axApp, 0.25)
         guard let window = documentWindow(of: axApp) else {
@@ -2621,32 +2718,47 @@ final class KeyboardMonitor {
             return nil  // web read — the web rung owns it
         }
 
+        // Tables ride every window harvest: they're separate subtrees no
+        // text-area or canvas rung visits (the canvas walk deliberately
+        // skips them so the row-ordered harvest here can't double-speak).
+        let tables = collectTableTexts(below: window)
+        if !tables.isEmpty {
+            fputs("[keyboard] R: table harvest (\(tables.count), "
+                + "\(TableText.totalLength(tables)) chars)\n", stderr)
+        }
+
         var best: (element: AXUIElement, text: String)?
         var nodeBudget = 600
         collectTextAreas(from: window, best: &best,
                          nodeBudget: &nodeBudget, depth: 12)
         if let best {
             fputs("[keyboard] R: window text area (\(best.text.count) chars)\n", stderr)
-            return (best.element, best.text)
+            return (best.element, best.text, tables)
         }
 
         guard let canvas = findDescendant(of: window, role: "AXLayoutArea",
                                           depthBudget: 12)
                 ?? findDescendant(of: window, role: "AXScrollArea",
-                                  depthBudget: 12) else { return nil }
+                                  depthBudget: 12) else {
+            // No canvas either — a table can still BE the document.
+            guard TableText.totalLength(tables) > documentTextFloor else {
+                return nil
+            }
+            return (nil, "", tables)
+        }
         var parts: [(text: String, element: AXUIElement)] = []
         var headingMarks: [(partIndex: Int, level: Int)] = []
         var canvasBudget = 3000
         collectText(from: canvas, into: &parts, headingMarks: &headingMarks,
-                    nodeBudget: &canvasBudget, depth: 40)
+                    nodeBudget: &canvasBudget, depth: 40, skipTables: true)
         let joined = parts.map(\.text).joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard joined.count > documentTextFloor else {
+        guard joined.count + TableText.totalLength(tables) > documentTextFloor else {
             fputs("[keyboard] R: window canvas harvest thin "
                 + "(\(joined.count) chars)\n", stderr)
             return nil
         }
-        return (nil, joined)
+        return (nil, joined, tables)
     }
 
     /// How much text a harvest needs before it counts as "the document".
@@ -2667,18 +2779,32 @@ final class KeyboardMonitor {
         return best
     }
 
-    /// The ladder ran out. Speak the thin focused harvest if one was set
-    /// aside — a genuinely tiny document is still a document — else the
-    /// honest buzz.
-    private func failReadDocument(_ fallback: (element: AXUIElement, text: String)?) {
+    /// The ladder ran out. Speak the thin set-aside harvest if one rode
+    /// down — a genuinely tiny document is still a document — else the
+    /// honest buzz. A harvest with no owning element (table-only) has no
+    /// caret or pointer to honor and reads from the top.
+    private func failReadDocument(_ fallback: DocumentHarvest?) {
         guard let fallback else {
             Earcon.error()
             onAnnounce?("No readable document here.")
             return
         }
-        fputs("[keyboard] R: nothing better than the focused text "
-            + "(\(fallback.text.count) chars)\n", stderr)
-        speakDocumentText(fallback.text, from: fallback.element)
+        if let element = fallback.element {
+            fputs("[keyboard] R: nothing better than the focused text "
+                + "(\(fallback.text.count) chars)\n", stderr)
+            speakDocumentText(fallback.text, from: element,
+                              tables: fallback.tables)
+            return
+        }
+        let merged = TableText.merged(document: fallback.text,
+                                      tables: fallback.tables)
+        guard !merged.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            Earcon.error()
+            onAnnounce?("No readable document here.")
+            return
+        }
+        fputs("[keyboard] R: table-only read (\(merged.count) chars)\n", stderr)
+        onSpeakDocument?(merged, 0)
     }
 
     /// Longest AXTextArea value below `element`. Unlike findDescendant
@@ -2715,6 +2841,123 @@ final class KeyboardMonitor {
         }
     }
 
+    /// Every AXTable's text at or below `root`, in walk order. Embedded
+    /// document tables (Pages — the platform pattern, not a Pages code
+    /// path) are separate subtrees whose cell text never appears in any
+    /// text area's value: the body string holds at most a U+FFFC anchor
+    /// where the table sits, so the single-value harvest read up to the
+    /// table and went silent (field 2026-07-29). Rows come from the
+    /// AXRows attribute (the documented convention), else row-role
+    /// children — never columns, which republish the same cells and
+    /// would double-speak every one. Budgeted like every walk here
+    /// (nodes, depth, 0.25s element timeouts). Off-main only.
+    static func collectTableTexts(below root: AXUIElement) -> [String] {
+        var tables: [String] = []
+        var nodeBudget = 600
+        collectTables(from: root, into: &tables,
+                      nodeBudget: &nodeBudget, depth: 12)
+        return tables
+    }
+
+    private static func collectTables(
+        from element: AXUIElement, into tables: inout [String],
+        nodeBudget: inout Int, depth: Int
+    ) {
+        guard depth > 0, nodeBudget > 0 else { return }
+        nodeBudget -= 1
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        var roleRef: CFTypeRef?
+        _ = AXUIElementCopyAttributeValue(
+            element, kAXRoleAttribute as CFString, &roleRef)
+        let role = roleRef as? String
+        // A text area's children are its own text; a web area's tables
+        // belong to the web rung's tree-order walk, not this one.
+        if role == "AXTextArea" || role == "AXWebArea" { return }
+        if role == "AXTable" {
+            let text = tableText(of: element)
+            if !text.isEmpty { tables.append(text) }
+            return  // a nested table reads as part of its parent's cells
+        }
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  element, kAXChildrenAttribute as CFString, &childrenRef
+              ) == .success,
+              let children = childrenRef as? [AXUIElement] else { return }
+        for child in children {
+            guard nodeBudget > 0 else { return }
+            collectTables(from: child, into: &tables,
+                          nodeBudget: &nodeBudget, depth: depth - 1)
+        }
+    }
+
+    /// One table's text: ordered rows via the AXRows attribute, else
+    /// children whose role says row. Cells come from each row's children;
+    /// column elements are deliberately never walked (same cells again).
+    private static func tableText(of table: AXUIElement) -> String {
+        AXUIElementSetMessagingTimeout(table, 0.25)
+        var rows: [AXUIElement] = []
+        var rowsRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+               table, "AXRows" as CFString, &rowsRef) == .success,
+           let axRows = rowsRef as? [AXUIElement], !axRows.isEmpty {
+            rows = axRows
+        } else {
+            var childrenRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(
+                   table, kAXChildrenAttribute as CFString, &childrenRef
+               ) == .success,
+               let children = childrenRef as? [AXUIElement] {
+                rows = children.filter { elementRole(of: $0) == "AXRow" }
+            }
+        }
+        var cellBudget = 4000
+        let harvested: [[String]] = rows.map { row in
+            guard cellBudget > 0 else { return [] }
+            AXUIElementSetMessagingTimeout(row, 0.25)
+            var childrenRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                      row, kAXChildrenAttribute as CFString, &childrenRef
+                  ) == .success,
+                  let cells = childrenRef as? [AXUIElement] else { return [] }
+            return cells.map { cellText(of: $0, nodeBudget: &cellBudget, depth: 8) }
+        }
+        return TableText.compose(rows: harvested)
+    }
+
+    private static func elementRole(of element: AXUIElement) -> String? {
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        var roleRef: CFTypeRef?
+        _ = AXUIElementCopyAttributeValue(
+            element, kAXRoleAttribute as CFString, &roleRef)
+        return roleRef as? String
+    }
+
+    /// A cell's text: its own string value when it has one, else its
+    /// text-bearing leaves joined — Pages publishes a text area per
+    /// cell, plainer tables publish static text or a bare value.
+    private static func cellText(of element: AXUIElement,
+                                 nodeBudget: inout Int, depth: Int) -> String {
+        guard depth > 0, nodeBudget > 0 else { return "" }
+        nodeBudget -= 1
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        var valueRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+               element, kAXValueAttribute as CFString, &valueRef) == .success,
+           let text = valueRef as? String,
+           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return text
+        }
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  element, kAXChildrenAttribute as CFString, &childrenRef
+              ) == .success,
+              let children = childrenRef as? [AXUIElement] else { return "" }
+        return children
+            .map { cellText(of: $0, nodeBudget: &nodeBudget, depth: depth - 1) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
     /// Web-page fallback for R — ANY browser (Safari, Firefox, and the
     /// Chromium family get the same treatment):
     ///
@@ -2741,7 +2984,7 @@ final class KeyboardMonitor {
 
     private func readWebPage(
         app: NSRunningApplication,
-        fallback: (element: AXUIElement, text: String)? = nil
+        fallback: DocumentHarvest? = nil
     ) {
         let pid = app.processIdentifier
         let fallbackScript = app.bundleIdentifier
@@ -2903,13 +3146,18 @@ final class KeyboardMonitor {
     private static func collectText(
         from element: AXUIElement, into parts: inout [(text: String, element: AXUIElement)],
         headingMarks: inout [(partIndex: Int, level: Int)],
-        nodeBudget: inout Int, depth: Int
+        nodeBudget: inout Int, depth: Int, skipTables: Bool = false
     ) {
         guard depth > 0, nodeBudget > 0 else { return }
         nodeBudget -= 1
         AXUIElementSetMessagingTimeout(element, 0.25)
         var roleRef: CFTypeRef?
         _ = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+        // The canvas walk skips tables — collectTableTexts harvests them
+        // in row order and would double-speak every cell otherwise. The
+        // WEB walk keeps them: web tables' cells arrive here as static
+        // text in tree order, and no separate table hunt runs there.
+        if skipTables, roleRef as? String == "AXTable" { return }
         if let role = roleRef as? String,
            role == "AXStaticText" || role == "AXHeading" {
             var valueRef: CFTypeRef?
@@ -2937,7 +3185,8 @@ final class KeyboardMonitor {
         for child in children {
             guard nodeBudget > 0 else { return }
             collectText(from: child, into: &parts, headingMarks: &headingMarks,
-                        nodeBudget: &nodeBudget, depth: depth - 1)
+                        nodeBudget: &nodeBudget, depth: depth - 1,
+                        skipTables: skipTables)
         }
     }
 

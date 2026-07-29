@@ -44,9 +44,28 @@ final class TableTextTests: XCTestCase {
         XCTAssertTrue(TableText.isSpanBoilerplate("spans four rows"))
         XCTAssertTrue(TableText.isSpanBoilerplate("Spans 12 columns"))
         XCTAssertTrue(TableText.isSpanBoilerplate("spans two columns and four rows"))
+        XCTAssertTrue(TableText.isSpanBoilerplate(" spans four rows. "))
         XCTAssertFalse(TableText.isSpanBoilerplate("the bridge spans four rivers"))
         XCTAssertFalse(TableText.isSpanBoilerplate("spans"))
         XCTAssertFalse(TableText.isSpanBoilerplate("wingspans 2 meters"))
+    }
+
+    /// The chatter also rides INSIDE a cell string — its own line, or a
+    /// clause glued after the content by a carrier join. Scrub takes it
+    /// out wherever it sits; content and unrelated prose survive.
+    func testScrubRemovesEmbeddedSpanChatter() {
+        XCTAssertEqual(TableText.scrubSpanChatter("Ada\nspans four rows"), "Ada")
+        XCTAssertEqual(TableText.scrubSpanChatter("Ada spans four rows"), "Ada")
+        XCTAssertEqual(TableText.scrubSpanChatter("Ada spans 2 columns and 3 rows."),
+                       "Ada")
+        XCTAssertEqual(TableText.scrubSpanChatter("spans four rows"), "")
+        XCTAssertEqual(TableText.scrubSpanChatter("Q3 numbers spans four rows spans two columns"),
+                       "Q3 numbers")
+        XCTAssertEqual(TableText.scrubSpanChatter("the bridge spans four rivers"),
+                       "the bridge spans four rivers")
+        XCTAssertEqual(TableText.scrubSpanChatter("wingspans 2 meters"),
+                       "wingspans 2 meters")
+        XCTAssertEqual(TableText.scrubSpanChatter("Ada\nLovelace"), "Ada\nLovelace")
     }
 
     // MARK: merged

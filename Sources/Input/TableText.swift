@@ -35,14 +35,37 @@ enum TableText {
     /// AX span chatter a MERGED cell publishes beside its content —
     /// "spans four rows", "spans 2 columns and 3 rows" — platform
     /// vocabulary, not document text, and the reader wants the content
-    /// (field 2026-07-29, first working Pages table read). Whole-cell
-    /// match only, digits or number words, so real prose containing the
-    /// word "spans" mid-sentence is never touched.
+    /// (field 2026-07-29, first working Pages table read). Digits or
+    /// number words; optional trailing period.
+    private static let spanClause =
+        #"spans \S{1,12}( \S{1,12})? (rows?|columns?)"#
+        + #"( and \S{1,12}( \S{1,12})? (rows?|columns?))?\.?"#
+
+    /// Whole-cell (or whole-line) match, trimmed — real prose containing
+    /// the word "spans" mid-sentence is never touched.
     static func isSpanBoilerplate(_ cell: String) -> Bool {
-        let pattern = #"^spans \S{1,12}( \S{1,12})? (rows?|columns?)"#
-            + #"( and \S{1,12}( \S{1,12})? (rows?|columns?))?$"#
-        return cell.range(of: pattern,
-                          options: [.regularExpression, .caseInsensitive]) != nil
+        cell.trimmingCharacters(in: .whitespacesAndNewlines)
+            .range(of: "^" + spanClause + "$",
+                   options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// Strip span chatter wherever it rides inside one cell string: a
+    /// line of its own, or a trailing clause glued after the content
+    /// ("Ada spans four rows") — the shapes a merged cell's description
+    /// leaf takes once carriers join it to the content (field
+    /// 2026-07-29 round two: the whole-cell filter alone still spoke
+    /// it). The trailing scrub requires whitespace before "spans", so
+    /// words like "wingspans" survive; mid-sentence prose is untouched.
+    static func scrubSpanChatter(_ text: String) -> String {
+        var lines = text.components(separatedBy: "\n")
+        lines.removeAll { isSpanBoilerplate($0) }
+        var joined = lines.joined(separator: "\n")
+        if let tail = joined.range(
+               of: #"(\s+"# + spanClause + #")+\s*$"#,
+               options: [.regularExpression, .caseInsensitive]) {
+            joined = String(joined[..<tail.lowerBound])
+        }
+        return joined
     }
 
     /// The document text with its tables appended, blank-line separated

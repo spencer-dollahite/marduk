@@ -3108,9 +3108,13 @@ final class KeyboardMonitor {
         guard depth > 0, nodeBudget > 0 else { return "" }
         nodeBudget -= 1
         AXUIElementSetMessagingTimeout(element, 0.5)
+        // Scrub per CARRIER, before any join can glue chatter to content
+        // — a merged cell's "spans four rows" arrives embedded in the
+        // same string as its text, not only as a cell of its own.
         func speakable(_ text: String) -> String? {
-            text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? nil : text
+            let scrubbed = TableText.scrubSpanChatter(text)
+            return scrubbed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? nil : scrubbed
         }
         var valueRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(

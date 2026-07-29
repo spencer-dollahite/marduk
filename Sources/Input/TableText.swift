@@ -20,15 +20,29 @@ import Foundation
 enum TableText {
     /// One table's spoken text: cells joined ", " so a row reads as one
     /// line, rows joined by newline so `j`/`k` walk rows. Empty cells
-    /// and rows vanish — a sparse table speaks only what it holds.
+    /// and rows vanish — a sparse table speaks only what it holds — and
+    /// so does span boilerplate.
     static func compose(rows: [[String]]) -> String {
         rows.map { row in
             row.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
+                .filter { !$0.isEmpty && !isSpanBoilerplate($0) }
                 .joined(separator: ", ")
         }
         .filter { !$0.isEmpty }
         .joined(separator: "\n")
+    }
+
+    /// AX span chatter a MERGED cell publishes beside its content —
+    /// "spans four rows", "spans 2 columns and 3 rows" — platform
+    /// vocabulary, not document text, and the reader wants the content
+    /// (field 2026-07-29, first working Pages table read). Whole-cell
+    /// match only, digits or number words, so real prose containing the
+    /// word "spans" mid-sentence is never touched.
+    static func isSpanBoilerplate(_ cell: String) -> Bool {
+        let pattern = #"^spans \S{1,12}( \S{1,12})? (rows?|columns?)"#
+            + #"( and \S{1,12}( \S{1,12})? (rows?|columns?))?$"#
+        return cell.range(of: pattern,
+                          options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     /// The document text with its tables appended, blank-line separated

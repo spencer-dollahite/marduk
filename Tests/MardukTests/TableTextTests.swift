@@ -30,6 +30,25 @@ final class TableTextTests: XCTestCase {
         XCTAssertEqual(TableText.compose(rows: [[""], ["  "]]), "")
     }
 
+    // MARK: span boilerplate
+
+    func testComposeDropsMergedCellSpanChatter() {
+        let text = TableText.compose(rows: [
+            ["Name", "spans four rows", "Age"],
+            ["Spans 2 columns and 3 rows", "Ada", "36"],
+        ])
+        XCTAssertEqual(text, "Name, Age\nAda, 36")
+    }
+
+    func testSpanBoilerplateMatchesWholeCellOnly() {
+        XCTAssertTrue(TableText.isSpanBoilerplate("spans four rows"))
+        XCTAssertTrue(TableText.isSpanBoilerplate("Spans 12 columns"))
+        XCTAssertTrue(TableText.isSpanBoilerplate("spans two columns and four rows"))
+        XCTAssertFalse(TableText.isSpanBoilerplate("the bridge spans four rivers"))
+        XCTAssertFalse(TableText.isSpanBoilerplate("spans"))
+        XCTAssertFalse(TableText.isSpanBoilerplate("wingspans 2 meters"))
+    }
+
     // MARK: merged
 
     func testMergedAppendsAfterBlankLine() {

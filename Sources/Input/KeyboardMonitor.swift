@@ -2917,7 +2917,11 @@ final class KeyboardMonitor {
                 + "(visited \(visited) nodes, "
                 + "roles: \(sample))\n", stderr)
         }
-        return tables
+        // Pages publishes the same table as TWO identical AXTable
+        // elements (field 2026-07-29: matching 13×5 anatomy twice) —
+        // identical harvests speak once.
+        var seen = Set<String>()
+        return tables.filter { seen.insert($0).inserted }
     }
 
     /// iWork-style apps publish a table's guts only once an assistive
@@ -3048,8 +3052,41 @@ final class KeyboardMonitor {
                 firstRow, kAXChildrenAttribute as CFString, &rowKidsRef)
             let rowKids = (rowKidsRef as? [AXUIElement]) ?? []
             line += ", row0 [\(histogram(rowKids))]"
+            if let firstCell = rowKids.first {
+                line += ", cell0 {\(attributeSummary(of: firstCell))}"
+            }
         }
         fputs(line + "\n", stderr)
+    }
+
+    /// Every attribute a cell answers, tagged by type — names, type
+    /// tags, and string LENGTHS only, never content (numbers print as
+    /// bare "num": a cell's number IS content). This is the line that
+    /// names the carrier when a cell's text hides behind an attribute
+    /// nobody documents.
+    private static func attributeSummary(of element: AXUIElement) -> String {
+        AXUIElementSetMessagingTimeout(element, 0.5)
+        var namesRef: CFArray?
+        guard AXUIElementCopyAttributeNames(element, &namesRef) == .success,
+              let names = namesRef as? [String] else { return "no attributes" }
+        return names.prefix(40).map { name -> String in
+            var valueRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                      element, name as CFString, &valueRef) == .success,
+                  let value = valueRef else { return name + ":nil" }
+            if let text = value as? String { return name + ":str\(text.count)" }
+            if let attributed = value as? NSAttributedString {
+                return name + ":astr\(attributed.length)"
+            }
+            if value is NSNumber { return name + ":num" }
+            if CFGetTypeID(value) == AXUIElementGetTypeID() {
+                return name + ":elem"
+            }
+            if let array = value as? [AnyObject] {
+                return name + ":arr\(array.count)"
+            }
+            return name + ":other"
+        }.joined(separator: ",")
     }
 
     private static func elementRole(of element: AXUIElement) -> String? {
@@ -3060,30 +3097,54 @@ final class KeyboardMonitor {
         return roleRef as? String
     }
 
-    /// A cell's text: its own string value when it has one, else its
-    /// text-bearing leaves joined — Pages publishes a text area per
-    /// cell, plainer tables publish static text or a bare value.
+    /// A cell's text, by every carrier a table cell is known to use:
+    /// string value → attributed value → numeric value (Numbers-style
+    /// cells publish NSNumber) → text-bearing leaves → title. Field
+    /// 2026-07-29: Pages cells answered a full 13×5 AXCell grid and NO
+    /// text through value-or-children alone. Timeout 0.5s, not the
+    /// walk's 0.25 — a lazily-built cell's first answer is slow.
     private static func cellText(of element: AXUIElement,
                                  nodeBudget: inout Int, depth: Int) -> String {
         guard depth > 0, nodeBudget > 0 else { return "" }
         nodeBudget -= 1
-        AXUIElementSetMessagingTimeout(element, 0.25)
+        AXUIElementSetMessagingTimeout(element, 0.5)
+        func speakable(_ text: String) -> String? {
+            text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? nil : text
+        }
         var valueRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(
                element, kAXValueAttribute as CFString, &valueRef) == .success,
-           let text = valueRef as? String,
-           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return text
+           let value = valueRef {
+            if let text = value as? String, let out = speakable(text) {
+                return out
+            }
+            if let attributed = value as? NSAttributedString,
+               let out = speakable(attributed.string) {
+                return out
+            }
+            if let number = value as? NSNumber {
+                return number.stringValue
+            }
         }
         var childrenRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-                  element, kAXChildrenAttribute as CFString, &childrenRef
-              ) == .success,
-              let children = childrenRef as? [AXUIElement] else { return "" }
-        return children
-            .map { cellText(of: $0, nodeBudget: &nodeBudget, depth: depth - 1) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
+        if AXUIElementCopyAttributeValue(
+               element, kAXChildrenAttribute as CFString, &childrenRef
+           ) == .success,
+           let children = childrenRef as? [AXUIElement], !children.isEmpty {
+            let joined = children
+                .map { cellText(of: $0, nodeBudget: &nodeBudget, depth: depth - 1) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            if let out = speakable(joined) { return out }
+        }
+        var titleRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+               element, kAXTitleAttribute as CFString, &titleRef) == .success,
+           let title = titleRef as? String, let out = speakable(title) {
+            return out
+        }
+        return ""
     }
 
     /// Web-page fallback for R — ANY browser (Safari, Firefox, and the

@@ -2918,8 +2918,12 @@ final class KeyboardMonitor {
             guard AXUIElementCopyAttributeValue(
                       row, kAXChildrenAttribute as CFString, &childrenRef
                   ) == .success,
-                  let cells = childrenRef as? [AXUIElement] else { return [] }
-            return cells.map { cellText(of: $0, nodeBudget: &cellBudget, depth: 8) }
+                  let kids = childrenRef as? [AXUIElement] else { return [] }
+            // The documented recipe: a row's cells are its AXCell
+            // children; apps that skip the cell role get all children.
+            let cells = kids.filter { elementRole(of: $0) == "AXCell" }
+            return (cells.isEmpty ? kids : cells)
+                .map { cellText(of: $0, nodeBudget: &cellBudget, depth: 8) }
         }
         return TableText.compose(rows: harvested)
     }

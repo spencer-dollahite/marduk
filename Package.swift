@@ -14,7 +14,10 @@ let package = Package(
         .testTarget(
             name: "MardukTests",
             dependencies: ["marduk"],
-            path: "Tests/MardukTests"
+            path: "Tests/MardukTests",
+            resources: [
+                .copy("Fixtures")
+            ]
         )
     ]
 )

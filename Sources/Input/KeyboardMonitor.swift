@@ -2877,13 +2877,36 @@ final class KeyboardMonitor {
         if canvas != nil {
             fputs("[keyboard] R: table hunt scoped to the layout area\n", stderr)
         }
-        var tables: [String] = []
         let budget = 1500
-        var nodeBudget = budget
         var rolesSeen: Set<String> = []
-        collectTables(from: canvas ?? root, into: &tables,
-                      nodeBudget: &nodeBudget, depth: 16,
-                      rolesSeen: &rolesSeen)
+        var visited = 0
+        func hunt() -> [String] {
+            var tables: [String] = []
+            var nodeBudget = budget
+            collectTables(from: canvas ?? root, into: &tables,
+                          nodeBudget: &nodeBudget, depth: 16,
+                          rolesSeen: &rolesSeen)
+            visited = budget - nodeBudget
+            return tables
+        }
+
+        var tables = hunt()
+        if tables.isEmpty, nudgeEnhancedUI(for: root) {
+            // iWork-style apps populate a table's rows/cells LAZILY, only
+            // after an assistive client announces itself (field
+            // 2026-07-29: the hunt reached the Pages canvas, found the
+            // AXTable, and harvested zero cell text). This is the same
+            // AXEnhancedUserInterface nudge the web walk uses — applied
+            // only on a miss, so its side effects stay contained to
+            // exactly the failing case. One settle beat, one retry;
+            // off-main, so the sleep starves nobody.
+            Thread.sleep(forTimeInterval: 0.3)
+            tables = hunt()
+            if !tables.isEmpty {
+                fputs("[keyboard] R: table harvest woke after the AX nudge\n",
+                      stderr)
+            }
+        }
         if tables.isEmpty {
             // Blind-iteration diagnostics: roles are AX vocabulary, never
             // user content. What the walk saw tells us whether it reached
@@ -2891,10 +2914,27 @@ final class KeyboardMonitor {
             // AXTable.
             let sample = rolesSeen.sorted().prefix(20).joined(separator: ",")
             fputs("[keyboard] R: table hunt found none "
-                + "(visited \(budget - nodeBudget) nodes, "
+                + "(visited \(visited) nodes, "
                 + "roles: \(sample))\n", stderr)
         }
         return tables
+    }
+
+    /// iWork-style apps publish a table's guts only once an assistive
+    /// client announces itself; setting the app's AXEnhancedUserInterface
+    /// is that announcement (VoiceOver's own behavior, and the web walk's
+    /// existing nudge). True = the set was attempted on a resolvable app.
+    private static func nudgeEnhancedUI(for element: AXUIElement) -> Bool {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success, pid != 0 else {
+            return false
+        }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.25)
+        let err = AXUIElementSetAttributeValue(
+            app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        fputs("[keyboard] R: enhanced-UI nudge sent (\(err.rawValue))\n", stderr)
+        return true
     }
 
     private static func collectTables(
@@ -2943,11 +2983,13 @@ final class KeyboardMonitor {
     private static func tableText(of table: AXUIElement) -> String {
         AXUIElementSetMessagingTimeout(table, 0.25)
         var rows: [AXUIElement] = []
+        var viaAttribute = false
         var rowsRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(
                table, "AXRows" as CFString, &rowsRef) == .success,
            let axRows = rowsRef as? [AXUIElement], !axRows.isEmpty {
             rows = axRows
+            viaAttribute = true
         } else {
             var childrenRef: CFTypeRef?
             if AXUIElementCopyAttributeValue(
@@ -2972,7 +3014,42 @@ final class KeyboardMonitor {
             return (cells.isEmpty ? kids : cells)
                 .map { cellText(of: $0, nodeBudget: &cellBudget, depth: 8) }
         }
-        return TableText.compose(rows: harvested)
+        let text = TableText.compose(rows: harvested)
+        if text.isEmpty {
+            logTableAnatomy(of: table, rows: rows, viaAttribute: viaAttribute)
+        }
+        return text
+    }
+
+    /// One line naming an unharvestable table's SHAPE — role names and
+    /// counts only, never cell content. This is what turns "table found
+    /// but no cell text" from a shrug into the next fix.
+    private static func logTableAnatomy(of table: AXUIElement,
+                                        rows: [AXUIElement],
+                                        viaAttribute: Bool) {
+        func histogram(_ elements: [AXUIElement]) -> String {
+            var counts: [String: Int] = [:]
+            for element in elements.prefix(40) {
+                counts[elementRole(of: element) ?? "?", default: 0] += 1
+            }
+            return counts.sorted { $0.key < $1.key }
+                .map { "\($0.key)x\($0.value)" }.joined(separator: ",")
+        }
+        var childrenRef: CFTypeRef?
+        _ = AXUIElementCopyAttributeValue(
+            table, kAXChildrenAttribute as CFString, &childrenRef)
+        let children = (childrenRef as? [AXUIElement]) ?? []
+        var line = "[keyboard] R: table anatomy: rows=\(rows.count)"
+            + (viaAttribute ? " (AXRows)" : " (children)")
+            + ", children [\(histogram(children))]"
+        if let firstRow = rows.first {
+            var rowKidsRef: CFTypeRef?
+            _ = AXUIElementCopyAttributeValue(
+                firstRow, kAXChildrenAttribute as CFString, &rowKidsRef)
+            let rowKids = (rowKidsRef as? [AXUIElement]) ?? []
+            line += ", row0 [\(histogram(rowKids))]"
+        }
+        fputs(line + "\n", stderr)
     }
 
     private static func elementRole(of element: AXUIElement) -> String? {

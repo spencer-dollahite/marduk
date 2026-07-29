@@ -248,13 +248,15 @@ final class RealDocumentTests: XCTestCase {
         // font identity must survive serialization, not just in-memory.
         let data = try attributed.data(
             from: NSRange(location: 0, length: attributed.length),
-            documentAttributes: [.documentType: .rtf])
+            documentAttributes:
+                [.documentType: NSAttributedString.DocumentType.rtf])
         let decoded = try XCTUnwrap(
             NSAttributedString(rtf: data, documentAttributes: nil))
 
         var runs: [HeadingDetector.FontRun] = []
         decoded.enumerateAttribute(
-            .font, in: NSRange(location: 0, length: decoded.length)) {
+            NSAttributedString.Key.font,
+            in: NSRange(location: 0, length: decoded.length)) {
             value, range, _ in
             guard let font = value as? NSFont else { return }
             runs.append(HeadingDetector.FontRun(range: range,

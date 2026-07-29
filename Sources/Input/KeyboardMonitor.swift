@@ -2299,7 +2299,10 @@ final class KeyboardMonitor {
 
     /// Where to hunt a document's tables: the containing window when AX
     /// will name it — tables are usually the text area's FAR siblings,
-    /// not its neighbors — else the element itself. One attribute read.
+    /// not its neighbors — else the app's document window, else the
+    /// element itself (which a hunt can't descend past: an AXTextArea
+    /// root returns instantly, so the fallbacks matter and the log says
+    /// which root won).
     private static func tableRoot(for element: AXUIElement) -> AXUIElement {
         var windowRef: CFTypeRef?
         _ = AXUIElementCopyAttributeValue(
@@ -2307,6 +2310,18 @@ final class KeyboardMonitor {
         if let raw = windowRef, CFGetTypeID(raw) == AXUIElementGetTypeID() {
             return (raw as! AXUIElement)
         }
+        var pid: pid_t = 0
+        if AXUIElementGetPid(element, &pid) == .success, pid != 0 {
+            let axApp = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(axApp, 0.25)
+            if let window = documentWindow(of: axApp) {
+                fputs("[keyboard] R: table root via document window "
+                    + "(element answered no AXWindow)\n", stderr)
+                return window
+            }
+        }
+        fputs("[keyboard] R: table root is the element itself "
+            + "(no window found — hunt will see nothing)\n", stderr)
         return element
     }
 
@@ -2852,16 +2867,39 @@ final class KeyboardMonitor {
     /// would double-speak every one. Budgeted like every walk here
     /// (nodes, depth, 0.25s element timeouts). Off-main only.
     static func collectTableTexts(below root: AXUIElement) -> [String] {
+        // iWork-style canvases hold the document's objects under an
+        // AXLayoutArea — when one exists, spend the whole budget there
+        // instead of on toolbars and inspectors (field 2026-07-29: the
+        // window-rooted hunt found nothing in Pages while a table sat on
+        // screen; a window's chrome subtrees can eat any budget).
+        let canvas = findDescendant(of: root, role: "AXLayoutArea",
+                                    depthBudget: 12)
+        if canvas != nil {
+            fputs("[keyboard] R: table hunt scoped to the layout area\n", stderr)
+        }
         var tables: [String] = []
-        var nodeBudget = 600
-        collectTables(from: root, into: &tables,
-                      nodeBudget: &nodeBudget, depth: 12)
+        let budget = 1500
+        var nodeBudget = budget
+        var rolesSeen: Set<String> = []
+        collectTables(from: canvas ?? root, into: &tables,
+                      nodeBudget: &nodeBudget, depth: 16,
+                      rolesSeen: &rolesSeen)
+        if tables.isEmpty {
+            // Blind-iteration diagnostics: roles are AX vocabulary, never
+            // user content. What the walk saw tells us whether it reached
+            // the canvas at all — and what the app calls a table if not
+            // AXTable.
+            let sample = rolesSeen.sorted().prefix(20).joined(separator: ",")
+            fputs("[keyboard] R: table hunt found none "
+                + "(visited \(budget - nodeBudget) nodes, "
+                + "roles: \(sample))\n", stderr)
+        }
         return tables
     }
 
     private static func collectTables(
         from element: AXUIElement, into tables: inout [String],
-        nodeBudget: inout Int, depth: Int
+        nodeBudget: inout Int, depth: Int, rolesSeen: inout Set<String>
     ) {
         guard depth > 0, nodeBudget > 0 else { return }
         nodeBudget -= 1
@@ -2870,12 +2908,20 @@ final class KeyboardMonitor {
         _ = AXUIElementCopyAttributeValue(
             element, kAXRoleAttribute as CFString, &roleRef)
         let role = roleRef as? String
+        if let role { rolesSeen.insert(role) }
         // A text area's children are its own text; a web area's tables
         // belong to the web rung's tree-order walk, not this one.
         if role == "AXTextArea" || role == "AXWebArea" { return }
         if role == "AXTable" {
             let text = tableText(of: element)
-            if !text.isEmpty { tables.append(text) }
+            if !text.isEmpty {
+                tables.append(text)
+            } else {
+                // Found-but-unharvestable is a different bug than
+                // never-found — say so.
+                fputs("[keyboard] R: table found but no cell text "
+                    + "harvested\n", stderr)
+            }
             return  // a nested table reads as part of its parent's cells
         }
         var childrenRef: CFTypeRef?
@@ -2886,7 +2932,8 @@ final class KeyboardMonitor {
         for child in children {
             guard nodeBudget > 0 else { return }
             collectTables(from: child, into: &tables,
-                          nodeBudget: &nodeBudget, depth: depth - 1)
+                          nodeBudget: &nodeBudget, depth: depth - 1,
+                          rolesSeen: &rolesSeen)
         }
     }
 

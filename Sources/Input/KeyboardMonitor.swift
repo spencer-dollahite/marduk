@@ -238,6 +238,10 @@ final class KeyboardMonitor {
     // command on the frontmost app without querying anything in-callback
     private var frontmostBundleID =
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+    // The PID beside it, for the cursor-placement ledger (same rule: the
+    // tap callback reads the cache, never NSWorkspace)
+    private var frontmostPID: pid_t =
+        NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
     /// The cached frontmost bundle ID for consumers outside the tap (the
     /// speech engine scopes system pronunciation entries per app).
     var frontmostApp: String? { frontmostBundleID.isEmpty ? nil : frontmostBundleID }
@@ -312,6 +316,46 @@ final class KeyboardMonitor {
     // Marker to identify our own synthetic key events so the tap ignores them
     private static let syntheticMarker: Int64 = 0x4D52444B // "MRDK"
 
+    // MARK: - Cursor-placement ledger
+    //
+    // AX cannot say WHO put the caret where it is: a reopened Pages doc
+    // restores an interior insertion point that is byte-identical to a
+    // clicked one, and R trusting it started reads mid-document in
+    // windows the user had never touched. But Marduk owns the event tap,
+    // so "the user actually placed the cursor" is observable: a click or
+    // a delivered keystroke IN THAT WINDOW since it appeared. R's guess
+    // rungs (pointer, caret, row estimate) only run when the ledger holds
+    // such evidence; a fresh window reads from the top. Granularity is
+    // per app AND per window: typing in doc A never blesses doc B's
+    // restored caret. Every unknown degrades toward trusting the caret —
+    // today's behavior — because a wrongly-forced top strands a working
+    // caret with no gesture back, while a wrongly-trusted caret is the
+    // status quo. All state is main-thread (tap callback + main queue).
+    private let monitorStart = Date()
+    private struct ClickRecord {
+        let pid: pid_t
+        let point: CGPoint  // CGEvent.location — global, top-left origin
+    }
+    // Clicks are FACTS recorded cheaply and judged only at R time, by
+    // geometry against the element's frame: a click into the text area
+    // placed the caret; clicks in the template chooser, an open panel, or
+    // the toolbar did not, and blanket-counting them would defeat the
+    // ledger for the exact fresh-document case it exists for. Geometry
+    // makes clicks inherently per-window. A short ring suffices — the
+    // caret-placing click is never far behind an R that means "here".
+    private var recentClicks: [ClickRecord] = []
+    private static let clickLedgerCap = 16
+    // Typed evidence: a delivered (passed-through, unmodified) keyDown
+    // marks the app's FOCUSED window, fetched off-main and debounced so a
+    // typing burst costs one AX round-trip. Window identity is the
+    // AXUIElement token (CFEqual); a fetch failure marks the whole app
+    // instead — the safe, coarser blessing.
+    private var typedApps = Set<pid_t>()
+    private var typedWindows: [pid_t: [AXUIElement]] = [:]
+    private var lastWindowMark: [pid_t: Date] = [:]
+    private static let windowMarkDebounce: TimeInterval = 3
+    private static let typedWindowCap = 8
+
     // macOS keycodes for digit keys 0-9
     private static let digitKeyCodes: [Int64: Int] = [
         29: 0, 18: 1, 19: 2, 20: 3, 21: 4,
@@ -355,6 +399,7 @@ final class KeyboardMonitor {
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey]
                 as? NSRunningApplication
             frontmostBundleID = app?.bundleIdentifier ?? ""
+            frontmostPID = app?.processIdentifier ?? 0
             // Remember the last app that ISN'T us: the command palette
             // activates Marduk to take key focus, so by the time a picker
             // opens, NSWorkspace's idea of "frontmost" is Marduk. The app
@@ -378,9 +423,12 @@ final class KeyboardMonitor {
     }
 
     private func createTap() -> Bool {
-        // keyUp is needed to distinguish a tapped Escape from a held one
+        // keyUp is needed to distinguish a tapped Escape from a held one;
+        // leftMouseDown feeds the cursor-placement ledger (recorded and
+        // passed straight through — clicks are never withheld)
         let eventMask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.keyUp.rawValue)
+            | (1 << CGEventType.leftMouseDown.rawValue)
         let refcon = Unmanaged.passUnretained(self).toOpaque()
 
         guard let tap = CGEvent.tapCreate(
@@ -537,7 +585,14 @@ final class KeyboardMonitor {
     private static let eventCallback: CGEventTapCallBack = { _, type, event, refcon in
         guard let refcon = refcon else { return Unmanaged.passRetained(event) }
         let monitor = Unmanaged<KeyboardMonitor>.fromOpaque(refcon).takeUnretainedValue()
-        return monitor.handleEvent(type: type, event: event)
+        let result = monitor.handleEvent(type: type, event: event)
+        // Cursor-placement ledger, at the one exit every event shares: a
+        // keyDown that PASSED (result non-nil) reached the app — consumed
+        // commands, withheld bursts, and buzzed keys never mark. Synthetic
+        // replays deliberately count: a rescued typing burst IS the user
+        // typing into that window.
+        if result != nil, type == .keyDown { monitor.noteDeliveredKey(event) }
+        return result
     }
 
     // Keep callback lightweight — dispatch all side effects to main queue
@@ -548,6 +603,18 @@ final class KeyboardMonitor {
 
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
+            return pass
+        }
+
+        // Clicks feed the placement ledger and pass untouched — an array
+        // append, nothing else (callback hygiene). Recorded against the
+        // cached frontmost PID: an activating click can attribute to the
+        // app being LEFT, but that click rarely places a caret anyway and
+        // the user's actual caret click — in the now-front app — records
+        // correctly. Recorded even while Marduk is toggled off (pure data,
+        // no AX): interaction is interaction.
+        if type == .leftMouseDown {
+            noteClick(at: event.location)
             return pass
         }
 
@@ -2325,6 +2392,146 @@ final class KeyboardMonitor {
         return element
     }
 
+    // MARK: - Cursor-placement ledger (recording + judgment)
+
+    /// Tap-callback path: array append only.
+    private func noteClick(at point: CGPoint) {
+        guard frontmostPID > 0 else { return }
+        recentClicks.append(ClickRecord(pid: frontmostPID, point: point))
+        if recentClicks.count > Self.clickLedgerCap {
+            recentClicks.removeFirst()
+        }
+    }
+
+    /// Tap-callback path: a keyDown that reached the app. Cmd/Ctrl/Option
+    /// combos never mark — Cmd+Tab fires while the OLD app is still
+    /// frontmost, and the user's zoom shortcuts ride Option (a zoom-in on
+    /// a fresh Pages must not bless its restored caret). Plain and
+    /// shifted keys, arrows included, all mean the caret is theirs. The
+    /// focused-window fetch is debounced and dispatched off-main; while
+    /// Marduk is toggled off the mark degrades to app-level (standing
+    /// down means no AX traffic).
+    private func noteDeliveredKey(_ event: CGEvent) {
+        let flags = event.flags
+        guard !flags.contains(.maskCommand), !flags.contains(.maskControl),
+              !flags.contains(.maskAlternate) else { return }
+        let pid = frontmostPID
+        guard pid > 0 else { return }
+        guard isEnabled else {
+            typedApps.insert(pid)
+            return
+        }
+        let now = Date()
+        if let last = lastWindowMark[pid],
+           now.timeIntervalSince(last) < Self.windowMarkDebounce { return }
+        lastWindowMark[pid] = now
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let axApp = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(axApp, 0.5)
+            var ref: CFTypeRef?
+            let window: AXUIElement?
+            if AXUIElementCopyAttributeValue(
+                   axApp, kAXFocusedWindowAttribute as CFString, &ref
+               ) == .success,
+               let raw = ref, CFGetTypeID(raw) == AXUIElementGetTypeID() {
+                window = (raw as! AXUIElement)
+            } else {
+                window = nil
+            }
+            DispatchQueue.main.async { [self] in
+                guard let window else {
+                    // Window unknowable — bless the whole app (the safe,
+                    // coarser direction: behaves like the per-app ledger)
+                    typedApps.insert(pid)
+                    return
+                }
+                var list = typedWindows[pid] ?? []
+                if !list.contains(where: { CFEqual($0, window) }) {
+                    list.append(window)
+                    if list.count > Self.typedWindowCap { list.removeFirst() }
+                    typedWindows[pid] = list
+                }
+            }
+        }
+    }
+
+    /// R-time judgment, main thread. Early-outs are ordered cheapest
+    /// first; the AX fetches (window identity, element frame) only run
+    /// when the app itself is unblessed.
+    private func userPlacedCursor(in element: AXUIElement) -> Bool {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success, pid != 0 else {
+            return true  // can't attribute — trust the caret
+        }
+        // The ledger is only authoritative for apps launched under our
+        // watch: one running since before the monitor started has
+        // unknowable history — the user may have clicked into it an hour
+        // ago. Every daemon restart (each self-update) lands here for
+        // already-open apps.
+        let launchedUnderWatch = NSRunningApplication(
+            processIdentifier: pid)?.launchDate.map { $0 >= monitorStart }
+            ?? false
+        guard launchedUnderWatch else { return true }
+        if typedApps.contains(pid) { return true }
+        if Self.windowTyped(Self.containingWindow(of: element),
+                            in: typedWindows[pid] ?? []) { return true }
+        let clicks = recentClicks.filter { $0.pid == pid }.map(\.point)
+        return Self.clickPlacedCursor(clicks,
+                                      within: Self.elementFrame(of: element))
+    }
+
+    /// Pure, unit-tested: does a typed-window ledger bless this element's
+    /// window? An unresolvable window with ANY typed window in the app
+    /// blesses — we can't distinguish, and unknowns trust the caret.
+    static func windowTyped(_ window: AXUIElement?,
+                            in marked: [AXUIElement]) -> Bool {
+        guard !marked.isEmpty else { return false }
+        guard let window else { return true }
+        return marked.contains { CFEqual($0, window) }
+    }
+
+    /// Pure, unit-tested: did a recorded click land in the element's
+    /// frame? Both are global top-left-origin coordinates. No frame to
+    /// judge against → any click in the app blesses (unknowns trust the
+    /// caret). Known limit: moving or resizing the window after the click
+    /// orphans the point — the user re-clicks, and typing marks too.
+    static func clickPlacedCursor(_ clicks: [CGPoint],
+                                  within frame: CGRect?) -> Bool {
+        guard let frame else { return !clicks.isEmpty }
+        return clicks.contains { frame.contains($0) }
+    }
+
+    private static func containingWindow(
+        of element: AXUIElement
+    ) -> AXUIElement? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  element, kAXWindowAttribute as CFString, &ref) == .success,
+              let raw = ref, CFGetTypeID(raw) == AXUIElementGetTypeID()
+        else { return nil }
+        return (raw as! AXUIElement)
+    }
+
+    private static func elementFrame(of element: AXUIElement) -> CGRect? {
+        var posRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  element, kAXPositionAttribute as CFString,
+                  &posRef) == .success,
+              AXUIElementCopyAttributeValue(
+                  element, kAXSizeAttribute as CFString,
+                  &sizeRef) == .success,
+              let pr = posRef, CFGetTypeID(pr) == AXValueGetTypeID(),
+              let sr = sizeRef, CFGetTypeID(sr) == AXValueGetTypeID()
+        else { return nil }
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(pr as! AXValue, .cgPoint, &origin),
+              AXValueGetValue(sr as! AXValue, .cgSize, &size)
+        else { return nil }
+        return CGRect(origin: origin, size: size)
+    }
+
     /// Speak an element's text as a document read: pick the start offset,
     /// hand the FULL text to the read pipeline, then harvest headings.
     /// Main-thread (AX + the read handoff).
@@ -2372,6 +2579,16 @@ final class KeyboardMonitor {
         if selection.length > 0 {
             start = max(0, selection.location)
             fputs("[keyboard] R: starting at selection\n", stderr)
+        } else if !userPlacedCursor(in: element) {
+            // Fresh window: nobody has clicked or typed here since it
+            // appeared, so the caret is app-restored and the pointer just
+            // happens to rest somewhere — every guess rung below would
+            // start the read at a place nobody picked. Read from the top.
+            // (An explicit selection above still wins; the first click or
+            // keystroke into the window restores the rungs.)
+            start = 0
+            fputs("[keyboard] R: fresh window — starting at the top\n",
+                  stderr)
         } else if let pointerOffset = Self.textOffsetAtPointer(in: element),
            Self.validatedPointerOffset(pointerOffset,
                                        visible: visibleRange) != nil {

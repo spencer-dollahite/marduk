@@ -76,4 +76,52 @@ final class CursorLedgerTests: XCTestCase {
         let marked = AXUIElementCreateApplication(getpid())
         XCTAssertTrue(KeyboardMonitor.windowTyped(nil, in: [marked]))
     }
+
+    // MARK: - Pre-watch snapshots
+
+    // The daemon restarts on every self-update, so the apps the user
+    // lives in almost always predate the monitor (field 2026-07-31: a
+    // brand-new Pages doc read from the pointer because the app-level
+    // launchDate gate trusted the whole app). The window snapshot keeps
+    // per-window judgment for those apps.
+
+    func testWindowInSnapshotPredatesWatch() {
+        // A window already open at sweep time keeps the old
+        // trust-the-caret behavior
+        let snapshotted = AXUIElementCreateApplication(getpid())
+        let sameAgain = AXUIElementCreateApplication(getpid())
+        XCTAssertTrue(KeyboardMonitor.windowPredatesWatch(
+            sameAgain, snapshot: [snapshotted]))
+    }
+
+    func testWindowAbsentFromSnapshotIsFresh() {
+        // The fresh-Pages-doc case: pre-watch app, window that appeared
+        // after the sweep — the caret must be earned
+        let snapshotted = AXUIElementCreateApplication(1)  // launchd's PID
+        let newWindow = AXUIElementCreateApplication(getpid())
+        XCTAssertFalse(KeyboardMonitor.windowPredatesWatch(
+            newWindow, snapshot: [snapshotted]))
+    }
+
+    func testEmptySnapshotIsARealAnswer() {
+        // The app had no windows at sweep time — every later window is
+        // fresh under our watch
+        let newWindow = AXUIElementCreateApplication(getpid())
+        XCTAssertFalse(KeyboardMonitor.windowPredatesWatch(
+            newWindow, snapshot: []))
+    }
+
+    func testMissingSnapshotTrustsTheCaret() {
+        // Sweep failed / AX denied / app appeared mid-sweep — unknown
+        // history degrades to the old behavior
+        let window = AXUIElementCreateApplication(getpid())
+        XCTAssertTrue(KeyboardMonitor.windowPredatesWatch(
+            window, snapshot: nil))
+    }
+
+    func testUnresolvableWindowTrustsTheCaret() {
+        let snapshotted = AXUIElementCreateApplication(getpid())
+        XCTAssertTrue(KeyboardMonitor.windowPredatesWatch(
+            nil, snapshot: [snapshotted]))
+    }
 }

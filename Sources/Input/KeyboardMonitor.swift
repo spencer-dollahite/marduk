@@ -355,6 +355,17 @@ final class KeyboardMonitor {
     private var lastWindowMark: [pid_t: Date] = [:]
     private static let windowMarkDebounce: TimeInterval = 3
     private static let typedWindowCap = 8
+    // Pre-watch window snapshots (field 2026-07-31: the daemon restarts
+    // on every self-update, so Pages predates the monitor in almost every
+    // real session — an app-level launchDate gate made the ledger inert
+    // and a brand-new doc in a long-running Pages still read from the
+    // pointer). An app's HISTORY is unknowable, but its window set at the
+    // moment evidence collection begins is enumerable: a window in the
+    // snapshot keeps the old trust-the-caret behavior; a window absent
+    // from a real snapshot appeared under our watch and must earn its
+    // caret like any fresh window. No snapshot (sweep failed, AX denied,
+    // app appeared mid-sweep) → unknown → trust the caret.
+    private var prewatchWindows: [pid_t: [AXUIElement]] = [:]
 
     // macOS keycodes for digit keys 0-9
     private static let digitKeyCodes: [Int64: Int] = [
@@ -412,6 +423,7 @@ final class KeyboardMonitor {
 
         if createTap() {
             fputs("[keyboard] NORMAL mode (Ctrl+Option+M to disable, i for INSERT)\n", stderr)
+            sweepPrewatchWindows()
         } else {
             // A dead tap is invisible to a screen-reader user — say it out
             // loud (speech needs no Accessibility permission) and keep
@@ -538,6 +550,11 @@ final class KeyboardMonitor {
                 self.tapRetry?.cancel()
                 self.tapRetry = nil
                 fputs("[keyboard] Event tap created after permission grant\n", stderr)
+                // Evidence collection starts NOW — windows the user
+                // touched during the tap-less wait were invisible to the
+                // ledger, and a fresh snapshot files them as pre-watch
+                // (trusted), the safe direction.
+                self.sweepPrewatchWindows()
                 if let established = self.onTapEstablished {
                     established()
                 } else {
@@ -2455,29 +2472,79 @@ final class KeyboardMonitor {
         }
     }
 
-    /// R-time judgment, main thread. Early-outs are ordered cheapest
-    /// first; the AX fetches (window identity, element frame) only run
-    /// when the app itself is unblessed.
+    /// One AXWindows fetch per already-running GUI app, off-main. Runs
+    /// when the tap comes up (evidence collection begins with the tap —
+    /// clicks and keystrokes before it were invisible, so windows from
+    /// before it stay trusted).
+    private func sweepPrewatchWindows() {
+        let pids = NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .map(\.processIdentifier)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var snapshots: [pid_t: [AXUIElement]] = [:]
+            for pid in pids {
+                let axApp = AXUIElementCreateApplication(pid)
+                AXUIElementSetMessagingTimeout(axApp, 0.5)
+                var ref: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(
+                          axApp, kAXWindowsAttribute as CFString, &ref
+                      ) == .success,
+                      let windows = ref as? [AXUIElement] else { continue }
+                // An empty list is a real answer: every later window of
+                // this app is fresh under our watch
+                snapshots[pid] = windows
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.prewatchWindows = snapshots
+                fputs("[keyboard] ledger: window snapshots for "
+                      + "\(snapshots.count) of \(pids.count) running apps\n",
+                      stderr)
+            }
+        }
+    }
+
+    /// R-time judgment, main thread. Evidence (typed apps, typed windows,
+    /// click geometry) blesses regardless of when the app launched; only
+    /// an evidence-less window falls to the freshness question.
     private func userPlacedCursor(in element: AXUIElement) -> Bool {
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success, pid != 0 else {
             return true  // can't attribute — trust the caret
         }
-        // The ledger is only authoritative for apps launched under our
-        // watch: one running since before the monitor started has
-        // unknowable history — the user may have clicked into it an hour
-        // ago. Every daemon restart (each self-update) lands here for
-        // already-open apps.
+        if typedApps.contains(pid) { return true }
+        let window = Self.containingWindow(of: element)
+        if Self.windowTyped(window, in: typedWindows[pid] ?? []) {
+            return true
+        }
+        let clicks = recentClicks.filter { $0.pid == pid }.map(\.point)
+        if Self.clickPlacedCursor(clicks,
+                                  within: Self.elementFrame(of: element)) {
+            return true
+        }
+        // No evidence. An app launched under our watch has only fresh
+        // windows; a pre-watch app is judged window by window against its
+        // startup snapshot — its history is unknowable, its window SET at
+        // sweep time was not.
         let launchedUnderWatch = NSRunningApplication(
             processIdentifier: pid)?.launchDate.map { $0 >= monitorStart }
             ?? false
-        guard launchedUnderWatch else { return true }
-        if typedApps.contains(pid) { return true }
-        if Self.windowTyped(Self.containingWindow(of: element),
-                            in: typedWindows[pid] ?? []) { return true }
-        let clicks = recentClicks.filter { $0.pid == pid }.map(\.point)
-        return Self.clickPlacedCursor(clicks,
-                                      within: Self.elementFrame(of: element))
+        if launchedUnderWatch { return false }
+        return Self.windowPredatesWatch(window,
+                                        snapshot: prewatchWindows[pid])
+    }
+
+    /// Pure, unit-tested: does the pre-watch snapshot say this window
+    /// already existed when evidence collection began? No snapshot for
+    /// the app (sweep failed, AX denied, app launched mid-sweep) → its
+    /// history is unknown → trust the caret. An unresolvable window
+    /// likewise. Absent from a real snapshot → the window appeared under
+    /// our watch: fresh, the caret must be earned.
+    static func windowPredatesWatch(_ window: AXUIElement?,
+                                    snapshot: [AXUIElement]?) -> Bool {
+        guard let snapshot else { return true }
+        guard let window else { return true }
+        return snapshot.contains { CFEqual($0, window) }
     }
 
     /// Pure, unit-tested: does a typed-window ledger bless this element's

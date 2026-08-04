@@ -247,7 +247,9 @@ final class KeyboardMonitor {
     private(set) var newsActive = false
     private var newsCount = 0
     private var pendingNewsG = false
-    private var pendingNewsD = false   // first d of dd (delete article)
+    // d deletes IMMEDIATELY; a second d inside this window is swallowed,
+    // so bare d and vim's dd both delete exactly one article
+    private var lastNewsDelete = Date.distantPast
     // "/" and "?" — a COMMAND-mode-sibling query editor (the read-search
     // pattern): non-nil direction = entry state active
     private var newsSearchDirection: ReadDirection?
@@ -255,12 +257,12 @@ final class KeyboardMonitor {
     static let newsHostBundle = "com.apple.Terminal"
 
     /// Daemon-side arm/disarm (main thread). Clearing always drops the
-    /// half-entered count/gg/dd/search state with it.
+    /// half-entered count/gg/search state with it.
     func setNewsActive(_ active: Bool) {
         newsActive = active
         newsCount = 0
         pendingNewsG = false
-        pendingNewsD = false
+        lastNewsDelete = .distantPast
         newsSearchDirection = nil
         newsSearchBuffer = ""
     }
@@ -1524,7 +1526,6 @@ final class KeyboardMonitor {
             if keycode == 5 { // g / G — top and bottom (gg arms, vim style)
                 if isAutorepeat { return nil }
                 newsCount = 0
-                pendingNewsD = false
                 if hasShift {
                     pendingNewsG = false
                     DispatchQueue.main.async { [self] in onNewsCommand?(.bottom) }
@@ -1536,17 +1537,19 @@ final class KeyboardMonitor {
                 }
                 return nil
             }
-            if keycode == 2, !hasShift { // d — dd deletes the article, vim style
+            if keycode == 2, !hasShift { // d (or dd) — delete the article.
+                // Immediate on the FIRST press; a second d inside the
+                // pair window is swallowed, so bare d and vim's dd both
+                // delete exactly one (the uu-window idea, inverted).
                 if isAutorepeat { return nil }
                 newsCount = 0
                 pendingNewsG = false
-                if pendingNewsD {
-                    pendingNewsD = false
-                    DispatchQueue.main.async { [self] in
-                        onNewsCommand?(.deleteArticle)
-                    }
-                } else {
-                    pendingNewsD = true
+                guard Date().timeIntervalSince(lastNewsDelete) > 0.45 else {
+                    return nil
+                }
+                lastNewsDelete = Date()
+                DispatchQueue.main.async { [self] in
+                    onNewsCommand?(.deleteArticle)
                 }
                 return nil
             }
@@ -1554,12 +1557,10 @@ final class KeyboardMonitor {
                 if isAutorepeat { return nil }
                 newsCount = 0
                 pendingNewsG = false
-                pendingNewsD = false
                 DispatchQueue.main.async { [self] in onNewsCommand?(.markAllRead) }
                 return nil
             }
             pendingNewsG = false
-            pendingNewsD = false
 
             switch keycode {
             case 38, 125: // j / Down — next item (autorepeat glides)

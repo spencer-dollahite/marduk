@@ -32,7 +32,7 @@ final class NewsReader {
     var showKeyBar: (String) -> Void = { _ in }
     var hideKeyBar: () -> Void = {}
 
-    static let listKeyBar = " j/k move  ⏎ open  R read  y yank  dd delete  "
+    static let listKeyBar = " j/k move  ⏎ open  R read  y yank  d delete  "
         + "/ find  . next  C read-all  o browser  i raw  h back  esc quit "
     static let rawKeyBar = " RAW newsboat keys — hold esc: back to Marduk "
     static let readingKeyBar = " reading — space pause  hold esc: stop  "

@@ -126,6 +126,28 @@ final class NewsSessionTests: XCTestCase {
         XCTAssertTrue(session.articles[1].unread)
     }
 
+    func testSearchTargetIsSmartcaseAndNeverWraps() {
+        let titles = ["Krebs on Security", "The Hacker News",
+                      "Dark Reading", "SANS NewsBites"]
+        XCTAssertEqual(NewsSession.searchTarget(
+            titles: titles, from: 0, query: "news", direction: .forward), 1)
+        // "." repeat from the landing row hunts the NEXT match
+        XCTAssertEqual(NewsSession.searchTarget(
+            titles: titles, from: 1, query: "news", direction: .forward), 3)
+        // No wrap — audio gives no wrap cue
+        XCTAssertNil(NewsSession.searchTarget(
+            titles: titles, from: 3, query: "news", direction: .forward))
+        XCTAssertEqual(NewsSession.searchTarget(
+            titles: titles, from: 3, query: "hacker", direction: .back), 1)
+        // Capitals make it case-sensitive (smartcase)
+        XCTAssertNil(NewsSession.searchTarget(
+            titles: titles, from: 0, query: "NEWS", direction: .forward))
+        XCTAssertEqual(NewsSession.searchTarget(
+            titles: titles, from: 0, query: "News", direction: .forward), 1)
+        XCTAssertNil(NewsSession.searchTarget(
+            titles: [], from: 0, query: "x", direction: .forward))
+    }
+
     // MARK: - Spoken lines (minimal verbosity)
 
     func testFeedLineSpeaksUnreadOnlyWhenPresent() {

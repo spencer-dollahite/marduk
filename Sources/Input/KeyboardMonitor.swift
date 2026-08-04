@@ -248,15 +248,21 @@ final class KeyboardMonitor {
     private var newsCount = 0
     private var pendingNewsG = false
     private var pendingNewsD = false   // first d of dd (delete article)
+    // "/" and "?" — a COMMAND-mode-sibling query editor (the read-search
+    // pattern): non-nil direction = entry state active
+    private var newsSearchDirection: ReadDirection?
+    private var newsSearchBuffer = ""
     static let newsHostBundle = "com.apple.Terminal"
 
     /// Daemon-side arm/disarm (main thread). Clearing always drops the
-    /// half-entered count/gg/dd state with it.
+    /// half-entered count/gg/dd/search state with it.
     func setNewsActive(_ active: Bool) {
         newsActive = active
         newsCount = 0
         pendingNewsG = false
         pendingNewsD = false
+        newsSearchDirection = nil
+        newsSearchBuffer = ""
     }
 
     /// Synthetic keys for the NewsReader (arrows/Enter/q into newsboat's
@@ -1430,6 +1436,62 @@ final class KeyboardMonitor {
             return nil
         }
 
+        // === NEWS search entry ("/" and "?"): type, Return jumps ===
+        // A jump, not a filter — narrowing the mirror would desync every
+        // posted arrow. Chars echo like the command line; Return hands the
+        // query to the reader (smartcase, no wrap), Escape/empty cancels,
+        // Delete edits and backs out on empty.
+        if newsActive, newsSearchDirection != nil, mode == .normal,
+           !readingCapture {
+            if hasCommand || hasControl || hasOption { return pass }
+            if isAutorepeat, keycode != 51 { return nil }
+            let hasShift = flags.contains(.maskShift)
+            switch keycode {
+            case 36: // Return — search (empty = cancel)
+                let query = newsSearchBuffer
+                let direction = newsSearchDirection ?? .forward
+                newsSearchDirection = nil
+                newsSearchBuffer = ""
+                if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    DispatchQueue.main.async { Earcon.riseToNormal() }
+                } else {
+                    fputs("[keyboard] news search (\(query.count) chars)\n", stderr)
+                    DispatchQueue.main.async { [self] in
+                        onNewsCommand?(.search(query, direction))
+                    }
+                }
+                return nil
+            case 53: // Escape — cancel back to the list
+                newsSearchDirection = nil
+                newsSearchBuffer = ""
+                DispatchQueue.main.async { Earcon.riseToNormal() }
+                return nil
+            case 51: // Delete — edit; empty buffer backs out
+                if newsSearchBuffer.popLast() == nil {
+                    newsSearchDirection = nil
+                    DispatchQueue.main.async { Earcon.riseToNormal() }
+                }
+                return nil
+            default:
+                if let ch = Self.commandKeyChars[keycode] {
+                    // Shift capitalizes — capitals make the search
+                    // case-sensitive (smartcase, the read-search rule)
+                    let typed = hasShift ? Character(ch.uppercased()) : ch
+                    newsSearchBuffer.append(typed)
+                    let spoken = typed == " " ? "space" : String(typed)
+                    DispatchQueue.main.async { [self] in
+                        if commandEchoEnabled { onAnnounce?(spoken) }
+                    }
+                    return nil
+                }
+                if Self.typingPunctuationKeys.contains(keycode) || keycode == 48 {
+                    DispatchQueue.main.async { Earcon.error() }
+                    return nil
+                }
+                return pass
+            }
+        }
+
         // === NEWS mode: the newsboat list owns the keyboard ===
         // Armed by the daemon once the mirror is loaded; an article read
         // layers the READING capture ABOVE this block (it ran earlier), so
@@ -1530,9 +1592,22 @@ final class KeyboardMonitor {
                 newsCount = 0
                 DispatchQueue.main.async { [self] in onNewsCommand?(.openInBrowser) }
                 return nil
-            case 44 where hasShift: // ? — speak the news keys
+            case 44: // "/" forward, "?" (shift) backward — title search
                 if isAutorepeat { return nil }
-                DispatchQueue.main.async { [self] in onNewsCommand?(.help) }
+                newsCount = 0
+                newsSearchDirection = hasShift ? .back : .forward
+                newsSearchBuffer = ""
+                DispatchQueue.main.async { [self] in
+                    if commandEchoEnabled {
+                        onAnnounce?(hasShift ? "search back" : "search")
+                    }
+                }
+                return nil
+            case 47: // "." — repeat the last search (vim's n; news n = exit)
+                if isAutorepeat { return nil }
+                DispatchQueue.main.async { [self] in
+                    onNewsCommand?(.searchRepeat)
+                }
                 return nil
             case 34: // i — drive newsboat RAW: keys pass through untouched
                      // (newsboat's own n/r/R reload bindings and everything

@@ -29,7 +29,8 @@ final class NewsReader {
 
     static let terminalBundle = "com.apple.Terminal"
     static let helpLine = "j and k move. Enter opens. Uppercase R reads the "
-        + "article. o opens it in the browser. h goes back. Escape leaves."
+        + "article. o opens it in the browser. Slash searches titles, "
+        + "period repeats. h goes back. Escape leaves."
 
     private(set) var active = false
     private var entering = false
@@ -189,9 +190,33 @@ final class NewsReader {
         case .markAllRead: markAllRead()
         case .deleteArticle: deleteArticle()
         case .reclaim: reclaim()
-        case .help: announce(Self.helpLine)
+        case .search(let query, let direction): search(query, direction)
+        case .searchRepeat:
+            guard let last = lastSearch else { Earcon.error(); return }
+            search(last.query, last.direction)
         case .exit: break
         }
+    }
+
+    /// "/" and "?" — jump to the next matching title. The mirror can't
+    /// narrow newsboat's on-screen list, so a search MOVES (posting the
+    /// exact arrows) rather than filters; "." re-hunts from the new row.
+    private var lastSearch: (query: String, direction: ReadDirection)?
+
+    private func search(_ query: String, _ direction: ReadDirection) {
+        lastSearch = (query, direction)
+        let titles = session.level == .feeds
+            ? session.feeds.map(\.title)
+            : session.articles.map(\.title)
+        let from = session.level == .feeds ? session.feedIndex
+                                          : session.articleIndex
+        guard let target = NewsSession.searchTarget(
+            titles: titles, from: from, query: query, direction: direction)
+        else {
+            Earcon.error()  // no match, no wrap — the read-search rule
+            return
+        }
+        moveBy(target - from)
     }
 
     /// C — newsboat's own mark-all-feeds-read, mirrored. Feed list only:

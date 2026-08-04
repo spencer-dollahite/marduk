@@ -14,7 +14,10 @@ enum NewsCommand: Equatable {
     case markAllRead    // C — newsboat's mark-all-feeds-read, mirrored
     case deleteArticle  // dd — vim delete-line; posts newsboat's D
     case reclaim        // held Escape out of raw-control INSERT — resync
-    case help           // ? — speak the news keys
+    case search(String, ReadDirection)  // "/" forward, "?" back — a JUMP to
+                                        // the next matching title (the mirror
+                                        // can't narrow newsboat's list)
+    case searchRepeat   // "." — vim's n by the read-mode precedent (news n = exit)
     case exit           // Escape / n — leave NEWS mode (the tap already stood down)
 }
 
@@ -120,6 +123,24 @@ struct NewsSession: Equatable {
     mutating func markCurrentArticleRead() {
         guard articles.indices.contains(articleIndex) else { return }
         articles[articleIndex].unread = false
+    }
+
+    /// The next title matching `query` from `from` (exclusive), smartcase
+    /// (an all-lowercase query matches case-insensitively), NO WRAP —
+    /// audio gives no wrap cue, the read-search rule. Pure, tested.
+    static func searchTarget(titles: [String], from: Int, query: String,
+                             direction: ReadDirection) -> Int? {
+        let smart = query == query.lowercased()
+        func matches(_ title: String) -> Bool {
+            smart ? title.lowercased().contains(query) : title.contains(query)
+        }
+        let range: StrideTo<Int> = direction == .forward
+            ? stride(from: from + 1, to: titles.count, by: 1)
+            : stride(from: from - 1, to: -1, by: -1)
+        for index in range where titles.indices.contains(index) {
+            if matches(titles[index]) { return index }
+        }
+        return nil
     }
 
     // MARK: - Spoken lines (minimal verbosity — the founding rule)

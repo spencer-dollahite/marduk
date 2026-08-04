@@ -234,6 +234,34 @@ final class KeyboardMonitor {
     // main-thread-only like all tap state.
     var onNarrate: ((Bool) -> Void)?
     private var narrationActive = false
+
+    // NEWS mode (`n` outside Firefox — newsboat handoff). While active the
+    // tap owns the list keys (j/k/Enter/h/q/r/R/o, digits, gg/G) and the
+    // daemon's NewsReader mirrors newsboat's TUI; an article read layers
+    // the READING capture above this. State is main-thread-only like all
+    // tap state; the daemon arms it via setNewsActive once the mirror is
+    // loaded, and every exit path (Escape/n, Ctrl+Option+M, app switch)
+    // clears it here FIRST so no further keys are eaten.
+    var onNewsOpen: (() -> Void)?
+    var onNewsCommand: ((NewsCommand) -> Void)?
+    private(set) var newsActive = false
+    private var newsCount = 0
+    private var pendingNewsG = false
+    static let newsHostBundle = "com.apple.Terminal"
+
+    /// Daemon-side arm/disarm (main thread). Clearing always drops the
+    /// half-entered count/gg state with it.
+    func setNewsActive(_ active: Bool) {
+        newsActive = active
+        newsCount = 0
+        pendingNewsG = false
+    }
+
+    /// Synthetic keys for the NewsReader (arrows/Enter/q into newsboat's
+    /// Terminal). Marker-tagged like every synthetic post, main thread.
+    func postNewsKeys(keycode: CGKeyCode, shift: Bool = false, count: Int = 1) {
+        postKey(keycode: keycode, shift: shift, count: count)
+    }
     // Cached by a workspace observer so the tap callback can gate the `n`
     // command on the frontmost app without querying anything in-callback
     private var frontmostBundleID =
@@ -418,6 +446,17 @@ final class KeyboardMonitor {
             if let app, let id = app.bundleIdentifier,
                id != Bundle.main.bundleIdentifier {
                 lastForeignApp = (app.localizedName ?? id, id)
+            }
+            // NEWS mode is anchored to its Terminal window: switching to
+            // any other app (except Marduk itself — the palette activates
+            // us) stands the mirror down, or captured j/k would eat the
+            // user's keys in the app they switched to. Silent by design:
+            // `o` hands off to the browser this way on purpose.
+            if newsActive, let id = app?.bundleIdentifier,
+               id != Self.newsHostBundle, id != Bundle.main.bundleIdentifier {
+                setNewsActive(false)
+                fputs("[keyboard] news — app switch, standing down\n", stderr)
+                onNewsCommand?(.exit)
             }
         }
 
@@ -721,6 +760,11 @@ final class KeyboardMonitor {
                     narrationActive = false
                     postKey(keycode: 45)
                     onNarrate?(false)
+                }
+                // And NEWS mode stands down with everything else
+                if newsActive {
+                    setNewsActive(false)
+                    onNewsCommand?(.exit)
                 }
                 if toggleEarconEnabled {
                     if on { Earcon.bloopUp() } else { Earcon.bloopDown() }
@@ -1065,6 +1109,14 @@ final class KeyboardMonitor {
                 // BACK into the capture (see the INSERT hold path); Option+
                 // Escape stops the audio from anywhere.
                 if isAutorepeat { return nil }
+                if newsActive {
+                    // No INSERT inside NEWS — typed keys would land in
+                    // newsboat's TUI and silently desync the mirror.
+                    // Leave news first (held Escape twice, or Escape from
+                    // the list).
+                    DispatchQueue.main.async { Earcon.error() }
+                    return nil
+                }
                 readingCapture = false
                 resetReadMotionState()
                 mode = .insert
@@ -1083,6 +1135,19 @@ final class KeyboardMonitor {
                     self.escapeHoldFired = true
                     self.readingCapture = false
                     self.resetReadMotionState()
+                    if self.newsActive {
+                        // Held Escape during a news article climbs ONE
+                        // level: stop the article, land on the news list
+                        // (the daemon closes newsboat's pager via the
+                        // read's completion) — Escape from the list then
+                        // leaves news. riseToReading = "still captured",
+                        // the INSERT-reclaim rung's sound.
+                        fputs("[keyboard] READING escape held → news list\n",
+                              stderr)
+                        self.onStop?()
+                        Earcon.riseToReading()
+                        return
+                    }
                     self.mode = .normal
                     fputs("[keyboard] READING escape held → NORMAL\n", stderr)
                     self.onStop?()
@@ -1310,6 +1375,108 @@ final class KeyboardMonitor {
             let delta: Float = (keycode == 126 ? 10.0 : -10.0) / 360.0
             DispatchQueue.main.async { [self] in onRateChange?(delta) }
             return nil
+        }
+
+        // === NEWS mode: the newsboat list owns the keyboard ===
+        // Armed by the daemon once the mirror is loaded; an article read
+        // layers the READING capture ABOVE this block (it ran earlier), so
+        // these keys are list navigation only. The tap consumes j/k etc.
+        // and the NewsReader posts the equivalent arrows to newsboat —
+        // never letting the raw key through, so mirror and TUI move as
+        // one. Cmd/Ctrl/Option combos pass (zoom rides Option); ":" keeps
+        // the command line reachable; other typing-shaped keys buzz
+        // instead of leaking into the TUI (the READING-capture rule).
+        if newsActive, mode == .normal, !readingCapture, burstBuffer.isEmpty {
+            if hasCommand || hasControl || hasOption { return pass }
+            let hasShift = flags.contains(.maskShift)
+
+            if keycode == 41, hasShift { // ":" — command line, news stays armed
+                if isAutorepeat { return nil }
+                newsCount = 0
+                pendingNewsG = false
+                enterCommandMode()
+                return nil
+            }
+
+            // Digits build a count, vim style (3j)
+            if !hasShift, let digit = Self.digitKeyCodes[keycode],
+               digit != 0 || newsCount > 0 {
+                pendingNewsG = false
+                newsCount = min(newsCount * 10 + digit, 999)
+                return nil
+            }
+
+            if keycode == 5 { // g / G — top and bottom (gg arms, vim style)
+                if isAutorepeat { return nil }
+                newsCount = 0
+                if hasShift {
+                    pendingNewsG = false
+                    DispatchQueue.main.async { [self] in onNewsCommand?(.bottom) }
+                } else if pendingNewsG {
+                    pendingNewsG = false
+                    DispatchQueue.main.async { [self] in onNewsCommand?(.top) }
+                } else {
+                    pendingNewsG = true
+                }
+                return nil
+            }
+            pendingNewsG = false
+
+            switch keycode {
+            case 38, 125: // j / Down — next item (autorepeat glides)
+                let count = max(1, newsCount)
+                newsCount = 0
+                DispatchQueue.main.async { [self] in onNewsCommand?(.move(count)) }
+                return nil
+            case 40, 126: // k / Up — previous item
+                let count = max(1, newsCount)
+                newsCount = 0
+                DispatchQueue.main.async { [self] in onNewsCommand?(.move(-count)) }
+                return nil
+            case 36, 37: // Return / l — open
+                if isAutorepeat { return nil }
+                newsCount = 0
+                DispatchQueue.main.async { [self] in onNewsCommand?(.open) }
+                return nil
+            case 4, 12: // h / q — back (q from the feed list quits newsboat)
+                if isAutorepeat { return nil }
+                newsCount = 0
+                DispatchQueue.main.async { [self] in onNewsCommand?(.back) }
+                return nil
+            case 15: // r / R — read the article, full reading machinery
+                if isAutorepeat { return nil }
+                newsCount = 0
+                DispatchQueue.main.async { [self] in onNewsCommand?(.read) }
+                return nil
+            case 31: // o — open in the browser (news stands down on the switch)
+                if isAutorepeat { return nil }
+                newsCount = 0
+                DispatchQueue.main.async { [self] in onNewsCommand?(.openInBrowser) }
+                return nil
+            case 44 where hasShift: // ? — speak the news keys
+                if isAutorepeat { return nil }
+                DispatchQueue.main.async { [self] in onNewsCommand?(.help) }
+                return nil
+            case 53, 45: // Escape / n — leave news (newsboat keeps running)
+                if isAutorepeat { return nil }
+                setNewsActive(false)
+                fputs("[keyboard] news → NORMAL\n", stderr)
+                DispatchQueue.main.async { [self] in
+                    onNewsCommand?(.exit)
+                    Earcon.riseToNormal()
+                }
+                return nil
+            default:
+                if Self.alphaKeyCodes.contains(keycode) || keycode == 40
+                    || Self.digitKeyCodes[keycode] != nil
+                    || Self.typingPunctuationKeys.contains(keycode)
+                    || keycode == 48 || keycode == 51 || keycode == 49 {
+                    newsCount = 0
+                    if !isAutorepeat { DispatchQueue.main.async { Earcon.error() } }
+                    return nil
+                }
+                return pass
+            }
         }
 
         // === COMMAND mode: ":" line editor, driven entirely by the tap ===
@@ -1716,6 +1883,15 @@ final class KeyboardMonitor {
             }
             return nil
 
+        case 45: // n — open the news reader (newsboat handoff). Reaches
+                 // here only OUTSIDE Firefox (Narrate owns n there) and
+                 // after the typing-rescue burst window, exactly like
+                 // s/t/u: a lone n redispatches on burst expiry, while n
+                 // inside a word ("runs", "sun") still rescues to typing —
+                 // n stays out of BurstPolicy's command letters on purpose.
+            DispatchQueue.main.async { [self] in onNewsOpen?() }
+            return nil
+
         case 28 where isFirefoxFrontmost: // 8 — Reader mode + narration, one key
             // Post Firefox's reader toggle (Cmd+Option+R), wait for the
             // Reader document to exist, then run the narration handoff.
@@ -1755,15 +1931,7 @@ final class KeyboardMonitor {
 
         case 41 where flags.contains(.maskShift): // ":" — enter COMMAND mode
             if isAutorepeat { return nil }
-            mode = .command
-            commandBuffer = ""
-            commandAbsorbTail = []
-            scheduleCommandIdle()
-            fputs("[keyboard] → COMMAND\n", stderr)
-            DispatchQueue.main.async { [self] in
-                if commandEchoEnabled { onAnnounce?("command") }
-                onCommandChange?("", false)
-            }
+            enterCommandMode()
             return nil
 
         default:
@@ -1796,6 +1964,21 @@ final class KeyboardMonitor {
                 return nil
             }
             return pass
+        }
+    }
+
+    /// ":" — shared by NORMAL and NEWS mode (a :config tweak must stay
+    /// reachable mid-news; command Return/Escape land back where the ":"
+    /// was pressed, because NEWS rides beside `mode`, not inside it).
+    private func enterCommandMode() {
+        mode = .command
+        commandBuffer = ""
+        commandAbsorbTail = []
+        scheduleCommandIdle()
+        fputs("[keyboard] → COMMAND\n", stderr)
+        DispatchQueue.main.async { [self] in
+            if commandEchoEnabled { onAnnounce?("command") }
+            onCommandChange?("", false)
         }
     }
 

@@ -12,6 +12,20 @@ struct MardukConfig: Codable {
     var update: UpdateConfig? = UpdateConfig()
     var overlay: OverlayConfig? = OverlayConfig()
     var onboarding: OnboardingConfig? = OnboardingConfig()
+    var news: NewsConfig? = NewsConfig()
+
+    /// NEWS mode (`n`): the newsboat handoff. All paths optional — unset
+    /// means newsboat's own defaults, so a stock setup is never touched.
+    /// Setting urlsFile/cacheFile/configFile launches newsboat with
+    /// -u/-c/-C, giving Marduk a private newsboat instance (its feeds
+    /// never collide with the user's own newsboat).
+    struct NewsConfig: Codable {
+        var command: String?     // Terminal command; default "newsboat -r"
+                                 // (-r = refresh feeds on every load)
+        var urlsFile: String?    // scoped urls file (newsboat -u)
+        var cacheFile: String?   // scoped cache.db (newsboat -c; the mirror reads it)
+        var configFile: String?  // scoped newsboat config (newsboat -C)
+    }
 
     /// Progressive onboarding: contextual hints + first-use config
     /// questions, paced so a new user is never bombarded.
@@ -166,6 +180,7 @@ struct MardukConfig: Codable {
         update = try c.decodeIfPresent(UpdateConfig.self, forKey: .update)
         overlay = try c.decodeIfPresent(OverlayConfig.self, forKey: .overlay)
         onboarding = try c.decodeIfPresent(OnboardingConfig.self, forKey: .onboarding)
+        news = try c.decodeIfPresent(NewsConfig.self, forKey: .news)
     }
 }
 

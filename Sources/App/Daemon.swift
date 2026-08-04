@@ -142,6 +142,10 @@ final class DaemonServer {
     // "dialogfocus-explained" / "zoomfollow-hinted")
     private var dialogFocusSetting: DialogFocus.Setting = .ask
     private let hoverSpeech = HoverSpeech()
+    // NEWS mode (`n`): the newsboat handoff — launches/attaches the TUI,
+    // mirrors its lists from urls + cache.db, reads articles through the
+    // normal read pipeline
+    private let newsReader = NewsReader()
     // First-run welcome deferred because the event tap didn't exist yet
     // (no Accessibility grant); spoken when the tap retry succeeds
     private var welcomePending = false
@@ -704,6 +708,28 @@ final class DaemonServer {
                 ducker.releaseHoldAndUnduck()
             }
         }
+        // NEWS mode (`n` outside Firefox): newsboat handoff. The reader
+        // speaks over announce (status lines), reads articles through
+        // speakDocument (every reading feature applies), and posts its
+        // mirror keystrokes through the monitor's synthetic-key path.
+        newsReader.configure(config.news)
+        newsReader.announce = { [self] text in speech.announce(text) }
+        newsReader.startRead = { [self] text in speakDocument(text, start: 0) }
+        newsReader.isReadActive = { [self] in speech.readActive }
+        newsReader.postKeys = { [self] keycode, shift, count in
+            keyboardMonitor?.postNewsKeys(keycode: keycode, shift: shift,
+                                          count: count)
+        }
+        newsReader.setCaptured = { [self] on in
+            keyboardMonitor?.setNewsActive(on)
+        }
+        newsReader.frontmostApp = { [self] in keyboardMonitor?.frontmostApp }
+        newsReader.isEngaged = { [self] in keyboardMonitor?.isEnabled ?? false }
+        keyboardMonitor?.onNewsOpen = { [self] in newsReader.enter() }
+        keyboardMonitor?.onNewsCommand = { [self] command in
+            newsReader.handle(command)
+        }
+
         // Clicking a palette row acts like Tab on that row (mouseDown arrives
         // on the main thread already)
         palette.onRowClick = { [self] row in
@@ -859,6 +885,10 @@ final class DaemonServer {
     /// is already teaching.
     private func contentReadEnded() {
         tutorial.handle(.readFinished)
+        // A news article's end (finish OR stop) closes newsboat's pager;
+        // readActive distinguishes a real end from a replacement read
+        // whose cancel-completion fires while the successor plays.
+        newsReader.readEnded(readActive: speech.readActive)
     }
 
     /// Speak a hint about reading BEFORE the read it describes, then run
@@ -1346,6 +1376,8 @@ final class DaemonServer {
             // Unreachable in practice — every picker-prefixed buffer is
             // intercepted above before parse. Compiler exhaustiveness only.
             break
+        case .news:
+            newsReader.enter()
         case .typing:
             // One-stop shop: macOS already speaks keys/words as you type,
             // system-wide — route the seeker to the real switch instead of

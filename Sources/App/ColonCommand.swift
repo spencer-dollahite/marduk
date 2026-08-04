@@ -9,6 +9,7 @@ enum ColonCommand: Equatable {
     case config(key: String, value: String)
     case voices
     case invertAppsList
+    case news
     case pronunciation
     case typing
     case quit
@@ -24,9 +25,9 @@ enum ColonCommand: Equatable {
 
     // No name may be a prefix of another — auto-accept relies on it
     static let commandNames = ["help", "commands", "tutorial", "tip", "config",
-                               "voices", "invertappslist", "pronunciation", "typing",
-                               "quit", "restart", "update", "uninstall", "log",
-                               "feedback", "bug", "security"]
+                               "voices", "invertappslist", "news", "pronunciation",
+                               "typing", "quit", "restart", "update", "uninstall",
+                               "log", "feedback", "bug", "security"]
 
     /// Commands that open a STAGED PICKER: the buffer stays in COMMAND
     /// mode while the user fuzzy-filters, and Return accepts the
@@ -128,6 +129,8 @@ enum ColonCommand: Equatable {
             return .voices
         case "invertappslist":
             return .invertAppsList
+        case "news":
+            return .news
         case "pronunciation":
             return .pronunciation
         case "typing":
@@ -353,6 +356,7 @@ enum CommandCompleter {
         "config": "change a setting",
         "voices": "choose the reading voice",
         "invertappslist": "choose which apps invert the display",
+        "news": "open the newsboat news reader",
         "pronunciation": "open the system pronunciation editor",
         "typing": "open the system typing feedback settings",
         "quit": "stop Marduk",

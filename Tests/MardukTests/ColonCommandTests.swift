@@ -402,6 +402,7 @@ final class ColonCommandTests: XCTestCase {
         "config — change a setting",
         "voices — choose the reading voice",
         "invertappslist — choose which apps invert the display",
+        "news — open the newsboat news reader",
         "pronunciation — open the system pronunciation editor",
         "typing — open the system typing feedback settings",
         "quit — stop Marduk",

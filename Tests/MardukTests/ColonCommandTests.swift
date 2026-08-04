@@ -403,6 +403,7 @@ final class ColonCommandTests: XCTestCase {
         "voices — choose the reading voice",
         "invertappslist — choose which apps invert the display",
         "news — open the newsboat news reader",
+        "stock — manage the stock watchlist",
         "pronunciation — open the system pronunciation editor",
         "typing — open the system typing feedback settings",
         "quit — stop Marduk",

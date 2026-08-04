@@ -154,7 +154,9 @@ final class NewsReader {
         active = true
         setCaptured(true)
         fputs("[news] armed — \(session.feeds.count) feeds\n", stderr)
-        var line = "\(session.feeds.count) feeds. " + currentLine()
+        // Straight into the first title — no feed-count preamble (user
+        // ruling 2026-08-04: the count is ceremony, the title is the news)
+        var line = currentLine()
         if OnceMarker.firstTime("news-hinted") {
             line += " " + Self.helpLine
         }
@@ -184,9 +186,58 @@ final class NewsReader {
         case .back: goBack()
         case .read: readCurrent()
         case .openInBrowser: openInBrowser()
+        case .markAllRead: markAllRead()
+        case .deleteArticle: deleteArticle()
+        case .reclaim: reclaim()
         case .help: announce(Self.helpLine)
         case .exit: break
         }
+    }
+
+    /// C — newsboat's own mark-all-feeds-read, mirrored. Feed list only:
+    /// the binding lives there, and posting it anywhere else would act
+    /// blind.
+    private func markAllRead() {
+        guard session.level == .feeds else { Earcon.error(); return }
+        ensureTerminalFront { [self] in postKeys(8, true, 1) }  // Shift+C
+        unread = [:]
+        lastCountRefresh = Date()  // the db lags newsboat's write — don't
+                                   // requery a stale count right away
+        announce("All feeds read.")
+    }
+
+    /// dd — delete the current article (newsboat's D). The article
+    /// vanishes from newsboat's list in place, cursor on the next row —
+    /// the mirror does the same and speaks where you landed.
+    private func deleteArticle() {
+        let deleted = session.currentArticle
+        guard session.deleteCurrentArticle() else { Earcon.error(); return }
+        ensureTerminalFront { [self] in postKeys(2, true, 1) }  // Shift+D
+        fputs("[news] article deleted\n", stderr)
+        if session.articles.isEmpty {
+            _ = deleted
+            goBack()
+        } else {
+            speakCurrent()
+        }
+    }
+
+    /// Held Escape out of raw-control INSERT: the user drove newsboat
+    /// directly (reloads, its own n/N hops), so refresh the mirror's DATA.
+    /// The TUI cursor can't be observed — the row we speak is where the
+    /// MIRROR still stands (documented limit; j/k re-lock the two).
+    private func reclaim() {
+        guard active else { return }
+        refreshCounts(force: true)
+        if session.level == .articles, let feed = session.currentFeed {
+            let fresh = db?.articles(feedURL: feed.url) ?? []
+            let keepID = session.currentArticle?.id
+            let start = keepID.flatMap { id in fresh.firstIndex { $0.id == id } }
+                ?? min(session.articleIndex, max(0, fresh.count - 1))
+            session.enterArticles(fresh, startAt: start)
+        }
+        fputs("[news] reclaimed from raw control\n", stderr)
+        speakCurrent()
     }
 
     private func moveBy(_ delta: Int) {

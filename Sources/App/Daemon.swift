@@ -146,6 +146,8 @@ final class DaemonServer {
     // mirrors its lists from urls + cache.db, reads articles through the
     // normal read pipeline
     private let newsReader = NewsReader()
+    // STOCKS mode (`S`): Marduk-native spoken watchlist with alert levels
+    private let stocksReader = StocksReader()
     // First-run welcome deferred because the event tap didn't exist yet
     // (no Accessibility grant); spoken when the tap retry succeeds
     private var welcomePending = false
@@ -729,6 +731,24 @@ final class DaemonServer {
         keyboardMonitor?.onNewsCommand = { [self] command in
             newsReader.handle(command)
         }
+
+        // STOCKS mode (`S`): spoken watchlist + alert levels
+        stocksReader.announce = { [self] text in speech.announce(text) }
+        stocksReader.setCaptured = { [self] on in
+            keyboardMonitor?.setStocksActive(on)
+        }
+        stocksReader.openCommandLine = { [self] prefill in
+            keyboardMonitor?.openCommandLine(prefill: prefill)
+        }
+        keyboardMonitor?.onStocksOpen = { [self] in stocksReader.enter() }
+        keyboardMonitor?.onStocksCommand = { [self] command in
+            stocksReader.handle(command)
+        }
+        // Extension gates (:config news/stocks) — the monitor's `where`
+        // clauses read these flags live
+        keyboardMonitor?.newsExtensionEnabled = config.extensions?.news ?? true
+        keyboardMonitor?.stocksExtensionEnabled =
+            config.extensions?.stocks ?? true
 
         // Clicking a palette row acts like Tab on that row (mouseDown arrives
         // on the main thread already)
@@ -1377,7 +1397,21 @@ final class DaemonServer {
             // intercepted above before parse. Compiler exhaustiveness only.
             break
         case .news:
+            guard config.extensions?.news ?? true else {
+                Earcon.error()
+                speech.announce("The news extension is off. "
+                    + "Say colon config news on.")
+                return
+            }
             newsReader.enter()
+        case .stock(let args):
+            guard config.extensions?.stocks ?? true else {
+                Earcon.error()
+                speech.announce("The stocks extension is off. "
+                    + "Say colon config stocks on.")
+                return
+            }
+            stocksReader.execute(StockColonCommand.parse(args))
         case .typing:
             // One-stop shop: macOS already speaks keys/words as you type,
             // system-wide — route the seeker to the real switch instead of
@@ -2685,6 +2719,30 @@ final class DaemonServer {
             case .off:
                 speech.announce("Prefer dark in preview, off.")
             }
+
+        case "news":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            var ext = config.extensions ?? .init()
+            ext.news = on
+            config.extensions = ext
+            ConfigLoader.save(config)
+            keyboardMonitor?.newsExtensionEnabled = on
+            if !on { newsReader.deactivate(quiet: true) }
+            speech.announce(on
+                ? "News extension on. Press n for your feeds."
+                : "News extension off. n is a plain letter again.")
+
+        case "stocks":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            var ext = config.extensions ?? .init()
+            ext.stocks = on
+            config.extensions = ext
+            ConfigLoader.save(config)
+            keyboardMonitor?.stocksExtensionEnabled = on
+            if !on { stocksReader.deactivate() }
+            speech.announce(on
+                ? "Stocks extension on. Press capital S for your watchlist."
+                : "Stocks extension off. Capital S toggles hover speech again.")
 
         case "dock":
             guard let on = toggle() else { return fail("Say on or off.") }

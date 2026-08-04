@@ -62,7 +62,8 @@ final class ConfigPermutationTests: XCTestCase {
          ("update", MardukConfig.UpdateConfig()),
          ("overlay", MardukConfig.OverlayConfig()),
          ("onboarding", MardukConfig.OnboardingConfig()),
-         ("news", MardukConfig.NewsConfig())]
+         ("news", MardukConfig.NewsConfig()),
+         ("extensions", MardukConfig.ExtensionsConfig())]
     }
 
     private func decode(_ json: String) throws -> MardukConfig {

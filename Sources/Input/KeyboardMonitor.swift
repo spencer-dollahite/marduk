@@ -247,20 +247,58 @@ final class KeyboardMonitor {
     private(set) var newsActive = false
     private var newsCount = 0
     private var pendingNewsG = false
+    private var pendingNewsD = false   // first d of dd (delete article)
     static let newsHostBundle = "com.apple.Terminal"
 
     /// Daemon-side arm/disarm (main thread). Clearing always drops the
-    /// half-entered count/gg state with it.
+    /// half-entered count/gg/dd state with it.
     func setNewsActive(_ active: Bool) {
         newsActive = active
         newsCount = 0
         pendingNewsG = false
+        pendingNewsD = false
     }
 
     /// Synthetic keys for the NewsReader (arrows/Enter/q into newsboat's
     /// Terminal). Marker-tagged like every synthetic post, main thread.
     func postNewsKeys(keycode: CGKeyCode, shift: Bool = false, count: Int = 1) {
         postKey(keycode: keycode, shift: shift, count: count)
+    }
+
+    // Extension gates (:config news/stocks off): a disabled extension's
+    // key falls through to its old meaning — n to the NORMAL buzz, S to
+    // the hover toggle — zero surface, the releaseAvailable pattern.
+    var newsExtensionEnabled = true
+    var stocksExtensionEnabled = true
+
+    // STOCKS mode (`S` — Marduk-native watchlist, no external app, no
+    // key posting). Same shape as NEWS: daemon arms via setStocksActive,
+    // the tap consumes list keys and emits semantic StocksCommands.
+    // stocksHostBundle remembers which app was front at arm time so the
+    // command palette's activate/deactivate round trip (the a/b/s
+    // prefill flow) doesn't read as "the user left".
+    var onStocksOpen: (() -> Void)?
+    var onStocksCommand: ((StocksCommand) -> Void)?
+    private(set) var stocksActive = false
+    private var stocksCount = 0
+    private var pendingStocksG = false
+    private var stocksHostBundle = ""
+
+    func setStocksActive(_ active: Bool) {
+        stocksActive = active
+        stocksCount = 0
+        pendingStocksG = false
+        if active { stocksHostBundle = frontmostBundleID }
+    }
+
+    /// Enter COMMAND mode with a prefilled buffer (the stocks a/b/s flow:
+    /// "stock add " and friends — the user types the rest and Returns).
+    /// Main thread only.
+    func openCommandLine(prefill: String) {
+        guard isEnabled, mode != .command else { return }
+        enterCommandMode()
+        commandBuffer = prefill
+        DispatchQueue.main.async { [self] in onCommandChange?(prefill, false) }
     }
     // Cached by a workspace observer so the tap callback can gate the `n`
     // command on the frontmost app without querying anything in-callback
@@ -457,6 +495,15 @@ final class KeyboardMonitor {
                 setNewsActive(false)
                 fputs("[keyboard] news — app switch, standing down\n", stderr)
                 onNewsCommand?(.exit)
+            }
+            // STOCKS likewise stands down when the user moves on — except
+            // to Marduk itself (palette) or back to the app they were in
+            // when stocks opened (the palette hide reactivates it).
+            if stocksActive, let id = app?.bundleIdentifier,
+               id != stocksHostBundle, id != Bundle.main.bundleIdentifier {
+                setStocksActive(false)
+                fputs("[keyboard] stocks — app switch, standing down\n", stderr)
+                onStocksCommand?(.exit)
             }
         }
 
@@ -761,10 +808,14 @@ final class KeyboardMonitor {
                     postKey(keycode: 45)
                     onNarrate?(false)
                 }
-                // And NEWS mode stands down with everything else
+                // And NEWS/STOCKS modes stand down with everything else
                 if newsActive {
                     setNewsActive(false)
                     onNewsCommand?(.exit)
+                }
+                if stocksActive {
+                    setStocksActive(false)
+                    onStocksCommand?(.exit)
                 }
                 if toggleEarconEnabled {
                     if on { Earcon.bloopUp() } else { Earcon.bloopDown() }
@@ -1409,6 +1460,7 @@ final class KeyboardMonitor {
             if keycode == 5 { // g / G — top and bottom (gg arms, vim style)
                 if isAutorepeat { return nil }
                 newsCount = 0
+                pendingNewsD = false
                 if hasShift {
                     pendingNewsG = false
                     DispatchQueue.main.async { [self] in onNewsCommand?(.bottom) }
@@ -1420,7 +1472,30 @@ final class KeyboardMonitor {
                 }
                 return nil
             }
+            if keycode == 2, !hasShift { // d — dd deletes the article, vim style
+                if isAutorepeat { return nil }
+                newsCount = 0
+                pendingNewsG = false
+                if pendingNewsD {
+                    pendingNewsD = false
+                    DispatchQueue.main.async { [self] in
+                        onNewsCommand?(.deleteArticle)
+                    }
+                } else {
+                    pendingNewsD = true
+                }
+                return nil
+            }
+            if keycode == 8, hasShift { // C — mark all read (newsboat's own C)
+                if isAutorepeat { return nil }
+                newsCount = 0
+                pendingNewsG = false
+                pendingNewsD = false
+                DispatchQueue.main.async { [self] in onNewsCommand?(.markAllRead) }
+                return nil
+            }
             pendingNewsG = false
+            pendingNewsD = false
 
             switch keycode {
             case 38, 125: // j / Down — next item (autorepeat glides)
@@ -1457,6 +1532,19 @@ final class KeyboardMonitor {
                 if isAutorepeat { return nil }
                 DispatchQueue.main.async { [self] in onNewsCommand?(.help) }
                 return nil
+            case 34: // i — drive newsboat RAW: keys pass through untouched
+                     // (newsboat's own n/r/R reload bindings and everything
+                     // else). Hold Escape to climb back to the news list;
+                     // hold again from the list for NORMAL. The mirror
+                     // can't see raw keystrokes — reclaim refreshes its
+                     // data and re-speaks the row, but the TUI cursor may
+                     // have moved (documented limit).
+                if isAutorepeat { return nil }
+                mode = .insert
+                suppressInsertEntryRepeat = true
+                fputs("[keyboard] news → INSERT (raw newsboat control)\n", stderr)
+                DispatchQueue.main.async { Earcon.fallToInsert() }
+                return nil
             case 53, 45: // Escape / n — leave news (newsboat keeps running)
                 if isAutorepeat { return nil }
                 setNewsActive(false)
@@ -1472,6 +1560,111 @@ final class KeyboardMonitor {
                     || Self.typingPunctuationKeys.contains(keycode)
                     || keycode == 48 || keycode == 51 || keycode == 49 {
                     newsCount = 0
+                    if !isAutorepeat { DispatchQueue.main.async { Earcon.error() } }
+                    return nil
+                }
+                return pass
+            }
+        }
+
+        // === STOCKS mode: the watchlist owns the keyboard ===
+        // Marduk-native — no external app, no key posting, just the
+        // spoken cursor. a/b/s open a prefilled ":stock …" command line
+        // (COMMAND mode takes over, then hands back here on Return).
+        if stocksActive, mode == .normal, !readingCapture, burstBuffer.isEmpty {
+            if hasCommand || hasControl || hasOption { return pass }
+            let hasShift = flags.contains(.maskShift)
+
+            if keycode == 41, hasShift { // ":" — command line, stocks stays armed
+                if isAutorepeat { return nil }
+                stocksCount = 0
+                pendingStocksG = false
+                enterCommandMode()
+                return nil
+            }
+
+            if !hasShift, let digit = Self.digitKeyCodes[keycode],
+               digit != 0 || stocksCount > 0 {
+                pendingStocksG = false
+                stocksCount = min(stocksCount * 10 + digit, 999)
+                return nil
+            }
+
+            if keycode == 5 { // g / G — top and bottom
+                if isAutorepeat { return nil }
+                stocksCount = 0
+                if hasShift {
+                    pendingStocksG = false
+                    DispatchQueue.main.async { [self] in onStocksCommand?(.bottom) }
+                } else if pendingStocksG {
+                    pendingStocksG = false
+                    DispatchQueue.main.async { [self] in onStocksCommand?(.top) }
+                } else {
+                    pendingStocksG = true
+                }
+                return nil
+            }
+            pendingStocksG = false
+
+            switch keycode {
+            case 38, 125: // j / Down
+                let count = max(1, stocksCount)
+                stocksCount = 0
+                DispatchQueue.main.async { [self] in
+                    onStocksCommand?(.move(count))
+                }
+                return nil
+            case 40, 126: // k / Up
+                let count = max(1, stocksCount)
+                stocksCount = 0
+                DispatchQueue.main.async { [self] in
+                    onStocksCommand?(.move(-count))
+                }
+                return nil
+            case 15, 36: // r / R / Return — speak the full quote
+                if isAutorepeat { return nil }
+                stocksCount = 0
+                DispatchQueue.main.async { [self] in onStocksCommand?(.detail) }
+                return nil
+            case 0: // a — add a ticker (prefilled command line)
+                if isAutorepeat { return nil }
+                DispatchQueue.main.async { [self] in onStocksCommand?(.add) }
+                return nil
+            case 7: // x — remove the current ticker
+                if isAutorepeat { return nil }
+                DispatchQueue.main.async { [self] in onStocksCommand?(.remove) }
+                return nil
+            case 11: // b — buy alert for the current ticker
+                if isAutorepeat { return nil }
+                DispatchQueue.main.async { [self] in
+                    onStocksCommand?(.buyTrigger)
+                }
+                return nil
+            case 1 where !hasShift: // s — sell alert
+                if isAutorepeat { return nil }
+                DispatchQueue.main.async { [self] in
+                    onStocksCommand?(.sellTrigger)
+                }
+                return nil
+            case 44 where hasShift: // ? — speak the stocks keys
+                if isAutorepeat { return nil }
+                DispatchQueue.main.async { [self] in onStocksCommand?(.help) }
+                return nil
+            case 53, 12, 1: // Escape / q / S — leave stocks
+                if isAutorepeat { return nil }
+                setStocksActive(false)
+                fputs("[keyboard] stocks → NORMAL\n", stderr)
+                DispatchQueue.main.async { [self] in
+                    onStocksCommand?(.exit)
+                    Earcon.riseToNormal()
+                }
+                return nil
+            default:
+                if Self.alphaKeyCodes.contains(keycode) || keycode == 40
+                    || Self.digitKeyCodes[keycode] != nil
+                    || Self.typingPunctuationKeys.contains(keycode)
+                    || keycode == 48 || keycode == 51 || keycode == 49 {
+                    stocksCount = 0
                     if !isAutorepeat { DispatchQueue.main.async { Earcon.error() } }
                     return nil
                 }
@@ -1654,6 +1847,20 @@ final class KeyboardMonitor {
                         return
                     case .normal, .passToApp:
                         self.mode = .normal
+                        if self.newsActive {
+                            // INSERT entered FROM news mode (raw newsboat
+                            // control): the hold climbs back to the news
+                            // list, not all the way out — Escape from the
+                            // list is the next rung up to NORMAL. Same
+                            // middle-rung sound as the reading reclaim.
+                            fputs("[keyboard] escape held → NEWS (reclaimed)\n",
+                                  stderr)
+                            Earcon.riseToReading()
+                            DispatchQueue.main.async { [weak self] in
+                                self?.onNewsCommand?(.reclaim)
+                            }
+                            return
+                        }
                         fputs("[keyboard] escape held → NORMAL\n", stderr)
                         Earcon.riseToNormal()
                     }
@@ -1851,6 +2058,13 @@ final class KeyboardMonitor {
             }
             return nil
 
+        case 1 where flags.contains(.maskShift) && stocksExtensionEnabled:
+            // S — the stocks watchlist (unshifted s keeps hover speech;
+            // with the extension off, S falls through to hover exactly as
+            // it always did — zero new surface)
+            DispatchQueue.main.async { [self] in onStocksOpen?() }
+            return nil
+
         case 1: // s — toggle Marduk's own pointer hover speech (HoverSpeech:
                 // the reading voice, rate, and pitch — the macOS hover
                 // feature and its shortcut setup are no longer involved)
@@ -1883,7 +2097,8 @@ final class KeyboardMonitor {
             }
             return nil
 
-        case 45: // n — open the news reader (newsboat handoff). Reaches
+        case 45 where newsExtensionEnabled: // n — open the news reader
+                 // (newsboat handoff; extension off → the plain buzz). Reaches
                  // here only OUTSIDE Firefox (Narrate owns n there) and
                  // after the typing-rescue burst window, exactly like
                  // s/t/u: a lone n redispatches on burst expiry, while n

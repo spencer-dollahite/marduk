@@ -98,6 +98,25 @@ final class NewsSessionTests: XCTestCase {
         XCTAssertEqual(session.articleIndex, 4)
     }
 
+    func testDeleteCurrentArticleMirrorsNewsboatsD() {
+        var session = NewsSession()
+        session.feeds = feeds(1)
+        session.enterArticles(articles(3))
+        _ = session.move(1)
+        // Deleting the middle row lands on the NEXT row (same index)
+        XCTAssertTrue(session.deleteCurrentArticle())
+        XCTAssertEqual(session.articles.map(\.title), ["Article 0", "Article 2"])
+        XCTAssertEqual(session.currentArticle?.title, "Article 2")
+        // Deleting the last row steps back instead of falling off
+        XCTAssertTrue(session.deleteCurrentArticle())
+        XCTAssertEqual(session.currentArticle?.title, "Article 0")
+        XCTAssertTrue(session.deleteCurrentArticle())
+        XCTAssertFalse(session.deleteCurrentArticle())  // empty — nothing left
+        // Feed level never deletes
+        session.backToFeeds()
+        XCTAssertFalse(session.deleteCurrentArticle())
+    }
+
     func testMarkCurrentArticleRead() {
         var session = NewsSession()
         session.feeds = feeds(1)

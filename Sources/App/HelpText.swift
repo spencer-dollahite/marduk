@@ -50,9 +50,19 @@ enum HelpText {
         k move and speak each title, numbers repeat, g g and capital G jump \
         to the ends. Enter opens a feed. Uppercase R reads the article \
         aloud with every reading motion live; hold Escape to stop it and \
-        land back on the list. o opens the article in your browser. h \
+        land back on the list. o opens the article in your browser. \
+        d d deletes the article, vim style. Capital C marks all feeds \
+        read. i hands the keys to newsboat itself — its own reload and \
+        navigation keys work raw — and holding Escape climbs back to the \
+        spoken list; holding again returns to NORMAL. h \
         goes back a level, and Escape leaves the news list. q backs out \
         too, and from the feed list it quits newsboat itself. \
+        Capital S: your stock watchlist, spoken. j and k walk the \
+        tickers with the price and the day's change. r speaks the full \
+        quote. a adds a ticker, x removes one. b sets a buy alert and s \
+        a sell alert — Marduk announces when the price crosses your \
+        level; it never trades. Also colon stock add, remove, buy, and \
+        sell, from anywhere. Escape leaves. \
         Escape, stop speech. Space, pause or resume a read. \
         With read motions on, a read takes the whole keyboard, from any \
         mode: b and w step back and forward a word, h and l do the same. \
@@ -145,7 +155,9 @@ enum HelpText {
         actually bright — needs the Screen Recording permission. It judges \
         the apps invert apps does not cover. dock, on \
         or off: show Marduk in the Dock, the app switcher, and the Force \
-        Quit window.
+        Quit window. news, on or off, and stocks, on or off: the \
+        extension switches — off returns each key to its old meaning, n \
+        to a plain letter and capital S to hover speech.
         """
 
     /// ":tip" — one is picked at random (never the same twice in a row).
@@ -175,6 +187,8 @@ enum HelpText {
         "In Firefox reader mode, n hands the reading to Firefox's own narrator: your music pauses, Marduk goes quiet, and Firefox reads the page. Press n again or Escape to bring the music back.",
         "On any article in Firefox, 8 does the whole ritual at once: opens reader mode, pauses your music, and starts Firefox narrating. 8 again closes it all back down.",
         "Have newsboat installed? Press n and your feeds become a spoken news list: j and k walk the titles, uppercase R reads an article like an audiobook with every reading motion live, o opens it in the browser. Feeds refresh every time you open it.",
+        "Capital S speaks your stock watchlist: j and k walk the tickers with live prices, b sets a buy alert and s a sell alert, and Marduk announces the moment a price crosses your level. a adds a ticker by typing its symbol, x takes it off.",
+        "In the news list, d d deletes an article vim style, capital C marks everything read, and i hands the keyboard to newsboat itself for its own tricks — hold Escape to climb back to the spoken list.",
         "Marduk's reading keys are vim's keys on purpose: b and w for words, parens for sentences, slash to search, dot to repeat. If you already know vim, everything carries over. If you don't, the choices may feel odd for a few days — then the muscle memory kicks in, and it pays off for good.",
         "Vim keys work inside a read: open paren replays the sentence you just missed, b and w step by word, j and k by line, braces by paragraph, and slash searches the text. Wait, what did it just say? Open paren.",
         "Reading a web page, a PDF, or a styled note? Right bracket twice jumps to the next heading, left bracket twice goes back one. Right bracket then u climbs to the section's parent heading.",

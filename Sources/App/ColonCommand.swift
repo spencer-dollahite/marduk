@@ -10,6 +10,7 @@ enum ColonCommand: Equatable {
     case voices
     case invertAppsList
     case news
+    case stock(args: [String])
     case pronunciation
     case typing
     case quit
@@ -25,9 +26,10 @@ enum ColonCommand: Equatable {
 
     // No name may be a prefix of another — auto-accept relies on it
     static let commandNames = ["help", "commands", "tutorial", "tip", "config",
-                               "voices", "invertappslist", "news", "pronunciation",
-                               "typing", "quit", "restart", "update", "uninstall",
-                               "log", "feedback", "bug", "security"]
+                               "voices", "invertappslist", "news", "stock",
+                               "pronunciation", "typing", "quit", "restart",
+                               "update", "uninstall", "log", "feedback", "bug",
+                               "security"]
 
     /// Commands that open a STAGED PICKER: the buffer stays in COMMAND
     /// mode while the user fuzzy-filters, and Return accepts the
@@ -50,8 +52,11 @@ enum ColonCommand: Equatable {
     static let configPickers: Set<String> = ["invertappslist"]
 
     /// Commands that EXPAND to "<name> " rather than executing — every
-    /// picker, plus `config` (which wants a key next).
-    static let expandingCommands: Set<String> = pickerCommands.union(["config"])
+    /// picker, plus `config` and `stock` (which want more tokens next; a
+    /// pause after ":stock" mid-way through "stock add …" must never
+    /// execute-and-close under the typist).
+    static let expandingCommands: Set<String> =
+        pickerCommands.union(["config", "stock"])
 
     /// A picker buffer normalized to its BARE form (`"invertappslist …"`),
     /// recognizing both the bare spelling and the `:config`-namespaced one
@@ -131,6 +136,8 @@ enum ColonCommand: Equatable {
             return .invertAppsList
         case "news":
             return .news
+        case "stock":
+            return .stock(args: Array(tokens.dropFirst()))
         case "pronunciation":
             return .pronunciation
         case "typing":
@@ -230,6 +237,13 @@ enum ColonCommand: Equatable {
             guard expand(tokens[1], in: ["copy"]) == "copy" else { return .none }
             return .execute("log copy")
 
+        case 2 where tokens[0] == "stock":
+            // Subcommand expands and waits for its symbol; symbols and
+            // prices never auto-resolve (Enter ends them)
+            guard let sub = expand(tokens[1], in: StockColonCommand.subcommands)
+            else { return .none }
+            return .expand("stock \(sub) ")
+
         case 2 where tokens[0] == "config" || tokens[0] == "set":
             guard let key = expand(tokens[1], in: settings.map(\.key)) else { return .none }
             return .expand("\(tokens[0]) \(key) ")
@@ -306,6 +320,12 @@ enum ColonCommand: Equatable {
         ("preferdarkinpreview", .choice(["auto", "on", "off"])),
         ("smartinvert", .toggle),
         ("dock", .toggle),
+        // Extension switches: off reverts the key to its pre-extension
+        // meaning (n → plain buzz, capital S → hover toggle). "stocks"
+        // the SETTING vs "stock" the COMMAND live in different
+        // namespaces — settings only ever parse under `config`.
+        ("news", .toggle),
+        ("stocks", .toggle),
     ]
 
     /// Spoken forms for keys that don't read aloud well. Anything absent
@@ -357,6 +377,7 @@ enum CommandCompleter {
         "voices": "choose the reading voice",
         "invertappslist": "choose which apps invert the display",
         "news": "open the newsboat news reader",
+        "stock": "manage the stock watchlist",
         "pronunciation": "open the system pronunciation editor",
         "typing": "open the system typing feedback settings",
         "quit": "stop Marduk",
@@ -504,6 +525,22 @@ enum CommandCompleter {
             guard tokens.count <= 2, "copy".hasPrefix(partial) else { return [] }
             return [Candidate(display: "copy — copy recent log lines to the clipboard",
                               completion: "log copy")]
+        }
+
+        // "stock" stages: subcommand rows, then free-typed symbol/price
+        if tokens[0] == "stock" {
+            guard tokens.count <= 2 else { return [] }
+            let partial = tokens.count == 2 && !trailingSpace ? tokens[1] : ""
+            let rows: [(String, String)] = [
+                ("add", "add a ticker — stock add A A P L"),
+                ("remove", "remove a ticker"),
+                ("buy", "buy alert — stock buy A A P L 180, or off"),
+                ("sell", "sell alert — stock sell A A P L 220, or off"),
+            ]
+            return rows.filter { $0.0.hasPrefix(partial) }.map {
+                Candidate(display: "\($0.0) — \($0.1)",
+                          completion: "stock \($0.0) ")
+            }
         }
 
         // Stages 2/3 only exist under config (or its set alias)

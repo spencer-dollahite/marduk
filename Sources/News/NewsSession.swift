@@ -11,6 +11,9 @@ enum NewsCommand: Equatable {
     case back           // h / q — up a level (q at the feed list quits newsboat)
     case read           // r / R — read the article through the reading machinery
     case openInBrowser  // o — newsboat's own binding, mirrored
+    case markAllRead    // C — newsboat's mark-all-feeds-read, mirrored
+    case deleteArticle  // dd — vim delete-line; posts newsboat's D
+    case reclaim        // held Escape out of raw-control INSERT — resync
     case help           // ? — speak the news keys
     case exit           // Escape / n — leave NEWS mode (the tap already stood down)
 }
@@ -99,6 +102,17 @@ struct NewsSession: Equatable {
         articles = []
         articleIndex = 0
         level = .feeds
+    }
+
+    /// Remove the current article from the mirror (dd → newsboat's D
+    /// filters it out of its list immediately; the cursor lands on the
+    /// next row, which is the same index). False = nothing to delete.
+    mutating func deleteCurrentArticle() -> Bool {
+        guard level == .articles,
+              articles.indices.contains(articleIndex) else { return false }
+        articles.remove(at: articleIndex)
+        if articleIndex >= articles.count, articleIndex > 0 { articleIndex -= 1 }
+        return true
     }
 
     /// Mark the current article read in the mirror (newsboat marks its own

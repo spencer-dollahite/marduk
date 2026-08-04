@@ -14,6 +14,17 @@ struct MardukConfig: Codable {
     var onboarding: OnboardingConfig? = OnboardingConfig()
     var news: NewsConfig? = NewsConfig()
 
+    var extensions: ExtensionsConfig? = ExtensionsConfig()
+
+    /// Extension switches (`:config news off`, `:config stocks off`):
+    /// each extension's key reverts to its pre-extension meaning when
+    /// off (n → plain buzz, S → hover toggle). Default on — an extension
+    /// costs nothing until its key is pressed.
+    struct ExtensionsConfig: Codable {
+        var news: Bool? = true    // n — the newsboat reader
+        var stocks: Bool? = true  // S — the stock watchlist
+    }
+
     /// NEWS mode (`n`): the newsboat handoff. All paths optional — unset
     /// means newsboat's own defaults, so a stock setup is never touched.
     /// Setting urlsFile/cacheFile/configFile launches newsboat with
@@ -181,6 +192,7 @@ struct MardukConfig: Codable {
         overlay = try c.decodeIfPresent(OverlayConfig.self, forKey: .overlay)
         onboarding = try c.decodeIfPresent(OnboardingConfig.self, forKey: .onboarding)
         news = try c.decodeIfPresent(NewsConfig.self, forKey: .news)
+        extensions = try c.decodeIfPresent(ExtensionsConfig.self, forKey: .extensions)
     }
 }
 

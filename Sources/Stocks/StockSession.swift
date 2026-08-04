@@ -7,7 +7,7 @@ enum StocksCommand: Equatable {
     case top, bottom    // gg / G
     case detail         // r / R — speak the full quote
     case add            // a — prefilled ":stock add " command line
-    case remove         // x — remove the current ticker
+    case remove         // dd — remove the current ticker (vim delete-line)
     case buyTrigger     // b — prefilled ":stock buy SYM "
     case sellTrigger    // s — prefilled ":stock sell SYM "
     case help           // ?

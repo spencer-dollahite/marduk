@@ -59,7 +59,7 @@ enum HelpText {
         too, and from the feed list it quits newsboat itself. \
         Capital S: your stock watchlist, spoken. j and k walk the \
         tickers with the price and the day's change. r speaks the full \
-        quote. a adds a ticker, x removes one. b sets a buy alert and s \
+        quote. a adds a ticker, d d removes one, vim style. b sets a buy alert and s \
         a sell alert — Marduk announces when the price crosses your \
         level; it never trades. Also colon stock add, remove, buy, and \
         sell, from anywhere. Escape leaves. \
@@ -187,7 +187,7 @@ enum HelpText {
         "In Firefox reader mode, n hands the reading to Firefox's own narrator: your music pauses, Marduk goes quiet, and Firefox reads the page. Press n again or Escape to bring the music back.",
         "On any article in Firefox, 8 does the whole ritual at once: opens reader mode, pauses your music, and starts Firefox narrating. 8 again closes it all back down.",
         "Have newsboat installed? Press n and your feeds become a spoken news list: j and k walk the titles, uppercase R reads an article like an audiobook with every reading motion live, o opens it in the browser. Feeds refresh every time you open it.",
-        "Capital S speaks your stock watchlist: j and k walk the tickers with live prices, b sets a buy alert and s a sell alert, and Marduk announces the moment a price crosses your level. a adds a ticker by typing its symbol, x takes it off.",
+        "Capital S speaks your stock watchlist: j and k walk the tickers with live prices, b sets a buy alert and s a sell alert, and Marduk announces the moment a price crosses your level. a adds a ticker by typing its symbol, d d takes it off.",
         "In the news list, d d deletes an article vim style, capital C marks everything read, and i hands the keyboard to newsboat itself for its own tricks — hold Escape to climb back to the spoken list.",
         "Marduk's reading keys are vim's keys on purpose: b and w for words, parens for sentences, slash to search, dot to repeat. If you already know vim, everything carries over. If you don't, the choices may feel odd for a few days — then the muscle memory kicks in, and it pays off for good.",
         "Vim keys work inside a read: open paren replays the sentence you just missed, b and w step by word, j and k by line, braces by paragraph, and slash searches the text. Wait, what did it just say? Open paren.",

@@ -16,7 +16,7 @@ final class StocksReader {
     var openCommandLine: (String) -> Void = { _ in }
 
     static let helpLine = "j and k move. r speaks the detail. a adds a "
-        + "ticker. x removes it. b sets a buy alert, s a sell alert. "
+        + "ticker. d d removes it. b sets a buy alert, s a sell alert. "
         + "Escape leaves."
 
     private(set) var active = false

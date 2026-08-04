@@ -282,12 +282,14 @@ final class KeyboardMonitor {
     private(set) var stocksActive = false
     private var stocksCount = 0
     private var pendingStocksG = false
+    private var pendingStocksD = false   // first d of dd (remove ticker)
     private var stocksHostBundle = ""
 
     func setStocksActive(_ active: Bool) {
         stocksActive = active
         stocksCount = 0
         pendingStocksG = false
+        pendingStocksD = false
         if active { stocksHostBundle = frontmostBundleID }
     }
 
@@ -1593,6 +1595,7 @@ final class KeyboardMonitor {
             if keycode == 5 { // g / G — top and bottom
                 if isAutorepeat { return nil }
                 stocksCount = 0
+                pendingStocksD = false
                 if hasShift {
                     pendingStocksG = false
                     DispatchQueue.main.async { [self] in onStocksCommand?(.bottom) }
@@ -1604,7 +1607,20 @@ final class KeyboardMonitor {
                 }
                 return nil
             }
+            if keycode == 2, !hasShift { // d — dd removes the ticker, vim style
+                if isAutorepeat { return nil }
+                stocksCount = 0
+                pendingStocksG = false
+                if pendingStocksD {
+                    pendingStocksD = false
+                    DispatchQueue.main.async { [self] in onStocksCommand?(.remove) }
+                } else {
+                    pendingStocksD = true
+                }
+                return nil
+            }
             pendingStocksG = false
+            pendingStocksD = false
 
             switch keycode {
             case 38, 125: // j / Down
@@ -1629,10 +1645,6 @@ final class KeyboardMonitor {
             case 0: // a — add a ticker (prefilled command line)
                 if isAutorepeat { return nil }
                 DispatchQueue.main.async { [self] in onStocksCommand?(.add) }
-                return nil
-            case 7: // x — remove the current ticker
-                if isAutorepeat { return nil }
-                DispatchQueue.main.async { [self] in onStocksCommand?(.remove) }
                 return nil
             case 11: // b — buy alert for the current ticker
                 if isAutorepeat { return nil }

@@ -36,6 +36,8 @@ struct MardukConfig: Codable {
         var urlsFile: String?    // scoped urls file (newsboat -u)
         var cacheFile: String?   // scoped cache.db (newsboat -c; the mirror reads it)
         var configFile: String?  // scoped newsboat config (newsboat -C)
+        var ollamaModel: String? // triage model tag; nil = auto-pick gemm*
+        var ollamaURL: String?   // Ollama base; default http://127.0.0.1:11434
     }
 
     /// Progressive onboarding: contextual hints + first-use config

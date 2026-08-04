@@ -31,9 +31,15 @@ final class NewsReader {
     // raw control and article reads.
     var showKeyBar: (String) -> Void = { _ in }
     var hideKeyBar: () -> Void = {}
+    // Triage plumbing: announce-with-completion (the 1/2/3 window must
+    // not tick while the summary is still being read — the dialog-focus
+    // rule) and the generalized one-key question capture.
+    var announceThen: (String, @escaping () -> Void) -> Void = { _, done in done() }
+    var armChoice: (Set<Character>, @escaping (Character) -> Void) -> Void = { _, _ in }
+    var isReadPlaying: () -> Bool = { false }
 
-    static let listKeyBar = " j/k move  ⏎ open  R read  y yank  d delete  "
-        + "/ find  . next  C read-all  o browser  i raw  h back  esc quit "
+    static let listKeyBar = " j/k move  ⏎ open  R read  t top3  y yank  "
+        + "d delete  / find  . next  C read-all  o browser  i raw  h back  esc quit "
     static let rawKeyBar = " RAW newsboat keys — hold esc: back to Marduk "
     static let readingKeyBar = " reading — space pause  hold esc: stop  "
         + "b/w words  (/) sentences  / search "
@@ -174,6 +180,13 @@ final class NewsReader {
             line += " " + Self.helpLine
         }
         announce(line)
+        // First open of the day triages automatically (user ruling);
+        // t re-runs on demand. The stamp is a yyyymmdd counted marker.
+        let today = Self.dayStamp()
+        if OnceMarker.count("news-triaged") != today {
+            OnceMarker.setCount("news-triaged", today)
+            triage(auto: true)
+        }
     }
 
     private func visibleFeeds(urlsPath: String) -> [NewsboatURLEntry] {
@@ -208,6 +221,7 @@ final class NewsReader {
         case .searchRepeat:
             guard let last = lastSearch else { Earcon.error(); return }
             search(last.query, last.direction)
+        case .triage: triage(auto: false)
         case .exit: break
         }
     }
@@ -448,6 +462,226 @@ final class NewsReader {
         lastCountRefresh = Date()
         if db == nil { db = NewsboatDB(path: env?.cacheFile ?? "") }
         unread = db?.unreadCounts() ?? [:]
+    }
+
+    // MARK: - Triage (local Ollama: top-3 + dedup over unread headlines)
+
+    private var triageGeneration = 0
+    private static func dayStamp() -> Int {
+        let parts = Calendar.current.dateComponents([.year, .month, .day],
+                                                    from: Date())
+        return (parts.year ?? 0) * 10000 + (parts.month ?? 0) * 100
+            + (parts.day ?? 0)
+    }
+
+    private var ollamaBase: String {
+        newsConfig?.ollamaURL ?? "http://127.0.0.1:11434"
+    }
+
+    /// The whole flow: collect unread → model → spoken top-3 → 1/2/3
+    /// jump window. Headlines go to LOCALHOST only and are never logged.
+    private func triage(auto: Bool) {
+        guard active else { return }
+        if db == nil { db = NewsboatDB(path: env?.cacheFile ?? "") }
+        let feedNames = feedTitleByURL()
+        let rows = db?.unreadItems(limit: 60) ?? []
+        let items = rows.map { row in
+            NewsTriage.Item(id: row.id,
+                            feedTitle: feedNames[row.feedURL] ?? "a feed",
+                            title: row.title)
+        }
+        guard !items.isEmpty else {
+            if !auto { announce("Nothing unread to triage.") }
+            return
+        }
+        // The auto run must not talk over the entry title — announce
+        // chains behind it naturally; the manual run acknowledges now.
+        if !auto { announce("Triaging \(items.count) headlines.") }
+        fputs("[news] triage — \(items.count) headlines\n", stderr)
+        triageGeneration += 1
+        let generation = triageGeneration
+        let base = ollamaBase
+        let configuredModel = newsConfig?.ollamaModel
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let outcome = Self.runTriage(base: base,
+                                         configuredModel: configuredModel,
+                                         items: items)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.active,
+                      generation == self.triageGeneration else { return }
+                self.triageArrived(outcome, auto: auto)
+            }
+        }
+    }
+
+    private enum TriageOutcome {
+        case result(NewsTriage.Result)
+        case failure(String)   // spoken, honest
+    }
+
+    private static func runTriage(base: String, configuredModel: String?,
+                                  items: [NewsTriage.Item]) -> TriageOutcome {
+        guard let tags = curl(url: "\(base)/api/tags", body: nil, timeout: 10),
+              let tagsRoot = try? JSONSerialization.jsonObject(with: tags)
+                as? [String: Any] else {
+            return .failure("Ollama isn't answering. Is it running?")
+        }
+        let available = (tagsRoot["models"] as? [[String: Any]] ?? [])
+            .compactMap { $0["name"] as? String }
+        guard let model = NewsTriage.pickModel(configured: configuredModel,
+                                               available: available) else {
+            return .failure("Ollama has no models installed.")
+        }
+        fputs("[news] triage model: \(model)\n", stderr)
+        let payload: [String: Any] = [
+            "model": model,
+            "prompt": NewsTriage.prompt(items: items),
+            "stream": false,
+            "format": "json",
+            "options": ["temperature": 0],
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: payload),
+              let data = curl(url: "\(base)/api/generate", body: body,
+                              timeout: 90),
+              let root = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any] else {
+            return .failure("The model didn't answer in time. "
+                + "Press t to retry.")
+        }
+        if let error = root["error"] as? String, !error.isEmpty {
+            fputs("[news] triage — ollama error (\(error.count) chars)\n", stderr)
+            return .failure("Ollama refused: check the model name in "
+                + "the news config.")
+        }
+        guard let response = root["response"] as? String,
+              let result = NewsTriage.parse(response: response, items: items)
+        else {
+            return .failure("The model's answer didn't parse. "
+                + "Press t to retry.")
+        }
+        return .result(result)
+    }
+
+    /// curl with the body over STDIN — headline text never touches a
+    /// shell argument. Returns nil on any failure.
+    private static func curl(url: String, body: Data?,
+                             timeout: Int) -> Data? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+        var arguments = ["-s", "-m", String(timeout), url]
+        if body != nil {
+            arguments += ["-X", "POST", "-H", "Content-Type: application/json",
+                          "--data-binary", "@-"]
+        }
+        task.arguments = arguments
+        let out = Pipe()
+        task.standardOutput = out
+        task.standardError = FileHandle.nullDevice
+        let stdin = Pipe()
+        if body != nil { task.standardInput = stdin }
+        do { try task.run() } catch { return nil }
+        if let body {
+            stdin.fileHandleForWriting.write(body)
+            stdin.fileHandleForWriting.closeFile()
+        }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        guard task.terminationStatus == 0, !data.isEmpty else { return nil }
+        return data
+    }
+
+    private func triageArrived(_ outcome: TriageOutcome, auto: Bool) {
+        // Never talk over a read the user chose meanwhile — the drop is
+        // logged and t re-runs in seconds (the answer is cached in Ollama)
+        guard !isReadPlaying() else {
+            fputs("[news] triage result dropped — a read is playing\n", stderr)
+            return
+        }
+        switch outcome {
+        case .failure(let spokenError):
+            fputs("[news] triage failed\n", stderr)
+            if !auto { Earcon.error() }
+            announce(spokenError)
+        case .result(let result):
+            fputs("[news] triage: top \(result.top.count), "
+                + "\(result.duplicatesCollapsed) dupes\n", stderr)
+            let keys = Set((1...result.top.count).map {
+                Character("\($0)")
+            })
+            announceThen(NewsTriage.spoken(result)) { [weak self] in
+                guard let self, self.active else { return }
+                self.armChoice(keys) { [weak self] answer in
+                    guard let self, let n = answer.wholeNumberValue,
+                          n >= 1, n <= result.top.count else { return }
+                    self.jumpToTriaged(result.top[n - 1].item)
+                }
+            }
+        }
+    }
+
+    /// Glide the mirror AND the TUI to a triaged story, then read it:
+    /// unwind to the feed list, walk to its feed, open, walk to the row,
+    /// R. Each step is a real primitive with the usual posting rules;
+    /// generation-guarded so an exit mid-glide stops the sequence.
+    private func jumpToTriaged(_ item: NewsTriage.Item) {
+        guard active else { return }
+        triageGeneration += 1
+        let generation = triageGeneration
+        let step: (TimeInterval, @escaping () -> Void) -> Void = { delay, work in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, self.active,
+                      generation == self.triageGeneration else { return }
+                work()
+            }
+        }
+        // 1. Unwind to the feed list
+        if session.level == .articles {
+            ensureTerminalFront { [self] in postKeys(12, false, 1) }  // q
+            session.backToFeeds()
+        }
+        // 2. Find the feed by matching the article id into each feed's
+        //    list is wasteful — the db row carries the feed URL instead
+        guard let feedURL = db?.articleFeedURL(id: item.id),
+              let feedTarget = session.feeds.firstIndex(where: {
+                  $0.url == feedURL
+              }) else {
+            Earcon.error()
+            announce("That story is gone.")
+            return
+        }
+        step(0.4) { [self] in
+            let delta = feedTarget - session.feedIndex
+            if delta != 0 {
+                _ = session.move(delta)
+                postArrows(delta)
+            }
+            // 3. Open the feed (speaks its line), then walk to the row
+            step(0.45) { [self] in
+                openCurrent()
+                step(0.45) { [self] in
+                    guard session.level == .articles,
+                          let rowTarget = session.articles.firstIndex(where: {
+                              $0.id == item.id
+                          }) else {
+                        Earcon.error()
+                        announce("That story is gone.")
+                        return
+                    }
+                    let rowDelta = rowTarget - session.articleIndex
+                    if rowDelta != 0 {
+                        _ = session.move(rowDelta)
+                        postArrows(rowDelta)
+                    }
+                    step(0.35) { [self] in readCurrent() }
+                }
+            }
+        }
+    }
+
+    private func feedTitleByURL() -> [String: String] {
+        var names: [String: String] = [:]
+        for feed in session.feeds { names[feed.url] = feed.title }
+        return names
     }
 
     // MARK: - Terminal plumbing

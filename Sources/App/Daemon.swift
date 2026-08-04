@@ -739,6 +739,16 @@ final class DaemonServer {
         }
         newsReader.showKeyBar = { [self] text in newsKeyBar.show(text) }
         newsReader.hideKeyBar = { [self] in newsKeyBar.hide() }
+        // Triage: the 1/2/3 window arms AFTER the summary finishes
+        // speaking (the dialog-focus rule), via the generalized one-key
+        // question capture.
+        newsReader.announceThen = { [self] text, done in
+            speech.announce(text) { DispatchQueue.main.async(execute: done) }
+        }
+        newsReader.armChoice = { [self] keys, onAnswer in
+            keyboardMonitor?.armQuestion(keys: keys, onAnswer: onAnswer)
+        }
+        newsReader.isReadPlaying = { [self] in speech.readActive }
 
         // STOCKS mode (`S`): spoken watchlist + alert levels
         stocksReader.announce = { [self] text in speech.announce(text) }

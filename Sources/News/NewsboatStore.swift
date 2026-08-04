@@ -289,6 +289,32 @@ final class NewsboatDB {
         return items
     }
 
+    /// The newest unread headlines across ALL feeds — triage fodder.
+    /// Feed URL rides along so the caller can resolve display titles
+    /// and jump targets.
+    func unreadItems(limit: Int) -> [(id: Int64, title: String, feedURL: String)] {
+        var items: [(Int64, String, String)] = []
+        query("""
+            SELECT id, title, feedurl FROM rss_item
+            WHERE unread = 1 AND deleted = 0
+            ORDER BY pubDate DESC, id DESC LIMIT \(max(1, limit))
+            """) { stmt in
+            items.append((sqlite3_column_int64(stmt, 0),
+                          column(stmt, 1) ?? "Untitled",
+                          column(stmt, 2) ?? ""))
+        }
+        return items
+    }
+
+    /// Which feed an article belongs to — the triage jump's first hop.
+    func articleFeedURL(id: Int64) -> String? {
+        var feedURL: String?
+        query("SELECT feedurl FROM rss_item WHERE id = \(id)") { stmt in
+            feedURL = column(stmt, 0)
+        }
+        return feedURL
+    }
+
     /// The article body (HTML, as the feed delivered it).
     func content(id: Int64) -> String? {
         var content: String?

@@ -1615,6 +1615,11 @@ final class KeyboardMonitor {
                 newsCount = 0
                 DispatchQueue.main.async { [self] in onNewsCommand?(.copyLink) }
                 return nil
+            case 17: // t — triage: local-LLM top 3 + dedup
+                if isAutorepeat { return nil }
+                newsCount = 0
+                DispatchQueue.main.async { [self] in onNewsCommand?(.triage) }
+                return nil
             case 34: // i — drive newsboat RAW: keys pass through untouched
                      // (newsboat's own n/r/R reload bindings and everything
                      // else). Hold Escape to climb back to the news list;

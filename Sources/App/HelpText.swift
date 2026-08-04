@@ -55,7 +55,12 @@ enum HelpText {
         to the clipboard. Capital C marks all feeds read. A Marduk key \
         bar sits at the bottom of the screen with the live keys — \
         newsboat's own hints are hidden, they list newsboat's keys, \
-        not Marduk's. Slash searches titles forward and question mark backward — \
+        not Marduk's. t asks a local A I on your own Mac to pick the \
+        three most critical or novel unread stories and fold the \
+        duplicates — it also runs by itself on your first news of each \
+        day — then 1, 2, or 3 jumps straight into that story. Needs \
+        Ollama running; nothing leaves your Mac. \
+        Slash searches titles forward and question mark backward — \
         type, then Return jumps to the match, and period repeats the \
         search, like vim's n. i hands the keys to newsboat itself — its own reload and \
         navigation keys work raw — and holding Escape climbs back to the \
@@ -196,6 +201,7 @@ enum HelpText {
         "Have newsboat installed? Press n and your feeds become a spoken news list: j and k walk the titles, uppercase R reads an article like an audiobook with every reading motion live, o opens it in the browser. Feeds refresh every time you open it.",
         "Capital S speaks your stock watchlist: j and k walk the tickers with live prices, b sets a buy alert and s a sell alert, and Marduk announces the moment a price crosses your level. a adds a ticker by typing its symbol, d d takes it off.",
         "In the news list, d deletes an article — vim's d d works too, it deletes just the one — capital C marks everything read, and i hands the keyboard to newsboat itself for its own tricks — hold Escape to climb back to the spoken list.",
+        "Drowning in duplicate headlines? In the news list, t sends the unread titles to an A I running entirely on your own Mac, which picks the three most critical stories and folds the copies. It runs by itself on your first news of the day, and 1, 2, or 3 jumps straight into the story.",
         "Marduk's reading keys are vim's keys on purpose: b and w for words, parens for sentences, slash to search, dot to repeat. If you already know vim, everything carries over. If you don't, the choices may feel odd for a few days — then the muscle memory kicks in, and it pays off for good.",
         "Vim keys work inside a read: open paren replays the sentence you just missed, b and w step by word, j and k by line, braces by paragraph, and slash searches the text. Wait, what did it just say? Open paren.",
         "Reading a web page, a PDF, or a styled note? Right bracket twice jumps to the next heading, left bracket twice goes back one. Right bracket then u climbs to the section's parent heading.",

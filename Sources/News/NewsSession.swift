@@ -20,6 +20,7 @@ enum NewsCommand: Equatable {
                                         // the next matching title (the mirror
                                         // can't narrow newsboat's list)
     case searchRepeat   // "." — vim's n by the read-mode precedent (news n = exit)
+    case triage         // t — local-LLM top-3 + dedup over the unread headlines
     case exit           // Escape / n — leave NEWS mode (the tap already stood down)
 }
 

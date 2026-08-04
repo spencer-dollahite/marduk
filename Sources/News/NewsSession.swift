@@ -11,7 +11,8 @@ enum NewsCommand: Equatable {
     case back           // h / q — up a level (q at the feed list quits newsboat)
     case read           // r / R — read the article through the reading machinery
     case openInBrowser  // o — newsboat's own binding, mirrored
-    case copyLink       // c — copy the article's (or feed's) URL
+    case copyLink       // y — yank the article's (or feed's) URL, vim style
+    case rawControl     // i pressed — the key bar shows the raw-mode text
     case markAllRead    // C — newsboat's mark-all-feeds-read, mirrored
     case deleteArticle  // dd — vim delete-line; posts newsboat's D
     case reclaim        // held Escape out of raw-control INSERT — resync

@@ -1609,7 +1609,7 @@ final class KeyboardMonitor {
                     onNewsCommand?(.searchRepeat)
                 }
                 return nil
-            case 8: // c — copy the link (C, shifted, was consumed above)
+            case 16: // y — yank the link, vim style (yy just yanks again)
                 if isAutorepeat { return nil }
                 newsCount = 0
                 DispatchQueue.main.async { [self] in onNewsCommand?(.copyLink) }
@@ -1625,7 +1625,10 @@ final class KeyboardMonitor {
                 mode = .insert
                 suppressInsertEntryRepeat = true
                 fputs("[keyboard] news → INSERT (raw newsboat control)\n", stderr)
-                DispatchQueue.main.async { Earcon.fallToInsert() }
+                DispatchQueue.main.async { [self] in
+                    Earcon.fallToInsert()
+                    onNewsCommand?(.rawControl)   // the key bar flips its text
+                }
                 return nil
             case 53, 45: // Escape / n — leave news (newsboat keeps running)
                 if isAutorepeat { return nil }

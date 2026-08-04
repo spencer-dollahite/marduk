@@ -82,6 +82,9 @@ struct StockQuote: Equatable {
     var previousClose: Double?
     var dayHigh: Double?
     var dayLow: Double?
+    var currency: String?        // "USD", "EUR", … — drives the spoken unit
+    var instrumentType: String?  // "EQUITY"/"ETF"/"INDEX"/… — indexes are
+                                 // POINTS, never dollars
 
     var changePercent: Double? {
         guard let previousClose, previousClose != 0 else { return nil }
@@ -106,7 +109,9 @@ struct StockQuote: Equatable {
             previousClose: number(meta["previousClose"])
                 ?? number(meta["chartPreviousClose"]),
             dayHigh: number(meta["regularMarketDayHigh"]),
-            dayLow: number(meta["regularMarketDayLow"]))
+            dayLow: number(meta["regularMarketDayLow"]),
+            currency: meta["currency"] as? String,
+            instrumentType: meta["instrumentType"] as? String)
     }
 
     private static func number(_ value: Any?) -> Double? {
@@ -120,6 +125,52 @@ struct StockQuote: Equatable {
             : String(format: "%.2f", value)
     }
 
+    /// Spoken currency units, keyed by Yahoo's currency code. Instruments
+    /// that aren't priced in money (indexes, FX rates, crypto pairs)
+    /// speak the bare number instead — "the S and P at 6300 dollars"
+    /// would be wrong, index points aren't money.
+    private static let currencyWords: [String: (major: String, minor: String?)] = [
+        "USD": ("dollars", "cents"),
+        "CAD": ("Canadian dollars", "cents"),
+        "AUD": ("Australian dollars", "cents"),
+        "EUR": ("euros", "cents"),
+        "GBP": ("pounds", "pence"),
+        "GBp": ("pence", nil),   // London quotes in pence-sterling
+        "JPY": ("yen", nil),
+    ]
+
+    private static let moneyless: Set<String> = [
+        "INDEX", "CURRENCY", "CRYPTOCURRENCY",
+    ]
+
+    /// A price as SPEECH: "309 dollars 86 cents", "180 dollars", or the
+    /// bare number for point-valued instruments and unknown units.
+    static func spokenAmount(_ value: Double, currency: String?,
+                             instrumentType: String?) -> String {
+        if let type = instrumentType, moneyless.contains(type) {
+            return spokenPrice(value)
+        }
+        guard let unit = currencyWords[currency ?? "USD"] else {
+            // Unknown currency: number + its code, spelled by the voice
+            return "\(spokenPrice(value)) \(currency ?? "")"
+                .trimmingCharacters(in: .whitespaces)
+        }
+        var whole = Int(value.rounded(.down))
+        guard let minor = unit.minor else {
+            return "\(spokenPrice(value)) \(unit.major)"
+        }
+        var cents = Int(((value - Double(whole)) * 100).rounded())
+        if cents == 100 { whole += 1; cents = 0 }  // 179.999 rounds up clean
+        return cents == 0
+            ? "\(whole) \(unit.major)"
+            : "\(whole) \(unit.major) \(cents) \(minor)"
+    }
+
+    /// This quote's own unit applied to any value (trigger levels, ranges).
+    func amount(_ value: Double) -> String {
+        Self.spokenAmount(value, currency: currency, instrumentType: instrumentType)
+    }
+
     /// "up 1.2 percent" / "down 0.8 percent" / "flat".
     static func spokenChange(_ percent: Double?) -> String {
         guard let percent else { return "" }
@@ -129,26 +180,25 @@ struct StockQuote: Equatable {
         return "\(word) \(String(format: "%.1f", magnitude)) percent"
     }
 
-    /// The j/k row: "AAPL, 309.86, up 1.2 percent" — minimal verbosity.
+    /// The j/k row: "AAPL, 309 dollars 86 cents, up 1.2 percent".
     var line: String {
         let change = Self.spokenChange(changePercent)
         return change.isEmpty
-            ? "\(symbol), \(Self.spokenPrice(price))"
-            : "\(symbol), \(Self.spokenPrice(price)), \(change)"
+            ? "\(symbol), \(amount(price))"
+            : "\(symbol), \(amount(price)), \(change)"
     }
 
     /// The r detail: name, price, change, range, previous close.
     var detail: String {
         var parts: [String] = []
-        parts.append("\(name ?? symbol). \(Self.spokenPrice(price))")
+        parts.append("\(name ?? symbol). \(amount(price))")
         let change = Self.spokenChange(changePercent)
         if !change.isEmpty { parts.append(change + " today") }
         if let dayLow, let dayHigh {
-            parts.append("day range \(Self.spokenPrice(dayLow)) to "
-                + Self.spokenPrice(dayHigh))
+            parts.append("day range \(amount(dayLow)) to \(amount(dayHigh))")
         }
         if let previousClose {
-            parts.append("previous close \(Self.spokenPrice(previousClose))")
+            parts.append("previous close \(amount(previousClose))")
         }
         return parts.joined(separator: ". ") + "."
     }
@@ -156,18 +206,24 @@ struct StockQuote: Equatable {
 
 enum TriggerSide: String, Codable { case buy, sell }
 
-/// A tripped alert, ready to speak.
+/// A tripped alert, ready to speak. Carries the quote's unit so the
+/// announcement says dollars (or euros, or bare points) correctly.
 struct TriggerEvent: Equatable {
     let symbol: String
     let side: TriggerSide
     let level: Double
     let price: Double
+    var currency: String?
+    var instrumentType: String?
 
     var spoken: String {
         let direction = side == .buy ? "below your buy level"
                                      : "above your sell level"
-        return "\(symbol) is \(direction) \(StockQuote.spokenPrice(level)): "
-            + "\(StockQuote.spokenPrice(price))."
+        let levelSpoken = StockQuote.spokenAmount(
+            level, currency: currency, instrumentType: instrumentType)
+        let priceSpoken = StockQuote.spokenAmount(
+            price, currency: currency, instrumentType: instrumentType)
+        return "\(symbol) is \(direction) \(levelSpoken): \(priceSpoken)."
     }
 }
 
@@ -181,21 +237,28 @@ enum StockTriggers {
     }
 
     static func check(entry: StockEntry, price: Double,
-                      wasBeyond: Beyond) -> (events: [TriggerEvent], beyond: Beyond) {
+                      wasBeyond: Beyond,
+                      currency: String? = nil,
+                      instrumentType: String? = nil)
+        -> (events: [TriggerEvent], beyond: Beyond) {
         var beyond = Beyond()
         var events: [TriggerEvent] = []
         if let level = entry.buyBelow {
             beyond.buy = price <= level
             if beyond.buy, !wasBeyond.buy {
                 events.append(TriggerEvent(symbol: entry.symbol, side: .buy,
-                                           level: level, price: price))
+                                           level: level, price: price,
+                                           currency: currency,
+                                           instrumentType: instrumentType))
             }
         }
         if let level = entry.sellAbove {
             beyond.sell = price >= level
             if beyond.sell, !wasBeyond.sell {
                 events.append(TriggerEvent(symbol: entry.symbol, side: .sell,
-                                           level: level, price: price))
+                                           level: level, price: price,
+                                           currency: currency,
+                                           instrumentType: instrumentType))
             }
         }
         return (events, beyond)

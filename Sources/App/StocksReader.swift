@@ -194,7 +194,7 @@ final class StocksReader {
             refreshDisplay()
             let word = side == .buy ? "Buy alert" : "Sell alert"
             if let level {
-                announce("\(word) for \(symbol) at \(StockQuote.spokenPrice(level)).")
+                announce("\(word) for \(symbol) at \(amountFor(symbol, level)).")
                 refresh(speakCurrentAfter: false)
             } else {
                 announce("\(word) for \(symbol) cleared.")
@@ -235,12 +235,19 @@ final class StocksReader {
         guard let entry = watchlist.entry(symbol) else { return "" }
         var parts: [String] = []
         if let buy = entry.buyBelow {
-            parts.append("Buy alert \(StockQuote.spokenPrice(buy))")
+            parts.append("Buy alert \(amountFor(symbol, buy))")
         }
         if let sell = entry.sellAbove {
-            parts.append("sell alert \(StockQuote.spokenPrice(sell))")
+            parts.append("sell alert \(amountFor(symbol, sell))")
         }
         return parts.isEmpty ? "" : " " + parts.joined(separator: ", ") + "."
+    }
+
+    /// A value in the symbol's own spoken unit — dollars until a quote
+    /// says otherwise.
+    private func amountFor(_ symbol: String, _ value: Double) -> String {
+        quotes[symbol]?.amount(value)
+            ?? StockQuote.spokenAmount(value, currency: nil, instrumentType: nil)
     }
 
     // MARK: - Quotes (keyless Yahoo v8 chart, curl per symbol, off-main)
@@ -282,7 +289,9 @@ final class StocksReader {
             guard let quote = fetched[entry.symbol] else { continue }
             let result = StockTriggers.check(
                 entry: entry, price: quote.price,
-                wasBeyond: beyond[entry.symbol] ?? StockTriggers.Beyond())
+                wasBeyond: beyond[entry.symbol] ?? StockTriggers.Beyond(),
+                currency: quote.currency,
+                instrumentType: quote.instrumentType)
             beyond[entry.symbol] = result.beyond
             lines.append(contentsOf: result.events.map(\.spoken))
         }

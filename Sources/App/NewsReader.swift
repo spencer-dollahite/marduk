@@ -26,6 +26,17 @@ final class NewsReader {
     var setCaptured: (Bool) -> Void = { _ in }
     var frontmostApp: () -> String? = { nil }
     var isEngaged: () -> Bool = { true }  // Ctrl+Option+M state at arm time
+    // Marduk's own key bar (newsboat's hint bar is hidden by the managed
+    // config — it would list NEWSBOAT's keys, not ours). Text swaps for
+    // raw control and article reads.
+    var showKeyBar: (String) -> Void = { _ in }
+    var hideKeyBar: () -> Void = {}
+
+    static let listKeyBar = " j/k move  ⏎ open  R read  y yank  dd delete  "
+        + "/ find  . next  C read-all  o browser  i raw  h back  esc quit "
+    static let rawKeyBar = " RAW newsboat keys — hold esc: back to Marduk "
+    static let readingKeyBar = " reading — space pause  hold esc: stop  "
+        + "b/w words  (/) sentences  / search "
 
     static let terminalBundle = "com.apple.Terminal"
     static let helpLine = "j and k move. Enter opens. Uppercase R reads the "
@@ -154,6 +165,7 @@ final class NewsReader {
         }
         active = true
         setCaptured(true)
+        showKeyBar(Self.listKeyBar)
         fputs("[news] armed — \(session.feeds.count) feeds\n", stderr)
         // Straight into the first title — no feed-count preamble (user
         // ruling 2026-08-04: the count is ceremony, the title is the news)
@@ -188,6 +200,7 @@ final class NewsReader {
         case .read: readCurrent()
         case .openInBrowser: openInBrowser()
         case .copyLink: copyLink()
+        case .rawControl: showKeyBar(Self.rawKeyBar)
         case .markAllRead: markAllRead()
         case .deleteArticle: deleteArticle()
         case .reclaim: reclaim()
@@ -278,6 +291,7 @@ final class NewsReader {
                 ?? min(session.articleIndex, max(0, fresh.count - 1))
             session.enterArticles(fresh, startAt: start)
         }
+        showKeyBar(Self.listKeyBar)
         fputs("[news] reclaimed from raw control\n", stderr)
         speakCurrent()
     }
@@ -362,6 +376,7 @@ final class NewsReader {
         ensureTerminalFront { [self] in postKeys(36, false, 1) }
         session.markCurrentArticleRead()
         readInFlight = true
+        showKeyBar(Self.readingKeyBar)
         fputs("[news] reading article (\(body.count) chars)\n", stderr)
         startRead("\(article.title).\n\n\(body)")
     }
@@ -387,6 +402,7 @@ final class NewsReader {
         readInFlight = false
         guard active else { return }
         ensureTerminalFront { [self] in postKeys(12, false, 1) }  // q — close pager
+        showKeyBar(Self.listKeyBar)
         fputs("[news] article read ended — back to the list\n", stderr)
     }
 
@@ -397,6 +413,7 @@ final class NewsReader {
         entering = false
         readInFlight = false
         setCaptured(false)
+        hideKeyBar()
         db = nil
         fputs("[news] closed\n", stderr)
         if !quiet { announce("News closed.") }

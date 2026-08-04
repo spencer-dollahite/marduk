@@ -10,7 +10,8 @@ final class StockLogicTests: XCTestCase {
 
     private let chartFixture = """
         {"chart":{"result":[{"meta":{"currency":"USD","symbol":"AAPL",
-        "shortName":"Apple Inc.","regularMarketPrice":309.86,
+        "shortName":"Apple Inc.","instrumentType":"EQUITY",
+        "regularMarketPrice":309.86,
         "previousClose":306.2,"chartPreviousClose":306.2,
         "regularMarketDayHigh":311.0,"regularMarketDayLow":305.1}}],
         "error":null}}
@@ -25,6 +26,8 @@ final class StockLogicTests: XCTestCase {
         XCTAssertEqual(quote.price, 309.86, accuracy: 0.001)
         XCTAssertEqual(quote.previousClose ?? 0, 306.2, accuracy: 0.001)
         XCTAssertEqual(quote.changePercent ?? 0, 1.195, accuracy: 0.01)
+        XCTAssertEqual(quote.currency, "USD")
+        XCTAssertEqual(quote.instrumentType, "EQUITY")
     }
 
     func testGarbageAndErrorPayloadsParseToNil() {
@@ -47,13 +50,44 @@ final class StockLogicTests: XCTestCase {
         XCTAssertEqual(StockQuote.spokenChange(nil), "")
     }
 
-    func testRowLineIsMinimal() {
+    func testRowLineSpeaksDollars() {
         let quote = StockQuote(symbol: "AAPL", name: "Apple Inc.",
                                price: 309.86, previousClose: 306.2,
                                dayHigh: 311, dayLow: 305.1)
-        XCTAssertEqual(quote.line, "AAPL, 309.86, up 1.2 percent")
-        XCTAssertTrue(quote.detail.hasPrefix("Apple Inc.. 309.86"))
-        XCTAssertTrue(quote.detail.contains("day range 305.1"))
+        XCTAssertEqual(quote.line,
+                       "AAPL, 309 dollars 86 cents, up 1.2 percent")
+        XCTAssertTrue(quote.detail.hasPrefix("Apple Inc.. 309 dollars 86 cents"))
+        XCTAssertTrue(quote.detail.contains(
+            "day range 305 dollars 10 cents to 311 dollars"))
+    }
+
+    func testSpokenAmountsByCurrencyAndInstrument() {
+        // USD is the default; whole prices drop the cents clause
+        XCTAssertEqual(StockQuote.spokenAmount(309.86, currency: "USD",
+                                               instrumentType: "EQUITY"),
+                       "309 dollars 86 cents")
+        XCTAssertEqual(StockQuote.spokenAmount(180, currency: nil,
+                                               instrumentType: nil),
+                       "180 dollars")
+        // Rounding never speaks "100 cents"
+        XCTAssertEqual(StockQuote.spokenAmount(179.999, currency: "USD",
+                                               instrumentType: nil),
+                       "180 dollars")
+        // Indexes are points, never money
+        XCTAssertEqual(StockQuote.spokenAmount(6300.12, currency: "USD",
+                                               instrumentType: "INDEX"),
+                       "6300.12")
+        // Other currencies speak their own words; yen has no minor unit
+        XCTAssertEqual(StockQuote.spokenAmount(10.05, currency: "GBP",
+                                               instrumentType: "EQUITY"),
+                       "10 pounds 5 pence")
+        XCTAssertEqual(StockQuote.spokenAmount(15000, currency: "JPY",
+                                               instrumentType: "EQUITY"),
+                       "15000 yen")
+        // Unknown codes ride along rather than lying about dollars
+        XCTAssertEqual(StockQuote.spokenAmount(24.5, currency: "CHF",
+                                               instrumentType: "EQUITY"),
+                       "24.50 CHF")
     }
 
     // MARK: - Trigger crossings
@@ -76,7 +110,8 @@ final class StockLogicTests: XCTestCase {
                                      wasBeyond: result.beyond)
         XCTAssertEqual(result.events.map(\.side), [.buy])
         XCTAssertEqual(result.events.first?.spoken,
-                       "AAPL is below your buy level 180: 179.50.")
+                       "AAPL is below your buy level 180 dollars: "
+                       + "179 dollars 50 cents.")
     }
 
     func testNoLevelsMeansNoEvents() {

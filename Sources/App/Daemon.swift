@@ -150,6 +150,9 @@ final class DaemonServer {
     private let stocksReader = StocksReader()
     // Its TUI panel — title bar, ticker rows, newsboat-style key bar
     private let stocksPanel = StocksPanel()
+    // NEWS mode's floating key bar (newsboat's own hints are hidden by
+    // the managed config — this one shows MARDUK's keys)
+    private let newsKeyBar = KeyBarPanel()
     // First-run welcome deferred because the event tap didn't exist yet
     // (no Accessibility grant); spoken when the tap retry succeeds
     private var welcomePending = false
@@ -734,6 +737,8 @@ final class DaemonServer {
         keyboardMonitor?.onNewsCommand = { [self] command in
             newsReader.handle(command)
         }
+        newsReader.showKeyBar = { [self] text in newsKeyBar.show(text) }
+        newsReader.hideKeyBar = { [self] in newsKeyBar.hide() }
 
         // STOCKS mode (`S`): spoken watchlist + alert levels
         stocksReader.announce = { [self] text in speech.announce(text) }

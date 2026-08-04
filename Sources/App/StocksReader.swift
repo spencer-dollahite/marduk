@@ -14,6 +14,10 @@ final class StocksReader {
     var announce: (String) -> Void = { _ in }
     var setCaptured: (Bool) -> Void = { _ in }
     var openCommandLine: (String) -> Void = { _ in }
+    // The TUI panel: shown while the mode is open, updated on every state
+    // change, hidden on exit. Display only — the voice stays primary.
+    var showDisplay: ([StocksPanel.Row]) -> Void = { _ in }
+    var hideDisplay: () -> Void = {}
 
     static let helpLine = "j and k move. r speaks the detail. a adds a "
         + "ticker. d d removes it. b sets a buy alert, s a sell alert. "
@@ -44,6 +48,7 @@ final class StocksReader {
         active = true
         setCaptured(true)
         fputs("[stocks] open — \(session.symbols.count) tickers\n", stderr)
+        showDisplay(displayRows())
         if session.symbols.isEmpty {
             announce("Your watchlist is empty. Press a to add a ticker."
                 + (OnceMarker.firstTime("stocks-hinted") ? " " + Self.helpLine : ""))
@@ -66,13 +71,16 @@ final class StocksReader {
         switch command {
         case .move(let delta):
             if session.move(delta) == 0 { Earcon.error() } else { speakCurrent() }
+            showDisplay(displayRows())
             refresh(speakCurrentAfter: false)
         case .top:
             if session.move(-session.symbols.count) == 0 { Earcon.error() }
             else { speakCurrent() }
+            showDisplay(displayRows())
         case .bottom:
             if session.move(session.symbols.count) == 0 { Earcon.error() }
             else { speakCurrent() }
+            showDisplay(displayRows())
         case .detail:
             guard let symbol = session.current else { Earcon.error(); return }
             if let quote = quotes[symbol] {
@@ -103,8 +111,42 @@ final class StocksReader {
         guard active else { return }
         active = false
         setCaptured(false)
+        hideDisplay()
         fetchGeneration += 1  // drop an in-flight fetch's announcements
         fputs("[stocks] closed\n", stderr)
+    }
+
+    /// A click on a panel row — move the spoken cursor there.
+    func selectRow(_ index: Int) {
+        guard active, session.symbols.indices.contains(index) else { return }
+        session.index = index
+        speakCurrent()
+        showDisplay(displayRows())
+    }
+
+    // MARK: - Panel rows
+
+    private func displayRows() -> [StocksPanel.Row] {
+        watchlist.tickers.enumerated().map { index, entry in
+            let quote = quotes[entry.symbol]
+            var alerts: [String] = []
+            if let buy = entry.buyBelow {
+                alerts.append("↓\(StockQuote.spokenPrice(buy))")
+            }
+            if let sell = entry.sellAbove {
+                alerts.append("↑\(StockQuote.spokenPrice(sell))")
+            }
+            let percent = quote?.changePercent
+            let change = percent.map {
+                String(format: "%+.1f%%", $0)
+            } ?? ""
+            return StocksPanel.Row(
+                symbol: entry.symbol,
+                price: quote.map { StockQuote.spokenPrice($0.price) } ?? "…",
+                change: change,
+                alerts: alerts.joined(separator: " "),
+                current: index == session.index)
+        }
     }
 
     // MARK: - Colon commands (:stock …) — work with or without the mode open
@@ -149,6 +191,7 @@ final class StocksReader {
             }
             watchlist.save(to: Self.fileURL)
             beyond[symbol] = nil  // re-arm: a fresh level gets a fresh crossing
+            refreshDisplay()
             let word = side == .buy ? "Buy alert" : "Sell alert"
             if let level {
                 announce("\(word) for \(symbol) at \(StockQuote.spokenPrice(level)).")
@@ -169,6 +212,11 @@ final class StocksReader {
     private func syncSession(keep: String?) {
         let held = keep ?? session.current
         session.sync(to: watchlist.tickers.map(\.symbol), keep: held)
+        refreshDisplay()
+    }
+
+    private func refreshDisplay() {
+        if active { showDisplay(displayRows()) }
     }
 
     // MARK: - Speech
@@ -226,6 +274,7 @@ final class StocksReader {
     private func quotesArrived(_ fetched: [String: StockQuote], speakCurrent: Bool) {
         let hadCurrent = session.current.flatMap { quotes[$0] } != nil
         quotes.merge(fetched) { _, new in new }
+        refreshDisplay()
         fputs("[stocks] quotes: \(fetched.count)/\(watchlist.tickers.count)\n",
               stderr)
         var lines: [String] = []

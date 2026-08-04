@@ -148,6 +148,8 @@ final class DaemonServer {
     private let newsReader = NewsReader()
     // STOCKS mode (`S`): Marduk-native spoken watchlist with alert levels
     private let stocksReader = StocksReader()
+    // Its TUI panel — title bar, ticker rows, newsboat-style key bar
+    private let stocksPanel = StocksPanel()
     // First-run welcome deferred because the event tap didn't exist yet
     // (no Accessibility grant); spoken when the tap retry succeeds
     private var welcomePending = false
@@ -439,6 +441,7 @@ final class DaemonServer {
             (config.keyboard?.toggleSound ?? "speech") == "earcon"
         palette.positionMode = CommandPalette.PositionMode(
             rawValue: config.keyboard?.palettePosition ?? "pointer") ?? .pointer
+        stocksPanel.positionMode = palette.positionMode
         // Tutorial events ride the existing callbacks: reads complete via the
         // per-utterance completion, announcements and pause toggles are
         // interposed here. The tutorial's own narration goes straight to
@@ -744,6 +747,10 @@ final class DaemonServer {
         keyboardMonitor?.onStocksCommand = { [self] command in
             stocksReader.handle(command)
         }
+        // The stocks TUI panel: display-only mirror of the spoken cursor
+        stocksReader.showDisplay = { [self] rows in stocksPanel.update(rows: rows) }
+        stocksReader.hideDisplay = { [self] in stocksPanel.hide() }
+        stocksPanel.onRowClick = { [self] row in stocksReader.selectRow(row) }
         // Extension gates (:config news/stocks) — the monitor's `where`
         // clauses read these flags live
         keyboardMonitor?.newsExtensionEnabled = config.extensions?.news ?? true
@@ -2587,6 +2594,7 @@ final class DaemonServer {
                 return fail("Position must be center or pointer.")
             }
             palette.positionMode = mode
+            stocksPanel.positionMode = mode
             var kb = config.keyboard ?? .init()
             kb.palettePosition = value
             config.keyboard = kb

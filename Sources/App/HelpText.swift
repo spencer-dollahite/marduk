@@ -62,7 +62,9 @@ enum HelpText {
         quote. a adds a ticker, d d removes one, vim style. b sets a buy alert and s \
         a sell alert — Marduk announces when the price crosses your \
         level; it never trades. Also colon stock add, remove, buy, and \
-        sell, from anywhere. Escape leaves. \
+        sell, from anywhere. Escape leaves. A terminal style panel shows \
+        the list and its keys while stocks is open, if you can see some \
+        of the screen. \
         Escape, stop speech. Space, pause or resume a read. \
         With read motions on, a read takes the whole keyboard, from any \
         mode: b and w step back and forward a word, h and l do the same. \

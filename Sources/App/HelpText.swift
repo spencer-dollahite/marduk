@@ -51,8 +51,8 @@ enum HelpText {
         to the ends. Enter opens a feed. Uppercase R reads the article \
         aloud with every reading motion live; hold Escape to stop it and \
         land back on the list. o opens the article in your browser. \
-        d d deletes the article, vim style. Capital C marks all feeds \
-        read. Slash searches titles forward and question mark backward — \
+        d d deletes the article, vim style. c copies the article's link \
+        to the clipboard. Capital C marks all feeds read. Slash searches titles forward and question mark backward — \
         type, then Return jumps to the match, and period repeats the \
         search, like vim's n. i hands the keys to newsboat itself — its own reload and \
         navigation keys work raw — and holding Escape climbs back to the \

@@ -1609,6 +1609,11 @@ final class KeyboardMonitor {
                     onNewsCommand?(.searchRepeat)
                 }
                 return nil
+            case 8: // c — copy the link (C, shifted, was consumed above)
+                if isAutorepeat { return nil }
+                newsCount = 0
+                DispatchQueue.main.async { [self] in onNewsCommand?(.copyLink) }
+                return nil
             case 34: // i — drive newsboat RAW: keys pass through untouched
                      // (newsboat's own n/r/R reload bindings and everything
                      // else). Hold Escape to climb back to the news list;

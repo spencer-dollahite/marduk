@@ -187,6 +187,7 @@ final class NewsReader {
         case .back: goBack()
         case .read: readCurrent()
         case .openInBrowser: openInBrowser()
+        case .copyLink: copyLink()
         case .markAllRead: markAllRead()
         case .deleteArticle: deleteArticle()
         case .reclaim: reclaim()
@@ -217,6 +218,22 @@ final class NewsReader {
             return
         }
         moveBy(target - from)
+    }
+
+    /// c — the current article's URL to the clipboard (the feed's URL on
+    /// the feed list). URLs are user content: never logged, only copied.
+    private func copyLink() {
+        let url: String?
+        switch session.level {
+        case .articles:
+            url = session.currentArticle?.url
+        case .feeds:
+            url = session.currentFeed.flatMap { $0.isQuery ? nil : $0.url }
+        }
+        guard let url, !url.isEmpty else { Earcon.error(); return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
+        announce("Link copied.")
     }
 
     /// C — newsboat's own mark-all-feeds-read, mirrored. Feed list only:

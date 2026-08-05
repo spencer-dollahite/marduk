@@ -3347,6 +3347,9 @@ final class DaemonServer {
         // released by keyboard gestures — quitting mid-handoff would strand
         // the user's music paused forever. Idempotent when nothing is held.
         ducker.releaseHoldAndUnduckSync()
+        // Never leak an ollama child holding gigabytes of RAM — only kills
+        // a server Marduk itself spawned for triage. No-op otherwise.
+        OllamaServer.shared.stop()
         close(serverFD)
         unlink(MardukDaemon.socketPath)
         unlink(MardukDaemon.pidPath)

@@ -521,6 +521,24 @@ final class NewsReader {
 
     private static func runTriage(base: String, configuredModel: String?,
                                   items: [NewsTriage.Item]) -> TriageOutcome {
+        // Server lifecycle (user ruling 2026-08-05): a silent Ollama is
+        // STARTED for the triage and shut down again when it finishes,
+        // so the model isn't parked in RAM between reads. The paired
+        // release only stops a server acquire spawned — one the user
+        // runs themselves is never touched (ownership doctrine).
+        let server = OllamaServer.shared.acquire(base: base)
+        defer { OllamaServer.shared.release() }
+        switch server {
+        case .alreadyRunning, .started:
+            break
+        case .notLocal:
+            return .failure("Ollama isn't answering at the configured URL.")
+        case .notInstalled:
+            return .failure("Ollama isn't installed. "
+                + "Say brew install ollama.")
+        case .failed:
+            return .failure("Ollama wouldn't start. Press t to retry.")
+        }
         guard let tags = curl(url: "\(base)/api/tags", body: nil, timeout: 10),
               let tagsRoot = try? JSONSerialization.jsonObject(with: tags)
                 as? [String: Any] else {
@@ -592,7 +610,8 @@ final class NewsReader {
 
     private func triageArrived(_ outcome: TriageOutcome, auto: Bool) {
         // Never talk over a read the user chose meanwhile — the drop is
-        // logged and t re-runs in seconds (the answer is cached in Ollama)
+        // logged and t re-runs (slower now that an owned server is shut
+        // down after each triage — the model reloads on retry)
         guard !isReadPlaying() else {
             fputs("[news] triage result dropped — a read is playing\n", stderr)
             return

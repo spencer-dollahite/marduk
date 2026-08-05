@@ -108,9 +108,13 @@ spctl -a -vv --type execute "$APP"
 
 echo "==> Building the disk image (drag-to-Applications)"
 # Constant asset name: the README's one-click link
-# releases/latest/download/Marduk.dmg depends on it. Version lives in
-# the tag, the release title, and the volume name.
-DMG="Marduk.dmg"
+# releases/latest/download/Marduk.dmg depends on it (gh names the asset
+# after the basename). Version lives in the tag, the release title, and
+# the volume name. Built in a temp dir, NEVER the repo root — the
+# 0.4.17 run died mid-notarization and its leftover DMG tripped the
+# clean-tree guard on the next cut (field 2026-08-05).
+DMG_DIR=$(mktemp -d -t marduk-dmg-out)
+DMG="$DMG_DIR/Marduk.dmg"
 STAGE=$(mktemp -d -t marduk-dmg)
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
@@ -179,5 +183,6 @@ git -C "$TAP" commit -m "marduk $VERSION"
 git -C "$TAP" push
 rm -rf "$TAP"
 
-rm -f "$DMG" "$ENT"
+rm -rf "$DMG_DIR"
+rm -f "$ENT"
 echo "==> Done: https://github.com/spencer-dollahite/marduk/releases/tag/v$VERSION"

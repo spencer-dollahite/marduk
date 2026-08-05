@@ -323,6 +323,23 @@ final class KeyboardMonitor {
     var frontmostApp: String? { frontmostBundleID.isEmpty ? nil : frontmostBundleID }
     private var workspaceObserver: NSObjectProtocol?
     private var isFirefoxFrontmost: Bool { frontmostBundleID == "org.mozilla.firefox" }
+
+    /// Re-read the REAL frontmost app and resync the cache. Main thread
+    /// only — NSWorkspace is fine here, never in the tap callback. The
+    /// didActivate feed flaps under churn (the display inverter logs the
+    /// disagreements as "front disagreement"), and the Firefox-gated keys
+    /// are exactly where a stale reading turns into an eaten key: a cache
+    /// stuck on Firefox routed n into the Narrate gate, which buzzed
+    /// instead of opening news (field 2026-08-05). Confirm against
+    /// reality before any Firefox-gated action fires.
+    @discardableResult
+    private func resyncFrontmost() -> String {
+        if let app = NSWorkspace.shared.frontmostApplication {
+            frontmostBundleID = app.bundleIdentifier ?? ""
+            frontmostPID = app.processIdentifier
+        }
+        return frontmostBundleID
+    }
     private var commandBuffer = ""
     // After an auto-expand ("posi" → "config position "), the user may still
     // be typing the rest of the word — those chars are absorbed, not appended.
@@ -2186,15 +2203,25 @@ final class KeyboardMonitor {
                     fputs("[keyboard] narration off — releasing media\n", stderr)
                     postKey(keycode: 45)
                     onNarrate?(false)
-                } else {
-                    // Only start when focus is inside a Reader document —
-                    // on a normal page n would pause media for nothing
-                    guard Self.narrationContext() else {
-                        Earcon.error()
-                        return
-                    }
-                    startNarrationHandoff()
+                    return
                 }
+                // The cache said Firefox — confirm against reality before
+                // the Narrate gate eats the key. A stale cache here buzzed
+                // n instead of opening news (field 2026-08-05).
+                guard resyncFrontmost() == "org.mozilla.firefox" else {
+                    fputs("[keyboard] n — stale Firefox cache, rerouting\n",
+                          stderr)
+                    if newsExtensionEnabled { onNewsOpen?() }
+                    else { Earcon.error() }
+                    return
+                }
+                // Only start when focus is inside a Reader document —
+                // on a normal page n would pause media for nothing
+                guard Self.narrationContext() else {
+                    Earcon.error()
+                    return
+                }
+                startNarrationHandoff()
             }
             return nil
 
@@ -2205,7 +2232,33 @@ final class KeyboardMonitor {
                  // s/t/u: a lone n redispatches on burst expiry, while n
                  // inside a word ("runs", "sun") still rescues to typing —
                  // n stays out of BurstPolicy's command letters on purpose.
-            DispatchQueue.main.async { [self] in onNewsOpen?() }
+            DispatchQueue.main.async { [self] in
+                // Symmetric staleness check: really in Firefox → n is
+                // Narrate's key, not news. A phantom handoff left over
+                // from a mid-narration app switch releases its media hold
+                // first — news entry must never inherit a stuck hold.
+                if resyncFrontmost() == "org.mozilla.firefox" {
+                    fputs("[keyboard] n — stale front cache, Firefox is front\n",
+                          stderr)
+                    if narrationActive {
+                        narrationActive = false
+                        postKey(keycode: 45)
+                        onNarrate?(false)
+                    } else if Self.narrationContext() {
+                        startNarrationHandoff()
+                    } else {
+                        Earcon.error()
+                    }
+                    return
+                }
+                if narrationActive {
+                    // Narration abandoned by an app switch — release the
+                    // duck hold so reads/news can unduck normally again
+                    narrationActive = false
+                    onNarrate?(false)
+                }
+                onNewsOpen?()
+            }
             return nil
 
         case 28 where isFirefoxFrontmost: // 8 — Reader mode + narration, one key
@@ -2217,6 +2270,22 @@ final class KeyboardMonitor {
             if flags.contains(.maskShift) || hasOption { return pass }
             if isAutorepeat { return nil }
             DispatchQueue.main.async { [self] in
+                // Same staleness guard as n, with higher stakes: a stale
+                // Firefox reading would post Cmd+Option+R into whatever
+                // app is really front. Replay the digit instead — 8
+                // passes through in NORMAL everywhere but Firefox. A
+                // phantom handoff still releases its media hold (safe
+                // anywhere); only the key posts need Firefox front.
+                guard resyncFrontmost() == "org.mozilla.firefox" else {
+                    fputs("[keyboard] 8 — stale Firefox cache, replaying digit\n",
+                          stderr)
+                    if narrationActive {
+                        narrationActive = false
+                        onNarrate?(false)
+                    }
+                    postKey(keycode: 28)
+                    return
+                }
                 if narrationActive {
                     narrationActive = false
                     fputs("[keyboard] 8 — narration off, closing reader\n", stderr)

@@ -70,7 +70,8 @@ final class BurstPolicyTests: XCTestCase {
                 let headIsCommand = BurstPolicy.isCommandLetter(head, firefoxFrontmost: false)
                 let inIsCommand = BurstPolicy.isCommandLetter(incoming, firefoxFrontmost: false)
                 // Double taps and v+motion resolve before the typing test
-                let isDoubleTap = (head == incoming) && (incoming == t || incoming == u)
+                let isDoubleTap = (head == incoming)
+                    && (incoming == t || incoming == u || incoming == r)
                 let isVisualMotion = head == v && BurstPolicy.visualMotionKeys.contains(incoming)
                 if isDoubleTap || isVisualMotion { continue }
                 if headIsCommand && inIsCommand {
@@ -88,6 +89,34 @@ final class BurstPolicyTests: XCTestCase {
     func testDoubleTapsResolveAgainstABufferedTwin() {
         XCTAssertEqual(classify([t], t), .doubleTap(.time))
         XCTAssertEqual(classify([u], u), .doubleTap(.update))
+        XCTAssertEqual(classify([r], r), .doubleTap(.replay))
+    }
+
+    /// `rr` claims a pair that previously `.append`ed and then fired two
+    /// reads on expiry — the second killing the first. Unlike `dd` it needs
+    /// no install-channel gate: replaying speech is harmless everywhere.
+    func testReplayResolvesOnASecondR() {
+        XCTAssertEqual(classify([r], r, release: false), .doubleTap(.replay))
+        XCTAssertEqual(classify([s, r], r), .doubleTap(.replay))
+        // Not a pair unless the twin is adjacent — "s r t r" is four commands
+        XCTAssertEqual(classify([r, t], r), .append)
+    }
+
+    /// The accepted exposure, pinned so a future change to the command-letter
+    /// set has to look at it: only a word built ENTIRELY of command letters
+    /// up to a doubled r reaches the gesture. Anything with a non-command
+    /// letter still rescues to typing first.
+    func testOrdinaryDoubleRWordsStillRescueAsTyping() {
+        // "error" — e is not a command letter, so the first r rescues
+        let e: Int64 = 14
+        XCTAssertEqual(classify([e], r), .declareTyping)
+        // "hurry" — h rescues at the u, long before the rr
+        XCTAssertEqual(classify([h], u), .declareTyping)
+        // "sorry" — the o rescues it
+        let o: Int64 = 31
+        XCTAssertEqual(classify([s], o), .declareTyping)
+        // …and the documented false positive: "surround" (s-u-r-r) does fire
+        XCTAssertEqual(classify([s, u, r], r), .doubleTap(.replay))
     }
 
     /// The prefix must survive: the `s` in `s-t-t` is a real command.

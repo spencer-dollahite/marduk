@@ -15,6 +15,8 @@ enum HelpText {
         back a sentence, slash to search. It is all vim on purpose: if you \
         know vim, everything carries over. \
         v starts a visual selection. t speaks the time. Escape stops speech. \
+        If you miss something, r r says the last thing again — an \
+        announcement, or the whole read. \
         Space pauses and resumes a read. When you press colon, a panel lists \
         everything you can type. Type colon commands for the full list. \
         Type colon tutorial for a guided tour, and colon tip any time to \
@@ -33,6 +35,8 @@ enum HelpText {
         and control B turn pages, a number then capital G jumps to that \
         page, g g goes to page one, capital G to the last page. Long \
         documents of any kind page the same way, however big. \
+        r r, say the last thing again, whatever it was — a passing \
+        announcement, or the whole read, from where it started. \
         v, visual selection. Capital V, select whole lines. t, speak the \
         time. t t, time and date. s, speak what is under the mouse pointer as it moves, in your reading voice. u, check \
         for updates and hear what's new; u again within a minute installs. \
@@ -191,6 +195,7 @@ enum HelpText {
         "The s command speaks whatever is under your mouse pointer as it moves, in your own reading voice at your rate and pitch. No setup, and it never interrupts a read. Press s again to stop.",
         "Press u to hear what updates are available, then u again within a minute to install. A quick double u skips the notes entirely and just installs whatever is new — on an up to date system it simply says so.",
         "The lowercase r command selects the whole paragraph under the mouse cursor, like a triple click, then reads the selection.",
+        "Missed what Marduk just said? Press r twice. It repeats the last thing it spoke — a stock alert or a dialog that went by, or the whole read, starting where that read started.",
         "Media pauses during reads and resumes after, only if it was actually playing. Music apps get volume-ducked instead of paused.",
         "If you can see some of the screen, colon config border on frames it in the mode color: red for NORMAL, green for INSERT, blue for VISUAL. Colon config pointer on adds a dot at the mouse that stays visible while zoomed in.",
         "Colon voices opens a voice picker. Arrow through the list and each voice introduces itself in its own sound; Return keeps the one you are hearing.",

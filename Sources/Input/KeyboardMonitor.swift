@@ -86,6 +86,10 @@ final class KeyboardMonitor {
     // (the Firefox-n precedent: a command letter only where it means
     // something).
     var onCutRelease: (() -> Void)?
+    // rr — say the last utterance again (announcement or read). Speech is
+    // the only output this product has and it vanishes as it finishes;
+    // there is no scrollback to glance back at.
+    var onReplay: (() -> Void)?
     var releaseAvailable = false
     private var commandIdleTimer: DispatchWorkItem?
     var typingEchoEnabled = false    // speak chars typed in INSERT
@@ -2623,6 +2627,11 @@ final class KeyboardMonitor {
                     // irreversible happens.
                     fputs("[keyboard] dd → cut release\n", stderr)
                     onCutRelease?()
+                case .replay:
+                    // Content stays out of the log — the replayed text is
+                    // an announcement or a document (privacy allowlist).
+                    fputs("[keyboard] rr → replay last speech\n", stderr)
+                    onReplay?()
                 }
             }
             return .swallow

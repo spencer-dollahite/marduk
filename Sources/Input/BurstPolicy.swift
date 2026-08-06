@@ -18,11 +18,12 @@ import Foundation
 /// Same shape as `ReadNavigator`, `HoverDwell`, and `InversionPolicy`.
 enum BurstPolicy {
 
-    /// The three double-tap gestures resolved inside the burst window.
+    /// The four double-tap gestures resolved inside the burst window.
     enum DoubleTap: Equatable {
         case time     // tt → speak time + date
         case update   // uu → express update
         case release  // dd → cut a patch release (source installs only)
+        case replay   // rr → say the last utterance again
     }
 
     enum Verdict: Equatable {
@@ -68,6 +69,7 @@ enum BurstPolicy {
     static let uKey: Int64 = 32
     static let dKey: Int64 = 2
     static let vKey: Int64 = 9
+    static let rKey: Int64 = 15
 
     /// `n` (45) is a command ONLY while Firefox is frontmost (Reader
     /// narration handoff). Everywhere else it stays a plain letter, which
@@ -114,6 +116,19 @@ enum BurstPolicy {
         if releaseAvailable, keycode == dKey, buffer.last == dKey {
             return .doubleTap(.release)
         }
+        // `rr` — say the last utterance again. It claims a pair that had no
+        // sensible meaning before: `r` is a command letter, so a doubled r
+        // used to `.append` and then fire TWO reads on expiry, the second
+        // instantly killing the first. Nobody wanted that gesture.
+        //
+        // Known exposure, accepted: a word made ENTIRELY of command letters
+        // up to a doubled r ("surround", "stirrup") typed in NORMAL fires
+        // the replay instead of rescuing to typing. This is the same shape
+        // as "stutter" firing `tt` today, and it is the most harmless of
+        // the four gestures — it repeats speech the user already heard and
+        // changes nothing. Any non-command letter still rescues first, so
+        // "sorry", "error", "hurry", and "carry" are untouched.
+        if keycode == rKey, buffer.last == rKey { return .doubleTap(.replay) }
 
         if visualMotionKeys.contains(keycode), buffer.first == vKey {
             return .flushThenRedispatch

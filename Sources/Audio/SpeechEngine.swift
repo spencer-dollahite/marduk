@@ -193,7 +193,14 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// it was simply thrown away — only reads big enough to be chunked into
     /// synthetic pages (`PagedText.chunking(_:from:)`, the Terminal case)
     /// kept it.
+    /// `record: false` marks a call that is NOT a new read the user asked
+    /// for — a paged window being (re)built. `speakPaged` files the whole
+    /// document itself, and `loadPageWindow` must file nothing at all: a
+    /// window rebuild is the same read continuing, and letting each one
+    /// overwrite the log would make `rr` replay page 14 of a PDF as if it
+    /// were a fresh document, from the middle, with no pages.
     func speak(_ text: String, startingAt start: Int = 0,
+               record: Bool = true,
                completion: (() -> Void)? = nil) {
         // The user's system pronunciation dictionary, fresh each read so
         // Settings edits apply immediately. Typed entries rewrite the text
@@ -232,6 +239,11 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
             completion?()
             return
         }
+        // File the RAW text and offset, never the processed pair: a replay
+        // re-runs the whole pipeline, so it picks up a pronunciation entry
+        // or verbalizer level the user changed since — and `cut`, not
+        // `start`, so the stored offset is the clamped one actually used.
+        if record { speechLog.record(.read(text: text, start: cut)) }
         let joiner = head.isEmpty ? ""
             : SpeechPreprocessor.splitJoiner(afterPrefix: ns.substring(to: cut))
         let processed = head + joiner + spoken
@@ -286,6 +298,12 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     func announce(_ text: String, voice previewVoice: AVSpeechSynthesisVoice? = nil,
                   completion: (() -> Void)? = nil) {
         stop()
+
+        // A `:voices` preview is the picker demonstrating a voice, not
+        // Marduk telling the user something — filing each one would bury a
+        // real message under a dozen voice names as the user arrows the
+        // list. Every other announcement is exactly what `rr` is for.
+        if previewVoice == nil { speechLog.record(.announcement(text)) }
 
         // Fixed internal strings: sanitize only, no symbol verbalization
         let utterance = AVSpeechUtterance(string: SpeechPreprocessor.sanitize(text))
@@ -394,8 +412,15 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
                     headings: [(page: Int, level: Int)] = [],
                     completion: (() -> Void)? = nil) {
         let (first, window) = paged.window(startingAt: startPage - 1)
-        speak(window.text, completion: completion)
+        speak(window.text, record: false, completion: completion)
         guard readActive else { return }  // empty-after-preprocessing
+        // The whole document, not the window that happens to be loaded —
+        // `rr` repeats the read that happened, from the page it started on.
+        speechLog.record(.paged(
+            document: paged, page: startPage, synthetic: synthetic,
+            headings: headings.map {
+                SpeechLog.PageHeading(page: $0.page, level: $0.level)
+            }))
         pagedFull = paged
         pagedWindowFirst = first
         readPaged = window
@@ -431,7 +456,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
             completions.removeValue(forKey: ObjectIdentifier($0))
         }
         let (first, window) = full.window(startingAt: global)
-        speak(window.text, completion: carried)
+        speak(window.text, record: false, completion: carried)
         guard readActive, currentUtterance !== replaced else { return false }
         pagedFull = full          // speak() cleared paged state — restore
         pagedWindowFirst = first
@@ -759,6 +784,44 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         utterance.pitchMultiplier = pitch
         utterance.volume = 1.0
         echoSynthesizer.speak(utterance)
+    }
+
+    // MARK: - Replay (rr)
+
+    /// The one utterance `rr` repeats. Its contents are user content —
+    /// dialog titles, stock quotes, whole documents — and are NEVER logged
+    /// (the allowlist rule); only the kind of entry is.
+    private var speechLog = SpeechLog()
+
+    /// `rr` — say the last thing again. False when nothing has been spoken
+    /// yet, which the caller answers with the error earcon rather than
+    /// silence: an unexplained no-op is indistinguishable from a missed
+    /// keypress to someone who cannot see the screen.
+    @discardableResult
+    func replayLast() -> Bool {
+        guard let entry = speechLog.replay() else {
+            fputs("[speech] rr → nothing to replay\n", stderr)
+            return false
+        }
+        switch entry {
+        case .announcement(let text):
+            // echo(), NEVER announce(): announce() calls stop() and wipes
+            // readText/readPaged, so replaying a status line would destroy
+            // a read the user is holding paused. echo is the same channel
+            // spell and Ctrl+G use to speak without disturbing a read.
+            echo(text)
+            fputs("[speech] rr → replayed announcement\n", stderr)
+        case .read(let text, let start):
+            // Back out through the read path, so the replay is a real read:
+            // reading capture, motions, ducking, follow — all of it.
+            speak(text, startingAt: start)
+            fputs("[speech] rr → replayed read\n", stderr)
+        case .paged(let document, let page, let synthetic, let headings):
+            speakPaged(document, startPage: page, synthetic: synthetic,
+                       headings: headings.map { (page: $0.page, level: $0.level) })
+            fputs("[speech] rr → replayed paged read from page \(page)\n", stderr)
+        }
+        return true
     }
 
     /// A running spell-out (a sentence can take half a minute) must never

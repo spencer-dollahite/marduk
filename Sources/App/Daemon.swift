@@ -546,6 +546,11 @@ final class DaemonServer {
         // letter (typing rescue untouched — zero surface for strangers).
         keyboardMonitor?.releaseAvailable = projectDir != nil
         keyboardMonitor?.onCutRelease = { [self] in handleReleaseKey() }
+        // rr — say the last utterance again. Nothing spoken yet buzzes:
+        // silence would be indistinguishable from a dropped keypress.
+        keyboardMonitor?.onReplay = { [self] in
+            if !speech.replayLast() { Earcon.error() }
+        }
         // Speed keys: rate applies instantly per nudge; the announcement
         // and the config write debounce until the key is released, so a
         // held autorepeat doesn't spam speech or disk. (Arrives on main.)

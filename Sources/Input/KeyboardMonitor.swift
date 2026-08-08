@@ -44,7 +44,13 @@ final class KeyboardMonitor {
     // failOpen is touched from main AND the sentinel queue — lock it.
     private let failOpenLock = NSLock()
     private var failOpenReasons = Set<String>()
-    private var lastMainBeat = Date()
+    /// Monotonic UPTIME nanoseconds, never wall clock. `Date()` keeps
+    /// counting while the Mac is asleep, so every wake reported a main
+    /// thread "lagging" for the whole nap — the field log shows 777s, 911s,
+    /// 1028s — and failed the tap open on a machine that was simply
+    /// closed. DispatchTime is mach_absolute_time, which stops with the
+    /// system, so a lag reading now only ever means real congestion.
+    private var lastMainBeat = DispatchTime.now().uptimeNanoseconds
     private var latencySentinel: DispatchSourceTimer?
     private var onSpeak: SpeakHandler?
     private var onStop: StopHandler?
@@ -630,7 +636,9 @@ final class KeyboardMonitor {
     /// fails open until markers flow again. Runs entirely off-main.
     private func startLatencySentinel() {
         guard latencySentinel == nil else { return }
-        failOpenLock.lock(); lastMainBeat = Date(); failOpenLock.unlock()
+        failOpenLock.lock()
+        lastMainBeat = DispatchTime.now().uptimeNanoseconds
+        failOpenLock.unlock()
         let sentinel = DispatchSource.makeTimerSource(
             queue: DispatchQueue(label: "com.marduk.latency", qos: .userInitiated))
         sentinel.schedule(deadline: .now() + 2, repeating: 1.5)
@@ -639,11 +647,12 @@ final class KeyboardMonitor {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.failOpenLock.lock()
-                self.lastMainBeat = Date()
+                self.lastMainBeat = DispatchTime.now().uptimeNanoseconds
                 self.failOpenLock.unlock()
             }
             self.failOpenLock.lock()
-            let lag = Date().timeIntervalSince(self.lastMainBeat)
+            let lag = Double(DispatchTime.now().uptimeNanoseconds
+                             &- self.lastMainBeat) / 1_000_000_000
             let tripped = self.failOpenReasons.contains("main-thread congestion")
             self.failOpenLock.unlock()
             if lag > 4, !tripped {

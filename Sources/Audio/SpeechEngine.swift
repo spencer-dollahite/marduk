@@ -270,7 +270,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         readBase = base
         readPosition = base
         segmentStartedAt = Date()
-        startSpeaking(makeReadUtterance(spoken), completion: completion)
+        startSpeaking(makeReadUtterance(spoken), kind: "read", completion: completion)
         readActive = true
     }
 
@@ -314,7 +314,8 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         utterance.preUtteranceDelay = 0.0
         utterance.postUtteranceDelay = 0.0
 
-        startSpeaking(utterance, completion: completion)
+        startSpeaking(utterance, kind: previewVoice == nil ? "announce" : "preview",
+                      completion: completion)
         readActive = false
         readText = nil
         readPaged = nil
@@ -336,7 +337,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         utterance.rate = rate
         utterance.voice = voice
 
-        startSpeaking(utterance, completion: nil)
+        startSpeaking(utterance, kind: "ssml", completion: nil)
         readActive = true
         readText = nil // SSML positions don't map to plain text — no motions
         readPaged = nil
@@ -750,8 +751,32 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         readBase = clamped
         readPosition = clamped
         segmentStartedAt = Date()
-        startSpeaking(makeReadUtterance(remainder), completion: carried)
+        startSpeaking(makeReadUtterance(remainder), kind: "respeak", completion: carried)
         readActive = true
+    }
+
+    /// Say again, exactly, something the synthesizer swallowed before it
+    /// spoke a syllable — announcements and SSML, which have no retained
+    /// read text to respeak from. A dropped announcement is a dropped
+    /// MESSAGE (a dialog title, a stock alert, "Update complete"), and
+    /// speech is the only output this product has: there is no scrollback
+    /// to catch it, so it is heard once or not at all.
+    ///
+    /// A fresh utterance rather than the swallowed instance itself —
+    /// re-enqueuing an object the synthesizer has already flushed is
+    /// exactly the kind of undefined territory this whole fix is about.
+    private func respeakSwallowed(_ utterance: AVSpeechUtterance) {
+        let replacement = AVSpeechUtterance(
+            attributedString: utterance.attributedSpeechString)
+        replacement.rate = utterance.rate
+        replacement.voice = utterance.voice
+        replacement.pitchMultiplier = utterance.pitchMultiplier
+        replacement.volume = utterance.volume
+        replacement.preUtteranceDelay = utterance.preUtteranceDelay
+        replacement.postUtteranceDelay = utterance.postUtteranceDelay
+        let carried = completions.removeValue(forKey: ObjectIdentifier(utterance))
+        let kind = info(utterance)?.kind ?? "announce"
+        startSpeaking(replacement, kind: kind, completion: carried)
     }
 
     /// Speak a short cue (search-entry keystroke echo, spell-out) over a
@@ -905,11 +930,56 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// silent is what keeps the phantom retry from re-speaking a read the
     /// user already heard.
     private var sawStartForCurrent = false
-    /// When the current utterance was handed to the synthesizer. Only ever
-    /// read to MEASURE a finish that claims to have spoken nothing — never
-    /// to wait on speech, which is what completions are for.
-    private var utteranceHandedOverAt = Date()
     private var wedgeRebuilt = false
+
+    /// What we know about the CURRENT synthesizer instance's readiness to
+    /// accept work — see `SpeechHealth.Handoff`. This is the prevention
+    /// half of the swallowed-read fix: an instance with an unresolved stop
+    /// gets replaced rather than spoken into.
+    private var handoff = SpeechHealth.Handoff()
+
+    /// Instances we have swapped out, held a few swaps longer than they
+    /// are needed. Two reasons, both about not dropping something
+    /// mid-sentence: releasing an AVSpeechSynthesizer while its stop is in
+    /// flight is a race not worth running for the sake of one small
+    /// object, and a retired instance still owes us the END CALLBACK for
+    /// the utterance it was carrying — which is what fires that read's
+    /// completion (news mode closes its pager there). Bounded, so a long
+    /// `j`-glide of respeaks cannot pile them up.
+    private nonisolated(unsafe) var retiredSynthesizers: [AVSpeechSynthesizer] = []
+
+    /// Per-utterance bookkeeping for the log — id, what kind of thing it
+    /// was, how long it is, when it was handed over. NO CONTENT (the
+    /// privacy allowlist): ids, kinds, lengths and times only, so a field
+    /// log can be pasted into a public issue and still explain itself.
+    private struct UtteranceInfo {
+        let id: Int
+        let kind: String
+        let chars: Int
+        let handedOverAt: Date
+    }
+    private var utteranceInfo: [ObjectIdentifier: UtteranceInfo] = [:]
+    private var utteranceSeq = 0
+    /// When the last utterance of any kind ended. Logged as the gap before
+    /// the next handover, because that gap is the whole story of the
+    /// swallowed read: the failures cluster within a few hundred
+    /// milliseconds of a previous read's end.
+    private var lastUtteranceEndedAt: Date?
+
+    private func info(_ utterance: AVSpeechUtterance) -> UtteranceInfo? {
+        utteranceInfo[ObjectIdentifier(utterance)]
+    }
+
+    /// "#12 read 1624 chars" — the log's handle on one utterance.
+    private func tag(_ utterance: AVSpeechUtterance) -> String {
+        guard let info = info(utterance) else { return "#? (untracked)" }
+        return "#\(info.id) \(info.kind) \(info.chars) chars"
+    }
+
+    private func elapsed(_ utterance: AVSpeechUtterance) -> TimeInterval {
+        guard let info = info(utterance) else { return 0 }
+        return Date().timeIntervalSince(info.handedOverAt)
+    }
 
     /// The OTHER half of the same failure, and the one that actually bit
     /// (field 2026-08-06): an utterance the synthesizer accepts and then
@@ -923,15 +993,19 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// `currentUtterance` by then. The watchdog is disarmed by the exact
     /// event it exists to catch, so the read was lost in silence.
     ///
-    /// Cause is the stop-then-speak race: `speak()`, `announce()` and
-    /// `respeak()` all call `stop()` and hand the synthesizer a new
-    /// utterance in the same turn, while the previous one may still be
-    /// tearing down (`stopSpeaking(at:)` completes asynchronously, and
-    /// `stop()` skips it entirely when `isSpeaking` has already flipped
-    /// false mid-teardown). AVSpeechSynthesizer answers by swallowing the
-    /// newcomer. One retry per read, on a FRESH synthesizer so the retry
-    /// cannot inherit the same in-flight teardown; a second failure ends
-    /// the read normally so this can never loop.
+    /// Cause is the stop-then-speak race: `stopSpeaking(at:)` empties the
+    /// synthesizer's QUEUE asynchronously, every speaking path calls
+    /// `stop()` and enqueues in the same turn, and a flush landing after
+    /// that enqueue takes the brand-new utterance with it.
+    ///
+    /// PREVENTION now lives in `handoff` — an instance with an unresolved
+    /// stop is replaced rather than spoken into, so the race is not run in
+    /// the first place. This flag governs what is left: INSURANCE for the
+    /// residual case the guard cannot see (no stop of ours issued, the
+    /// instance reporting itself idle, and the utterance swallowed
+    /// anyway). One retry per utterance, on a fresh synthesizer so the
+    /// retry cannot inherit the same in-flight teardown; a second failure
+    /// ends the read normally so this can never loop.
     private var phantomRetried = false
 
     /// The user asked for silence. Set by `stop()`, cleared whenever a new
@@ -990,28 +1064,63 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         return true
     }
 
-    private func startSpeaking(_ utterance: AVSpeechUtterance, completion: (() -> Void)?) {
+    private func startSpeaking(_ utterance: AVSpeechUtterance, kind: String,
+                               completion: (() -> Void)?) {
         if let completion {
             completions[ObjectIdentifier(utterance)] = completion
         }
         currentUtterance = utterance
         sawStartForCurrent = false
-        utteranceHandedOverAt = Date()
-        // The stop-then-speak race, made visible. Every caller here has just
-        // called stop(), so a synthesizer still reporting busy means the
-        // teardown is still in flight and this utterance is the one at risk
-        // of being swallowed (see `phantomRetried`). Diagnostic only — the
-        // recovery is in didFinish, because "busy" is not by itself wrong.
-        if synthesizer.isSpeaking || synthesizer.isPaused {
-            fputs("[speech] new utterance handed to a still-busy synthesizer\n",
-                  stderr)
+        utteranceSeq += 1
+        let chars = (utterance.speechString as NSString).length
+        utteranceInfo[ObjectIdentifier(utterance)] = UtteranceInfo(
+            id: utteranceSeq, kind: kind, chars: chars, handedOverAt: Date())
+        pruneUtteranceInfo()
+
+        // THE FIX for the swallowed read (field 2026-08-06 / 2026-08-08).
+        //
+        // Every caller here has just called stop(), and stopSpeaking(at:)
+        // empties the QUEUE — asynchronously. Enqueue into that window and
+        // the flush takes the brand-new utterance with it: it comes back
+        // as an immediate end, having spoken nothing, and the read is torn
+        // down as though it had been read. There is no way to wait for the
+        // flush (no callback marks it, and a guessed delay would be
+        // audible), and no way to ask the synthesizer what it is doing —
+        // so we stop using that instance. A fresh one has no queue and
+        // nothing in flight, which is the only state we can actually
+        // guarantee. See SpeechHealth.
+        //
+        // The cost is one small object per INTERRUPTION — never on the
+        // steady path, where a read follows a settled one and speaks into
+        // the instance already there. An interruption is about to run a
+        // speech synthesizer either way; an allocation beside it is noise,
+        // and a lost read is not.
+        let busy = synthesizer.isSpeaking
+        let paused = synthesizer.isPaused
+        var freshNote = ""
+        if handoff.needsFreshSynthesizer(isSpeaking: busy, isPaused: paused) {
+            freshNote = " [fresh synthesizer: "
+                + SpeechHealth.freshReason(handoff, isSpeaking: busy,
+                                           isPaused: paused) + "]"
+            rebuildSynthesizer()
         }
+        let gap = lastUtteranceEndedAt.map {
+            String(format: " (%.2fs after the last utterance ended)",
+                   Date().timeIntervalSince($0))
+        } ?? ""
+        fputs("[speech] speak \(tag(utterance))\(gap)\(freshNote)\n", stderr)
+
         ducker.prepareToDuck()
         // Belt and braces against the paused-wedge (see stop())
         if synthesizer.isPaused {
             fputs("[speech] synthesizer was left paused — resuming before speak\n", stderr)
             synthesizer.continueSpeaking()
         }
+        // Marked BEFORE the enqueue, not after: `speak` has been seen to
+        // deliver an end callback synchronously (that IS the swallowed
+        // read), and bookkeeping that lands after its own conclusion
+        // records a live utterance that is already over.
+        handoff.handedOver()
         synthesizer.speak(utterance)
         // Duck NOW, not only on didStart: duck() is idempotent (already-
         // ducked targets skip), and delegate delivery can lapse when the
@@ -1023,14 +1132,20 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
             guard let self, utterance === self.currentUtterance,
                   !self.sawStartForCurrent else { return }
-            fputs("[speech] synthesizer accepted the utterance but never "
-                + "started it (4s)\n", stderr)
+            fputs("[speech] synthesizer accepted \(self.tag(utterance)) but "
+                + "never started it (4s)\n", stderr)
             if !self.wedgeRebuilt {
                 self.wedgeRebuilt = true
                 fputs("[speech] rebuilding the synthesizer and retrying\n", stderr)
                 self.rebuildSynthesizer()
+                // Same reasoning as the phantom retry: a read resumes from
+                // its start, and anything else is re-issued verbatim rather
+                // than lost — an announcement nobody heard is a message
+                // nobody got.
                 if self.readText != nil {
                     self.respeak(from: self.readBase)
+                } else {
+                    self.respeakSwallowed(utterance)
                 }
             } else {
                 Earcon.error()
@@ -1050,8 +1165,21 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// every handler guards on `utterance === currentUtterance`.
     private func rebuildSynthesizer() {
         synthesizer.stopSpeaking(at: .immediate)
+        retiredSynthesizers.append(synthesizer)
+        if retiredSynthesizers.count > 3 { retiredSynthesizers.removeFirst() }
         synthesizer = AVSpeechSynthesizer()
         synthesizer.delegate = self
+        handoff.freshInstance()
+    }
+
+    /// Bounded bookkeeping. Every utterance is removed when its end
+    /// callback lands, so this only ever trims after a callback the
+    /// system never delivered — a leak of a few small structs, but the
+    /// daemon runs for weeks.
+    private func pruneUtteranceInfo() {
+        guard utteranceInfo.count > 32 else { return }
+        let live = utteranceInfo.filter { $0.value.id > utteranceSeq - 8 }
+        utteranceInfo = live
     }
 
     func stop() {
@@ -1065,14 +1193,30 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         // Terminal read at all (field 2026-07-22).
         stopRequested = true
         stopEcho() // a running spell-out dies with the read
+        // Silence means silence. A retired instance is stopped when it is
+        // retired, but Escape must not depend on that having worked —
+        // two voices talking at once is a worse failure than the one the
+        // swap exists to prevent.
+        for retired in retiredSynthesizers where retired.isSpeaking || retired.isPaused {
+            if retired.isPaused { retired.continueSpeaking() }
+            retired.stopSpeaking(at: .immediate)
+        }
         // Un-wedge first: a synthesizer stopped WHILE PAUSED can stay stuck
         // in the paused state, silently queueing every future utterance —
         // the whole engine goes mute until the daemon restarts.
         if synthesizer.isPaused {
             synthesizer.continueSpeaking()
+            handoff.stopIssued()
         }
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
+            // The flush is now SCHEDULED, not done. Until this instance
+            // proves itself by starting something, anything we enqueue on
+            // it can be swept up by that flush — so the next handover
+            // takes a fresh instance instead. This one line is what turns
+            // the swallowed read from "recovered after the fact" into
+            // "never happened".
+            handoff.stopIssued()
         }
     }
 
@@ -1124,63 +1268,76 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
 
 extension SpeechEngine: AVSpeechSynthesizerDelegate {
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        fputs("[speech] didStart fired\n", stderr)
-        guard utterance === currentUtterance else { return }
+        let stale = utterance !== currentUtterance
+        fputs("[speech] didStart \(tag(utterance)) after "
+            + String(format: "%.2f", elapsed(utterance)) + "s"
+            + (stale ? " (stale — already replaced)" : "") + "\n", stderr)
+        guard !stale else { return }
         sawStartForCurrent = true
+        // The instance proved it accepts work: any flush we were worried
+        // about has landed without eating this utterance.
+        handoff.speechStarted()
         wedgeRebuilt = false  // healthy again — future wedges get a fresh retry
         phantomRetried = false  // …and so does a future swallowed utterance
         ducker.duck()
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        fputs("[speech] didFinish fired\n", stderr)
         // A "finish" for an utterance that never STARTED is not a finish —
-        // nothing was spoken. Checked before window continuation (a phantom
+        // nothing was spoken. Judged before window continuation (a phantom
         // must not advance the paged read past a window it never read) and
         // before finish() (which would clear currentUtterance and tear the
         // read down, exactly as it silently did before this existed).
-        //
-        // stopRequested excludes the legitimate case: the user stopping a
-        // read that had not yet started, which arrives in this same shape.
-        if utterance === currentUtterance, !sawStartForCurrent, !stopRequested {
-            // Logged whether or not we retry, so a phantom we DECLINE to
-            // retry (below) still leaves evidence in a pasted log.
-            let elapsed = Date().timeIntervalSince(utteranceHandedOverAt)
-            fputs("[speech] utterance finished without ever starting "
-                + "(\(String(format: "%.2f", elapsed))s) — nothing was spoken\n",
-                  stderr)
-            // The insurance condition. `sawStartForCurrent` is set by
-            // didStart AND by the first word-boundary callback, so real
-            // speech marks itself twice over — but delegate delivery has
-            // been seen to lapse WHILE AUDIBLE (the comment in
-            // startSpeaking: reads audible over music with zero didStart
-            // lines). Re-speaking a read the user already heard is a worse
-            // bug than the one being fixed, so the retry additionally
-            // requires that too little time passed for anything to have
-            // been spoken at all. Phantoms come back in milliseconds; the
-            // shortest real read in the field log (12 chars) takes ~0.6s.
-            let tooFastToHaveSpoken = elapsed < 1.0
-            // Announcements have no retained text to re-speak; they end
-            // normally, and `rr` can replay them (SpeechLog recorded the
-            // text when announce() was called, not when it was spoken).
-            if !phantomRetried, tooFastToHaveSpoken, readText != nil {
-                phantomRetried = true
-                fputs("[speech] re-speaking the read on a fresh synthesizer\n",
-                      stderr)
-                rebuildSynthesizer()
-                // respeak() restarts from the segment start (readBase) — the
-                // read had spoken nothing, so its start IS where to resume.
+        let took = elapsed(utterance)
+        let verdict = SpeechHealth.finishVerdict(
+            isCurrentUtterance: utterance === currentUtterance,
+            sawEvidenceOfSpeech: sawStartForCurrent,
+            stopRequested: stopRequested,
+            elapsed: took,
+            alreadyRetried: phantomRetried,
+            canRespeak: readText != nil || info(utterance) != nil)
+        fputs("[speech] didFinish \(tag(utterance)) after "
+            + String(format: "%.2f", took) + "s (\(verdict))\n", stderr)
+
+        if verdict == .retry {
+            fputs("[speech] \(tag(utterance)) finished without ever starting "
+                + "— nothing was spoken\n", stderr)
+        } else if verdict == .giveUp {
+            // Logged even though we decline, so a phantom we DID NOT retry
+            // still leaves evidence in a pasted log. The reason matters:
+            // "too slow" usually means the delegate lapsed while audible
+            // (the read was fine), while "already retried" means the
+            // synthesizer swallowed twice and is wedged, not racing.
+            let why = phantomRetried ? "already retried once"
+                : took >= SpeechHealth.phantomWindow
+                    ? "too slow to be a phantom — it probably did speak"
+                    : "nothing left to say it with"
+            fputs("[speech] \(tag(utterance)) reported no start (\(why)) "
+                + "— ending the read\n", stderr)
+        }
+        if verdict == .retry {
+            phantomRetried = true
+            fputs("[speech] re-speaking \(tag(utterance)) on a fresh "
+                + "synthesizer\n", stderr)
+            rebuildSynthesizer()
+            // A read restarts from the segment start (readBase) — it had
+            // spoken nothing, so its start IS where to resume. Anything
+            // else (an announcement, an SSML line) is re-issued as an
+            // identical utterance: a dropped announcement is a dropped
+            // MESSAGE, and this product has no scrollback to catch it.
+            if readText != nil {
                 respeak(from: readBase)
-                // respeak bails silently on an empty remainder. Returning
-                // then would strand a live READING capture over a read that
-                // is never going to speak — so hand over only once the
-                // replacement utterance is actually in flight, and otherwise
-                // fall through and end the read honestly.
-                if currentUtterance !== utterance { return }
-                fputs("[speech] re-speak produced nothing to say\n", stderr)
+            } else {
+                respeakSwallowed(utterance)
             }
-            fputs("[speech] not retrying (already retried, no read text, or "
-                + "too slow to be a phantom) — ending the read\n", stderr)
+            // The re-speak can bail (empty remainder). Returning then would
+            // strand a live READING capture over a read that is never going
+            // to speak — so hand over only once the replacement utterance is
+            // actually in flight, and otherwise fall through and end
+            // honestly.
+            if currentUtterance !== utterance { return }
+            fputs("[speech] the re-speak produced nothing to say — ending\n",
+                  stderr)
         }
         // Window continuation: a paged read whose WINDOW ended naturally
         // keeps going — load the next window instead of tearing down.
@@ -1205,7 +1362,12 @@ extension SpeechEngine: AVSpeechSynthesizerDelegate {
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        fputs("[speech] didCancel fired\n", stderr)
+        // Rare on macOS 26 — a full field log covering hundreds of stops
+        // contains no didCancel at all; cancelled utterances arrive as
+        // didFinish. Kept honest rather than assumed away.
+        fputs("[speech] didCancel \(tag(utterance)) after "
+            + String(format: "%.2f", elapsed(utterance)) + "s"
+            + (utterance === currentUtterance ? "" : " (stale)") + "\n", stderr)
         finish(utterance)
     }
 
@@ -1218,7 +1380,13 @@ extension SpeechEngine: AVSpeechSynthesizerDelegate {
         // readText and so never reach the branch below), because what it
         // guards is "was anything spoken", not "is this a read".
         if utterance === currentUtterance {
+            if !sawStartForCurrent {
+                fputs("[speech] first word boundary \(tag(utterance)) after "
+                    + String(format: "%.2f", elapsed(utterance))
+                    + "s — audio confirmed\n", stderr)
+            }
             sawStartForCurrent = true
+            handoff.speechStarted()
         }
         // Track the voice's position for read motions — full-text coordinates
         // via readBase. Stale utterances (just replaced by a jump) must not
@@ -1230,6 +1398,15 @@ extension SpeechEngine: AVSpeechSynthesizerDelegate {
     }
 
     private func finish(_ utterance: AVSpeechUtterance) {
+        utteranceInfo.removeValue(forKey: ObjectIdentifier(utterance))
+        // A STALE utterance ending says nothing about the one now in
+        // flight: it is the corpse of the read we just replaced, and
+        // letting it mark the instance settled would declare the live
+        // handover resolved before it has started.
+        if utterance === currentUtterance {
+            handoff.utteranceEnded()
+            lastUtteranceEndedAt = Date()
+        }
         // Only the current utterance owns the duck state. A stale didCancel
         // (delivered after speak() already replaced the utterance) skipping
         // unduck is intentional: the replacement re-uses the ducked state and

@@ -247,4 +247,32 @@ final class CrossCoreInvariantTests: XCTestCase {
                           "hint '\(hint.id)' names nothing the user can press")
         }
     }
+
+    // MARK: - The read button must not silence the read it just asked for
+
+    /// The three-way behind the read button branches on `isSpeaking()`,
+    /// which goes true the moment the QUEUE accepts an utterance — up to a
+    /// second before the first syllable. A press landing in that silent
+    /// window therefore took the "stop only" branch and killed the read
+    /// the same button had just started, and the finish that followed
+    /// looked exactly like a user stop, so nothing retried it (field
+    /// 2026-08-09).
+    ///
+    /// The order is the fix: `isReadStarting()` has to be consulted BEFORE
+    /// `isSpeaking()`, or the stop branch wins the race again.
+    func testTheReadButtonChecksForASilentStartBeforeStopping() throws {
+        let monitor = try source("Sources/Input/KeyboardMonitor.swift")
+        guard let handler = monitor.range(of: "if keycode == 53, hasOption {") else {
+            return XCTFail("the read button's handler is gone")
+        }
+        let tail = String(monitor[handler.lowerBound...])
+        guard let starting = tail.range(of: "isReadStarting()"),
+              let speaking = tail.range(of: "isSpeaking()") else {
+            return XCTFail("the read button no longer guards the silent "
+                           + "start-up window")
+        }
+        XCTAssertTrue(starting.lowerBound < speaking.lowerBound,
+                      "a read that has made no sound yet is judged 'speaking' "
+                      + "and stopped — the swallowed read, reintroduced")
+    }
 }

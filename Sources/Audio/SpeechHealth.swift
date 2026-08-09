@@ -94,6 +94,47 @@ enum SpeechHealth {
         }
     }
 
+    // MARK: - The silent window between "handed over" and "audible"
+
+    /// How long an utterance may sit between the enqueue and its first
+    /// sound before we stop calling it "starting". Observed first-start
+    /// latencies in the field run 0.2s on a warm synthesizer and up to
+    /// ~1.0s on a cold one (a rebuilt instance, a voice being paged in),
+    /// so the window has to clear a full second. Past it, something is
+    /// wrong rather than slow — the 4s watchdog owns that case, and a
+    /// keypress must not be swallowed indefinitely by a wedge.
+    static let startupGrace: TimeInterval = 1.5
+
+    /// True while a read has been handed to the synthesizer and has made
+    /// NO SOUND YET.
+    ///
+    /// This state is the reason the swallowed read kept coming back after
+    /// the handoff guard and the phantom retry both landed. Neither could
+    /// see it, because nothing was racing: `AVSpeechSynthesizer.isSpeaking`
+    /// goes true the instant the QUEUE accepts an utterance, a quarter to
+    /// a full second before the first syllable — and to every consumer of
+    /// that flag, a read that has said nothing is indistinguishable from
+    /// one the user is listening to. So the read button's three-way read
+    /// "audibly speaking" and took its "stop only" branch, silencing the
+    /// read that the very same button had asked for a moment earlier. The
+    /// stop set `stopRequested`, the finish that followed was therefore
+    /// judged `.stopped` — a user asking for silence, never retried, by
+    /// design — and the read died without one syllable or one line of
+    /// evidence that anything had gone wrong (field 2026-08-09: five reads
+    /// in one session, each ending 0.10-0.56s after a press, each followed
+    /// by "fresh synthesizer: stop flush unconfirmed").
+    ///
+    /// `isPaused` is excluded deliberately: a paused read HAS spoken, and
+    /// its press means something else entirely (stop the old read, read
+    /// the new selection).
+    static func isSilentStartup(isSpeaking: Bool, isPaused: Bool,
+                                sawEvidenceOfSpeech: Bool,
+                                sinceHandover: TimeInterval?) -> Bool {
+        guard isSpeaking, !isPaused, !sawEvidenceOfSpeech,
+              let since = sinceHandover else { return false }
+        return since < startupGrace
+    }
+
     // MARK: - Recovery: reading a finish that spoke nothing
 
     /// Too fast for anything to have been said. Phantoms come back in

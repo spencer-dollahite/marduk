@@ -12,7 +12,11 @@ import CoreAudio
 /// Ctrl+Option+M toggles Marduk on/off entirely.
 final class KeyboardMonitor {
     typealias SpeakHandler = (String) -> Void
-    typealias StopHandler = () -> Void
+    /// The stop's REASON rides along — a short fixed word, structured
+    /// vocabulary rather than user content. A silenced read leaves no
+    /// other trace, and three passes at the swallowed read were spent
+    /// guessing which caller had fired one.
+    typealias StopHandler = (String) -> Void
     typealias AnnounceHandler = (String) -> Void
     typealias UpdateHandler = () -> Void
 
@@ -59,6 +63,10 @@ final class KeyboardMonitor {
     private var isSpeaking: () -> Bool = { false }
     private var isReadActive: () -> Bool = { false }
     private var isReadPaused: () -> Bool = { false }
+    /// A read handed to the synthesizer that has not made a sound yet.
+    /// Distinct from `isSpeaking`, which is true the moment the queue
+    /// accepts an utterance — see `SpeechHealth.isSilentStartup`.
+    private var isReadStarting: () -> Bool = { false }
     private var onPauseToggle: (() -> Void)?
     private var stopped = false
 
@@ -493,6 +501,7 @@ final class KeyboardMonitor {
         isSpeaking: @escaping () -> Bool,
         isReadActive: @escaping () -> Bool = { false },
         isReadPaused: @escaping () -> Bool = { false },
+        isReadStarting: @escaping () -> Bool = { false },
         onPauseToggle: (() -> Void)? = nil
     ) {
         self.onSpeak = onSpeak
@@ -502,6 +511,7 @@ final class KeyboardMonitor {
         self.isSpeaking = isSpeaking
         self.isReadActive = isReadActive
         self.isReadPaused = isReadPaused
+        self.isReadStarting = isReadStarting
         self.onPauseToggle = onPauseToggle
 
         // Keep the frontmost-app cache warm for the `n` narration gate
@@ -798,9 +808,27 @@ final class KeyboardMonitor {
         if keycode == 53, hasOption {
             if isAutorepeat { return nil }
             DispatchQueue.main.async { [self] in
+                // …and "audibly" has to MEAN audibly. A read handed over a
+                // quarter-second ago reports isSpeaking while it is still
+                // dead silent, so a second press arriving in that window
+                // took the stop branch and killed the read this very
+                // button had just asked for — no syllable, no earcon, no
+                // retry (the finish reads as a user stop, which is never
+                // re-spoken). Whatever produced the second press — a
+                // bounced switch on the read button, a repeat the HID
+                // layer never flagged, an impatient thumb — the answer is
+                // the same and it is not "silence": the read is already
+                // on its way. Doing nothing is the whole fix; past the
+                // grace window the press works normally again, so a
+                // genuinely wedged synthesizer can still be stopped.
+                if isReadStarting() {
+                    fputs("[keyboard] read press ignored — the read is "
+                        + "still starting\n", stderr)
+                    return
+                }
                 if isSpeaking() {
                     let paused = isReadPaused()
-                    onStop?()
+                    onStop?("read button")
                     if paused {
                         Self.readSelection { [self] text in onSpeakDocument?(text, 0) }
                     }
@@ -1235,13 +1263,13 @@ final class KeyboardMonitor {
                         // the INSERT-reclaim rung's sound.
                         fputs("[keyboard] READING escape held → news list\n",
                               stderr)
-                        self.onStop?()
+                        self.onStop?("escape held (news)")
                         Earcon.riseToReading()
                         return
                     }
                     self.mode = .normal
                     fputs("[keyboard] READING escape held → NORMAL\n", stderr)
-                    self.onStop?()
+                    self.onStop?("escape held")
                     Earcon.riseToNormal()
                 }
                 pendingReadingEscape?.cancel() // never stack two
@@ -2323,7 +2351,7 @@ final class KeyboardMonitor {
                     postKey(keycode: 45)
                     onNarrate?(false)
                 }
-                if isSpeaking() { onStop?() }
+                if isSpeaking() { onStop?("escape") }
             }
             return nil
 

@@ -148,6 +148,61 @@ final class SpeechHealthTests: XCTestCase {
         XCTAssertFalse(reason.contains("paused"))
     }
 
+    // MARK: - The silent window before the first syllable
+
+    private func silentStartup(speaking: Bool = true, paused: Bool = false,
+                               spoke: Bool = false,
+                               since: TimeInterval? = 0.2) -> Bool {
+        SpeechHealth.isSilentStartup(isSpeaking: speaking, isPaused: paused,
+                                     sawEvidenceOfSpeech: spoke,
+                                     sinceHandover: since)
+    }
+
+    /// The field failure of 2026-08-09: the read had been handed over
+    /// 0.15s earlier and had said nothing, yet `isSpeaking` was true — so
+    /// the read button's three-way called it "audibly speaking" and
+    /// stopped it.
+    func testAJustHandedOverReadIsNotAudiblySpeaking() {
+        XCTAssertTrue(silentStartup(since: 0.15))
+        XCTAssertTrue(silentStartup(since: 0.56),
+                      "a cold synthesizer can take half a second to speak")
+    }
+
+    /// Evidence of speech ends it immediately — from there the press
+    /// means what it always meant.
+    func testAudioEndsTheSilentWindow() {
+        XCTAssertFalse(silentStartup(spoke: true))
+    }
+
+    /// A PAUSED read has spoken. Its press means "stop this and read the
+    /// new selection", and swallowing it would break chained reads —
+    /// which is the failure the paused branch exists to fix.
+    func testAPausedReadIsNotStartingSilently() {
+        XCTAssertFalse(silentStartup(paused: true))
+    }
+
+    /// Idle is idle: with nothing queued the press reads the selection.
+    func testAnIdleSynthesizerIsNotStartingSilently() {
+        XCTAssertFalse(silentStartup(speaking: false))
+        XCTAssertFalse(silentStartup(since: nil))
+    }
+
+    /// The window is BOUNDED. Past the grace period something is wedged
+    /// rather than slow, and a keypress that can never stop anything is
+    /// its own failure — the user must be able to silence a stuck read.
+    func testTheSilentWindowExpires() {
+        XCTAssertFalse(silentStartup(since: SpeechHealth.startupGrace))
+        XCTAssertFalse(silentStartup(since: 4.0))
+    }
+
+    /// Why the guard had to live here and not in the recovery ladder: a
+    /// stop landing in the silent window makes the finish that follows
+    /// indistinguishable from a user's Escape, and `.stopped` is never
+    /// re-spoken. Prevention is the only move.
+    func testAStopInTheSilentWindowLooksExactlyLikeAUserStop() {
+        XCTAssertEqual(verdict(stopped: true, elapsed: 0.1), .stopped)
+    }
+
     // MARK: - Recovery: a finish that spoke nothing
 
     private func verdict(current: Bool = true, spoke: Bool = false,
@@ -286,7 +341,9 @@ final class SpeechHealthTests: XCTestCase {
     /// case and the fix is inert.
     func testStopArmsTheSuspicion() throws {
         let source = try speechEngineSource()
-        guard let start = source.range(of: "\n    func stop() {"),
+        // Matched on the label, not the whole signature — `stop(reason:)`
+        // carries a default and the reason vocabulary will grow.
+        guard let start = source.range(of: "\n    func stop(reason:"),
               let end = source.range(of: "\n    }\n", range: start.upperBound..<source.endIndex)
         else { return XCTFail("stop() is no longer where this test expects it") }
         let body = String(source[start.upperBound..<end.lowerBound])

@@ -456,9 +456,9 @@ final class DaemonServer {
                     speech.speak(text) { [self] in contentReadEnded() }
                 }
             },
-            onStop: { [self] in
+            onStop: { [self] reason in
                 longReadGeneration += 1  // a stop beats an in-flight chunk
-                speech.stop()
+                speech.stop(reason: reason)
             },
             onAnnounce: { [self] text in
                 tutorial.handle(.announced(text))
@@ -468,6 +468,7 @@ final class DaemonServer {
             isSpeaking: { [self] in speech.isSpeaking },
             isReadActive: { [self] in speech.readActive },
             isReadPaused: { [self] in speech.isPaused },
+            isReadStarting: { [self] in speech.isStartingSilently },
             onPauseToggle: { [self] in
                 tutorial.handle(.pauseToggled)
                 speech.togglePause()
@@ -714,7 +715,7 @@ final class DaemonServer {
         keyboardMonitor?.onNarrate = { [self] active in
             if active {
                 ducker.holdDucking()
-                speech.stop()
+                speech.stop(reason: "narration handoff")
                 ducker.prepareToDuck()
                 ducker.duck()
             } else {
@@ -1286,7 +1287,7 @@ final class DaemonServer {
             DispatchQueue.main.async { [self] in speech.speak(arg) }
             return "OK\n"
         case "stop-speaking":
-            DispatchQueue.main.async { [self] in speech.stop() }
+            DispatchQueue.main.async { [self] in speech.stop(reason: "socket") }
             return "OK\n"
         case "duck":
             ducker.duck()
@@ -3347,7 +3348,7 @@ final class DaemonServer {
         modeOverlay?.stop()
         displayInverter?.stop()
         keyboardMonitor?.stop()
-        speech.stop()
+        speech.stop(reason: "shutdown")
         // A Firefox narration handoff pins the duck (holdActive) and is only
         // released by keyboard gestures — quitting mid-handoff would strand
         // the user's music paused forever. Idempotent when nothing is held.

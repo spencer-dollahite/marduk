@@ -248,7 +248,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
             : SpeechPreprocessor.splitJoiner(afterPrefix: ns.substring(to: cut))
         let processed = head + joiner + spoken
         let base = (head as NSString).length + (joiner as NSString).length
-        stop()
+        stop(reason: "new read")
         // A NEW read supersedes any prior stop request. Cleared after
         // stop() precisely because stop() is what sets it.
         stopRequested = false
@@ -297,7 +297,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// previews each candidate in its own voice).
     func announce(_ text: String, voice previewVoice: AVSpeechSynthesisVoice? = nil,
                   completion: (() -> Void)? = nil) {
-        stop()
+        stop(reason: "announcement")
 
         // A `:voices` preview is the picker demonstrating a voice, not
         // Marduk telling the user something — filing each one would bury a
@@ -326,7 +326,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     }
 
     func speakSSML(_ ssml: String) {
-        stop()
+        stop(reason: "ssml")
 
         guard let utterance = AVSpeechUtterance(ssmlRepresentation: ssml) else {
             // Fallback to plain text if SSML parsing fails
@@ -739,7 +739,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         let carried = currentUtterance.flatMap {
             completions.removeValue(forKey: ObjectIdentifier($0))
         }
-        stop()
+        stop(reason: "respeak")
         // A respeak is a MOVE, not a user stop. stop() sets stopRequested
         // and only speak() clears it — which respeak bypasses — so without
         // this, any in-window motion (a sentence jump, a search, an
@@ -1182,7 +1182,21 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         utteranceInfo = live
     }
 
-    func stop() {
+    /// - Parameter reason: who asked for silence, as a short fixed word —
+    ///   structured vocabulary, never user content. A stop is invisible in
+    ///   the log otherwise, and three attempts at the swallowed read were
+    ///   spent inferring from the wreckage which caller had fired one. The
+    ///   line below prints only for the stop that actually costs a read.
+    func stop(reason: String = "unspecified") {
+        // A stop landing on an utterance that has not made a sound yet
+        // ends a read the user never heard a syllable of. Sometimes that
+        // is exactly right (Escape while a read is spinning up), so this
+        // reports rather than refuses — the callers who must not do it
+        // decline before they get here.
+        if let utterance = currentUtterance, !sawStartForCurrent {
+            fputs("[speech] stop (\(reason)) landed on \(tag(utterance)) "
+                + "before it made a sound\n", stderr)
+        }
         // INTENT, recorded explicitly. Window continuation used to key off
         // didFinish-vs-didCancel, but that discriminator is a lie: a
         // synthesizer stopped while PAUSED (and the continueSpeaking below
@@ -1255,6 +1269,21 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
 
     var isPaused: Bool {
         synthesizer.isPaused
+    }
+
+    /// A read is on its way to the speaker but has made no sound yet.
+    ///
+    /// `isSpeaking` cannot answer this — it is true from the moment the
+    /// queue accepts the utterance, which is why a second read-button
+    /// press landing in this window used to be read as "silence the read
+    /// you are hearing" when there was nothing to hear. See
+    /// `SpeechHealth.isSilentStartup`.
+    var isStartingSilently: Bool {
+        SpeechHealth.isSilentStartup(
+            isSpeaking: synthesizer.isSpeaking,
+            isPaused: synthesizer.isPaused,
+            sawEvidenceOfSpeech: sawStartForCurrent,
+            sinceHandover: currentUtterance.map { elapsed($0) })
     }
 
     /// Adjust rate. 0.0 = min, 1.0 = max. Default is ~0.5.

@@ -113,9 +113,29 @@ final class NewsboatStoreTests: XCTestCase {
         let command = NewsboatLocator.launchCommand(env, command: nil)
         XCTAssertEqual(command,
             "newsboat -r -u '/home/u/My Files/urls' -c '/home/u/.newsboat/cache.db'")
-        // A custom command replaces the default verbatim (its flags, its -r)
+        // A custom command keeps its own flags...
         let custom = NewsboatLocator.launchCommand(env, command: "newsboat -r -q")
         XCTAssertTrue(custom.hasPrefix("newsboat -r -q -u "))
+        // ...but every open reloads every feed, so a command that forgot
+        // the refresh flag gets it rather than opening a stale cache
+        let bare = NewsboatLocator.launchCommand(env, command: "newsboat")
+        XCTAssertTrue(bare.hasPrefix("newsboat -r -u "))
+        let bundled = NewsboatLocator.launchCommand(env, command: "newsboat -qr")
+        XCTAssertTrue(bundled.hasPrefix("newsboat -qr -u "))
+    }
+
+    func testRefreshFlagDetection() {
+        XCTAssertTrue(NewsboatLocator.hasRefreshFlag("newsboat -r"))
+        XCTAssertTrue(NewsboatLocator.hasRefreshFlag("newsboat -q -r"))
+        XCTAssertTrue(NewsboatLocator.hasRefreshFlag("newsboat -rq"))
+        XCTAssertTrue(NewsboatLocator.hasRefreshFlag("newsboat --refresh-on-start"))
+        XCTAssertFalse(NewsboatLocator.hasRefreshFlag("newsboat"))
+        XCTAssertFalse(NewsboatLocator.hasRefreshFlag("newsboat -q"))
+        // The command's own name never counts as a flag, and neither does
+        // a VALUE that happens to contain an r
+        XCTAssertFalse(NewsboatLocator.hasRefreshFlag("/opt/rr/newsboat"))
+        XCTAssertFalse(NewsboatLocator.hasRefreshFlag("newsboat -c /tmp/rss.db"))
+        XCTAssertFalse(NewsboatLocator.hasRefreshFlag("newsboat --url-file=/r/urls"))
     }
 
     func testGotoFirstUnreadParsesTheEffectiveConfig() {

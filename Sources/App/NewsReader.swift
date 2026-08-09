@@ -68,6 +68,24 @@ final class NewsReader {
 
     // MARK: - Entry
 
+    /// Outcome of the feed-list sync that runs before every load. newsboat
+    /// reads its urls file exactly ONCE, at startup, so a pull that lands
+    /// after the launch is a pull that didn't count — the whole load waits
+    /// on this, and `changed` decides whether an already-running newsboat
+    /// can be reloaded or has to be restarted.
+    private enum FeedRepoSync {
+        case notARepo
+        case synced(changed: Bool)
+        case slow                   // still pulling past the soft deadline
+        case failed(reason: String)
+    }
+
+    /// The load goes ahead without the pull at the SOFT deadline (news must
+    /// never hang behind a flaky network) while the pull runs on to the
+    /// HARD one in the background, for the next open.
+    private static let softPullDeadline: TimeInterval = 6
+    private static let hardPullDeadline: TimeInterval = 25
+
     func enter() {
         guard !active, !entering else {
             if active { announce("News is already open.") }
@@ -92,7 +110,7 @@ final class NewsReader {
             return
         }
         guard let urlsPath = env.urlsFile,
-              !visibleFeeds(urlsPath: urlsPath).isEmpty else {
+              !visibleFeeds(text: fileText(urlsPath)).isEmpty else {
             Earcon.error()
             announce("Newsboat has no feeds yet. Add feed addresses to your "
                 + "newsboat urls file, one per line, then press n again.")
@@ -100,22 +118,96 @@ final class NewsReader {
         }
 
         entering = true
-        let attaching = NewsboatLocator.runningPID(cachePath: env.cacheFile) != nil
-        fputs("[news] entering (\(attaching ? "attach" : "launch"))\n", stderr)
-        announce("News.")
-        // The feed list syncs with its repo on every open: when the urls
-        // file lives in a git clone (the private-repo pattern), pull
-        // quietly before the mirror reads it. Fire-and-forget — offline
-        // or conflicted just keeps yesterday's list, and the arm delay
-        // usually covers a fast-forward.
-        pullNewsRepo(urlsPath: urlsPath)
-        if attaching {
+        fputs("[news] entering\n", stderr)
+        // Every open pulls the feed list and reloads every feed (user
+        // ruling) — say so up front, so the gesture is acknowledged even
+        // when the network makes the rest of it slow.
+        announce("News. Reloading feeds.")
+        // The feed list syncs with its repo BEFORE anything is launched:
+        // when the urls file lives in a git clone (the private-repo
+        // pattern), newsboat must start against the pulled file, not race
+        // it. Failures are spoken and never block the news.
+        syncFeedRepo(urlsPath: urlsPath) { [self] sync in
+            guard entering else { return }   // closed / toggled off meanwhile
+            switch sync {
+            case .notARepo, .synced:
+                break
+            case .slow:
+                Earcon.error()
+                announce("The feed list is still updating. Opening with the "
+                    + "feeds from last time.")
+            case .failed(let reason):
+                Earcon.error()
+                fputs("[news] feed list update failed — \(reason)\n", stderr)
+                announce("Couldn't update the feed list. Opening with the "
+                    + "feeds from last time.")
+            }
+            var changed = false
+            if case .synced(let didChange) = sync { changed = didChange }
+            load(urlsPath: urlsPath, urlsChanged: changed)
+        }
+    }
+
+    /// Start (or reload) newsboat now that the feed list is settled.
+    private func load(urlsPath: String, urlsChanged: Bool) {
+        guard let env else { entering = false; return }
+        // SNAPSHOT the feed list here rather than re-reading it at arm
+        // time: a slow pull landing between the launch and the arm would
+        // hand newsboat one list and the mirror another, and every posted
+        // arrow would then act on the wrong row.
+        let feeds = visibleFeeds(text: fileText(urlsPath))
+        guard !feeds.isEmpty else {
+            entering = false
+            Earcon.error()
+            announce("Newsboat has no feeds yet. Add feed addresses to your "
+                + "newsboat urls file, one per line, then press n again.")
+            return
+        }
+
+        let pid = NewsboatLocator.runningPID(cachePath: env.cacheFile)
+        if let pid, urlsChanged {
+            // A running newsboat CANNOT grow a feed we just pulled — it
+            // read its urls file at startup and reload-all only refetches
+            // the feeds it already knows. Reloading anyway would leave the
+            // mirror listing feeds the TUI doesn't have, which desyncs
+            // every posted arrow. Restart it instead.
+            announce("The feed list changed. Restarting the news reader.")
+            quitNewsboat(pid: pid) { [self] quit in
+                guard entering else { return }
+                guard quit else {
+                    // Never arm a mirror we know disagrees with the screen
+                    entering = false
+                    Earcon.error()
+                    announce("Couldn't restart the news reader. Quit "
+                        + "newsboat, then press n again.")
+                    return
+                }
+                startNewsboat(feeds: feeds, attached: false)
+            }
+            return
+        }
+        startNewsboat(feeds: feeds, attached: pid != nil)
+    }
+
+    private func startNewsboat(feeds: [NewsboatURLEntry], attached: Bool) {
+        guard let env else { entering = false; return }
+        fputs("[news] loading (\(attached ? "attach" : "launch"))"
+            + " — \(feeds.count) feeds\n", stderr)
+        if attached {
             activateTerminal()
             // Feeds refresh on every load (user ruling): a fresh launch
             // carries -r, an attach gets newsboat's reload-all keystroke.
+            // A key we can't deliver is a reload that didn't happen — say
+            // so rather than pretending the feeds are fresh.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [self] in
                 guard entering else { return }
-                ensureTerminalFront { [self] in postKeys(15, true, 1) }  // Shift+R
+                ensureTerminalFront({ [self] in
+                    postKeys(15, true, 1)  // Shift+R — reload-all
+                }, orFail: { [self] in
+                    Earcon.error()
+                    announce("Couldn't reload the feeds. Terminal wouldn't "
+                        + "come forward.")
+                })
             }
         } else {
             launchInTerminal(NewsboatLocator.launchCommand(env,
@@ -123,13 +215,37 @@ final class NewsReader {
         }
         // Arm once the TUI can take keys — before that, a posted arrow
         // would land in the shell prompt.
-        let armDelay: TimeInterval = attaching ? 1.2 : 2.2
+        let armDelay: TimeInterval = attached ? 1.2 : 2.2
         DispatchQueue.main.asyncAfter(deadline: .now() + armDelay) { [self] in
-            arm(urlsPath: urlsPath, retriesLeft: 2)
+            arm(feeds: feeds, retriesLeft: 2)
         }
     }
 
-    private func arm(urlsPath: String, retriesLeft: Int) {
+    /// SIGTERM an attached newsboat and wait for it to actually go, so the
+    /// pulled feed list can be loaded by a fresh instance. SQLite's journal
+    /// makes an interrupted newsboat safe for the cache, and the stale
+    /// cache.db.lock it may leave behind is PID-checked by the next start.
+    private func quitNewsboat(pid: Int32, completion: @escaping (Bool) -> Void) {
+        fputs("[news] restarting newsboat for a changed feed list\n", stderr)
+        kill(pid, SIGTERM)
+        waitForExit(pid: pid, triesLeft: 12, completion: completion)
+    }
+
+    private func waitForExit(pid: Int32, triesLeft: Int,
+                             completion: @escaping (Bool) -> Void) {
+        guard kill(pid, 0) == 0 else { completion(true); return }
+        guard triesLeft > 0 else {
+            fputs("[news] newsboat wouldn't quit\n", stderr)
+            completion(false)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in
+            waitForExit(pid: pid, triesLeft: triesLeft - 1,
+                        completion: completion)
+        }
+    }
+
+    private func arm(feeds: [NewsboatURLEntry], retriesLeft: Int) {
         guard entering else { return }
         // Marduk was toggled off while newsboat spun up — never arm a
         // capture the user can't see
@@ -140,7 +256,7 @@ final class NewsReader {
         guard NewsboatLocator.runningPID(cachePath: env?.cacheFile ?? "") != nil else {
             if retriesLeft > 0 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [self] in
-                    arm(urlsPath: urlsPath, retriesLeft: retriesLeft - 1)
+                    arm(feeds: feeds, retriesLeft: retriesLeft - 1)
                 }
                 return
             }
@@ -160,7 +276,7 @@ final class NewsReader {
         let titles = db?.feedTitles() ?? [:]
         refreshCounts(force: true)
         session = NewsSession()
-        session.feeds = visibleFeeds(urlsPath: urlsPath).map { entry in
+        session.feeds = feeds.map { entry in
             NewsSession.Feed(
                 title: entry.titleOverride
                     ?? entry.queryName
@@ -189,11 +305,12 @@ final class NewsReader {
         }
     }
 
-    private func visibleFeeds(urlsPath: String) -> [NewsboatURLEntry] {
-        guard let text = try? String(contentsOfFile: urlsPath, encoding: .utf8) else {
-            return []
-        }
-        return NewsboatURLsParser.parse(text).filter { !$0.hidden }
+    private func fileText(_ path: String) -> String {
+        (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+    }
+
+    private func visibleFeeds(text: String) -> [NewsboatURLEntry] {
+        NewsboatURLsParser.parse(text).filter { !$0.hidden }
     }
 
     // MARK: - Key handling
@@ -714,8 +831,11 @@ final class NewsReader {
     /// Posted keys land wherever focus is — make sure that's Terminal, and
     /// if Terminal never comes forward, post NOTHING (a stray arrow in the
     /// wrong app beats out an invisible wrong action in newsboat, but
-    /// nothing beats both).
-    private func ensureTerminalFront(then action: @escaping () -> Void) {
+    /// nothing beats both). `orFail` is for keys whose loss the user must
+    /// HEAR about — a dropped arrow is self-evident, a dropped reload is
+    /// silently stale news.
+    private func ensureTerminalFront(_ action: @escaping () -> Void,
+                                     orFail: (() -> Void)? = nil) {
         if frontmostApp() == Self.terminalBundle {
             action()
             return
@@ -725,6 +845,7 @@ final class NewsReader {
             guard frontmostApp() == Self.terminalBundle else {
                 fputs("[news] Terminal wouldn't come forward — key dropped\n",
                       stderr)
+                orFail?()
                 return
             }
             action()
@@ -738,13 +859,32 @@ final class NewsReader {
     }
 
     /// `git pull --ff-only` in the urls file's directory when it is a git
-    /// clone. Only runs where a `.git` exists — the user cloned with git,
-    /// so git is present (never poke /usr/bin/git on a machine without
-    /// the CLT: the shim pops a GUI install dialog).
-    private func pullNewsRepo(urlsPath: String) {
+    /// clone, answering the question the load depends on: did the feed
+    /// list actually CHANGE? Only runs where a `.git` exists — the user
+    /// cloned with git, so git is present (never poke /usr/bin/git on a
+    /// machine without the CLT: the shim pops a GUI install dialog).
+    ///
+    /// The completion fires exactly once, on the main queue. It fires at
+    /// the SOFT deadline if git is still going, so news never hangs behind
+    /// a flaky network; git runs on to the hard deadline regardless, and
+    /// whatever it pulls counts for the next open. Feed URLs are user
+    /// content — git's output goes to /dev/null and only exit status is
+    /// logged.
+    private func syncFeedRepo(urlsPath: String,
+                              completion: @escaping (FeedRepoSync) -> Void) {
         let dir = (urlsPath as NSString).deletingLastPathComponent
-        guard FileManager.default.fileExists(atPath: dir + "/.git") else { return }
-        DispatchQueue.global(qos: .utility).async {
+        guard FileManager.default.fileExists(atPath: dir + "/.git") else {
+            completion(.notARepo)
+            return
+        }
+        let before = FileManager.default.contents(atPath: urlsPath)
+        DispatchQueue.global(qos: .userInitiated).async {
+            var answered = false
+            let answer: (FeedRepoSync) -> Void = { result in
+                guard !answered else { return }
+                answered = true
+                DispatchQueue.main.async { completion(result) }
+            }
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
             task.arguments = ["-C", dir, "pull", "--ff-only", "--quiet"]
@@ -753,18 +893,32 @@ final class NewsReader {
             do {
                 try task.run()
             } catch {
-                fputs("[news] feed repo pull failed to start\n", stderr)
+                fputs("[news] feed repo pull wouldn't start\n", stderr)
+                answer(.failed(reason: "git wouldn't start"))
                 return
             }
-            let deadline = Date().addingTimeInterval(15)
-            while task.isRunning, Date() < deadline { usleep(100_000) }
+            let started = Date()
+            while task.isRunning {
+                let elapsed = Date().timeIntervalSince(started)
+                if elapsed >= Self.hardPullDeadline { break }
+                if elapsed >= Self.softPullDeadline { answer(.slow) }
+                usleep(100_000)
+            }
             if task.isRunning {
                 task.terminate()
                 fputs("[news] feed repo pull timed out — killed\n", stderr)
-            } else {
-                fputs("[news] feed repo pull exited "
-                    + "\(task.terminationStatus)\n", stderr)
+                answer(.failed(reason: "timed out"))
+                return
             }
+            let status = task.terminationStatus
+            let changed = FileManager.default.contents(atPath: urlsPath) != before
+            fputs("[news] feed repo pull exited \(status)"
+                + (changed ? " — feed list changed" : "") + "\n", stderr)
+            guard status == 0 else {
+                answer(.failed(reason: "git exit \(status)"))
+                return
+            }
+            answer(.synced(changed: changed))
         }
     }
 

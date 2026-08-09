@@ -123,13 +123,31 @@ enum NewsboatLocator {
         return result
     }
 
-    /// The full shell command Terminal runs. The configured command is
-    /// used verbatim (default "newsboat -r" — feeds refresh on every
-    /// load); scoped paths ride newsboat's own -u/-c/-C flags so the
-    /// mirror reads exactly the files newsboat writes.
+    /// Does this command already carry newsboat's refresh-on-start flag?
+    /// Short flags may be bundled (`-rq`), so any single-dash token
+    /// containing an `r` counts; long options are matched whole. Values
+    /// (paths, log levels) never start with a dash, so they can't fake a
+    /// match.
+    static func hasRefreshFlag(_ command: String) -> Bool {
+        for token in command.split(separator: " ").dropFirst() {
+            if token == "--refresh-on-start" { return true }
+            if token.hasPrefix("--") { continue }
+            if token.hasPrefix("-"),
+               token.dropFirst().contains(where: { $0 == "r" }) { return true }
+        }
+        return false
+    }
+
+    /// The full shell command Terminal runs. Every open reloads every feed
+    /// (user ruling), which on a fresh launch is newsboat's own
+    /// refresh-on-start — so a custom `news.command` that omits `-r` gets
+    /// it APPENDED rather than quietly opening yesterday's cache. Scoped
+    /// paths ride newsboat's own -u/-c/-C flags so the mirror reads
+    /// exactly the files newsboat writes.
     static func launchCommand(_ env: NewsboatEnvironment,
                               command: String?) -> String {
-        var parts = [command ?? "newsboat -r"]
+        let base = command ?? "newsboat -r"
+        var parts = [hasRefreshFlag(base) ? base : base + " -r"]
         if let urls = env.urlsFile { parts.append("-u \(shellQuote(urls))") }
         parts.append("-c \(shellQuote(env.cacheFile))")
         if let config = env.configFile { parts.append("-C \(shellQuote(config))") }

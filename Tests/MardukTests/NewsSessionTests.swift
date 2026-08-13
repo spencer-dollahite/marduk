@@ -183,6 +183,21 @@ final class NewsSessionTests: XCTestCase {
             fromDoScriptReply: "tab 12 of window id 8\n"), 8)
     }
 
+    func testRaiseScriptLooksForTheProcessAndBringsItForward() {
+        // Which window newsboat is in is a FACT Terminal can answer —
+        // "the front window" is whatever the user was last in, which on
+        // the attach path is routinely a shell.
+        let script = NewsReader.raiseScript(process: "newsboat")
+        XCTAssertTrue(script.contains("contains \"newsboat\""))
+        XCTAssertTrue(script.contains("processes of t"))
+        XCTAssertTrue(script.contains("activate"))
+        XCTAssertTrue(script.contains("set frontmost of window id found to true"))
+        // No match must answer with something that parses as "no window",
+        // never a number that would aim keys at a stranger's window.
+        XCTAssertTrue(script.contains("if found is 0 then return \"\""))
+        XCTAssertNil(NewsReader.windowID(fromDoScriptReply: ""))
+    }
+
     func testWindowIDRefusesRepliesWithoutOne() {
         // No reply at all, an error, and a tab specifier with no window —
         // all mean "we don't know", and nil is what makes the caller

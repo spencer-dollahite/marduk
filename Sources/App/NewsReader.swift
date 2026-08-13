@@ -251,21 +251,33 @@ final class NewsReader {
                 stderr)
         }
         if attached {
-            activateTerminal()
-            // Feeds refresh on every load (user ruling): a fresh launch
-            // carries -r, an attach gets newsboat's reload-all keystroke.
-            // A key we can't deliver is a reload that didn't happen — say
-            // so rather than pretending the feeds are fresh.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [self] in
-                guard entering else { return }
-                ensureTerminalFront({ [self] in
-                    postKeys(15, true, 1)  // Shift+R — reload-all
-                    fputs("[news] reload-all keystroke sent\n", stderr)
-                }, orFail: { [self] in
-                    Earcon.error()
-                    announce("Couldn't reload the feeds. Terminal wouldn't "
-                        + "come forward.")
-                })
+            // Attaching means the window already exists and is very
+            // likely BEHIND whatever the user was last doing — Terminal
+            // restores the last-front window, not newsboat's (user report
+            // 2026-08-13: "newsboat did not hold itself in the front… I
+            // did not actually switch away from it"). Find newsboat's own
+            // window, raise it, and only then send the reload key.
+            // Sequenced on the raise's completion, not a hopeful delay:
+            // the reload key is checked against newsboat's window, so
+            // sending it before the raise has answered would refuse it
+            // and stand the session down.
+            raiseNewsboatWindow { [self] in
+                // Feeds refresh on every load (user ruling): a fresh
+                // launch carries -r, an attach gets newsboat's reload-all
+                // keystroke. A key we can't deliver is a reload that
+                // didn't happen — say so rather than pretending the feeds
+                // are fresh.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
+                    guard entering else { return }
+                    ensureTerminalFront({ [self] in
+                        postKeys(15, true, 1)  // Shift+R — reload-all
+                        fputs("[news] reload-all keystroke sent\n", stderr)
+                    }, orFail: { [self] in
+                        Earcon.error()
+                        announce("Couldn't reload the feeds. Terminal "
+                            + "wouldn't come forward.")
+                    })
+                }
             }
         } else {
             launchInTerminal(NewsboatLocator.launchCommand(env,
@@ -345,10 +357,12 @@ final class NewsReader {
         }
         active = true
         setCaptured(true)
-        // The attach path never ran `do script`, so this is where its
-        // window gets identified — once, while newsboat is still the
-        // window the user just opened.
-        adoptNewsWindow()
+        // Identify newsboat's window by the process running in it and
+        // bring it forward — on BOTH paths. The launch path already has an
+        // id from `do script`, but the located one is the fact and this is
+        // also what makes opening the news put newsboat in front of you
+        // (user ruling 2026-08-13).
+        raiseNewsboatWindow()
         showKeyBar(Self.listKeyBar)
         fputs("[news] armed — \(session.feeds.count) feeds\n", stderr)
         // Straight into the first title — no feed-count preamble (user
@@ -980,23 +994,12 @@ final class NewsReader {
             let front = frontTerminalWindowID()
             DispatchQueue.main.async { [self] in
                 guard active || entering else { return }
-                // ENTRY is the one moment adoption is allowed. The user
-                // has just pressed n and Terminal has been brought
-                // forward for newsboat, so the front window is newsboat's
-                // by construction — the same assumption the attach path
-                // already rests on. It has to happen HERE and not only in
-                // `arm`, because the attach path posts its Shift+R reload
-                // at +0.7s and arms at +1.2s: adopting only at arm meant
-                // the session's first key found no window and stood the
-                // whole thing down before it started (field, same day as
-                // the fix). Once armed, an unknown window is a REFUSAL,
-                // never a guess — that direction is what stops a
-                // destructive key reaching a window the user switched to.
-                if terminalWindowID == nil, entering, let front {
-                    terminalWindowID = front
-                    fputs("[news] aiming at the front Terminal window\n",
-                          stderr)
-                }
+                // Nothing is adopted here. Newsboat's window is IDENTIFIED
+                // by the process running in it (`raiseNewsboatWindow`),
+                // never inferred from what happens to be in front: on the
+                // attach path the front window is routinely the shell the
+                // user was last in, and blessing it is precisely how a
+                // `d` reached a newsboat nobody could see.
                 guard let ours = terminalWindowID else {
                     fputs("[news] no newsboat window to aim at — "
                         + "key dropped\n", stderr)
@@ -1033,10 +1036,16 @@ final class NewsReader {
     /// has none / AppleScript fails. Same kill-on-timeout watchdog every
     /// osascript in this project carries.
     private func frontTerminalWindowID() -> Int? {
+        Self.runWindowScript(
+            "tell application \"Terminal\" to return id of front window")
+    }
+
+    /// Run an AppleScript that answers with a Terminal window id (or an
+    /// empty reply for "none"). Blocking — callers use `windowQueue`.
+    static func runWindowScript(_ script: String) -> Int? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e",
-            "tell application \"Terminal\" to return id of front window"]
+        task.arguments = ["-e", script]
         let out = Pipe()
         task.standardOutput = out
         task.standardError = FileHandle.nullDevice
@@ -1055,25 +1064,78 @@ final class NewsReader {
         return Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    /// Adopt the front Terminal window as newsboat's. Called ONCE per open,
-    /// from `arm` — on the launch path `do script` has usually already
-    /// supplied the id and this is a no-op; on the ATTACH path it is the
-    /// only source, and it rests on the same assumption attaching already
-    /// makes (the newsboat we're attaching to is the window in front).
-    private func adoptNewsWindow() {
-        guard terminalWindowID == nil else { return }
+    /// Find the window newsboat is ACTUALLY running in and bring it
+    /// forward. Terminal knows which processes each tab is running, so
+    /// this is a FACT, not the guess it replaced: "the front Terminal
+    /// window at entry" is whatever window the user was last in, which on
+    /// the attach path is routinely a shell — field 2026-08-13, where
+    /// `activateTerminal()` restored that window, every posted key went to
+    /// it, and a `d` deleted articles out of a newsboat nobody could see.
+    /// The user's ruling is that opening the news brings newsboat forward,
+    /// so the raise happens here too, in the same round trip.
+    ///
+    /// Only a window running our newsboat can be adopted. Not finding one
+    /// leaves whatever `do script` gave us and, failing that, nothing —
+    /// which posts no keys at all.
+    private func raiseNewsboatWindow(completion: (() -> Void)? = nil) {
+        let process = newsboatProcessName()
         windowQueue.async { [self] in
-            let front = frontTerminalWindowID()
+            let found = Self.runWindowScript(Self.raiseScript(process: process))
             DispatchQueue.main.async { [self] in
-                guard active || entering, terminalWindowID == nil else { return }
-                terminalWindowID = front
-                windowVerified = front != nil
-                windowCheckedAt = Date()
-                fputs("[news] " + (front != nil
-                    ? "adopted the front Terminal window"
-                    : "couldn't identify newsboat's window") + "\n", stderr)
+                defer { completion?() }
+                guard active || entering else { return }
+                if let found {
+                    terminalWindowID = found
+                    windowVerified = true
+                    windowCheckedAt = Date()
+                    fputs("[news] newsboat's window brought forward\n", stderr)
+                } else {
+                    fputs("[news] no Terminal window is running "
+                        + "newsboat\n", stderr)
+                    // With no window from `do script` either there is
+                    // nothing to aim at, and every key will be refused —
+                    // say so rather than leaving a mirror that answers
+                    // nothing (the honest-failure rule).
+                    if terminalWindowID == nil {
+                        Earcon.error()
+                        announce("Couldn't find newsboat's window.")
+                    }
+                }
             }
         }
+    }
+
+    /// The process name Terminal will report for our newsboat — the
+    /// binary's basename, so a custom `news.command` still matches.
+    /// Sanitised because it is interpolated into AppleScript source.
+    private func newsboatProcessName() -> String {
+        let path = env?.binaryPath ?? "newsboat"
+        let name = (path as NSString).lastPathComponent
+        let safe = name.filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+        return safe.isEmpty ? "newsboat" : safe
+    }
+
+    /// Ask Terminal which window runs `process`, raise it, and hand back
+    /// its id. Pure so the script is testable without a Mac.
+    static func raiseScript(process: String) -> String {
+        """
+        tell application "Terminal"
+            set found to 0
+            repeat with w in windows
+                repeat with t in tabs of w
+                    if (processes of t) contains "\(process)" then
+                        set found to id of w
+                        exit repeat
+                    end if
+                end repeat
+                if found is not 0 then exit repeat
+            end repeat
+            if found is 0 then return ""
+            activate
+            set frontmost of window id found to true
+            return found
+        end tell
+        """
     }
 
     private func activateTerminal() {

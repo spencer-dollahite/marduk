@@ -341,13 +341,11 @@ final class NewsReader {
             line += " " + Self.helpLine
         }
         announce(line)
-        // First open of the day triages automatically (user ruling);
-        // t re-runs on demand. The stamp is a yyyymmdd counted marker.
-        let today = Self.dayStamp()
-        if OnceMarker.count("news-triaged") != today {
-            OnceMarker.setCount("news-triaged", today)
-            triage(auto: true)
-        }
+        // Triage is `t`, ON DEMAND ONLY (user ruling 2026-08-13, reversing
+        // the first-open-of-the-day auto-run): opening the news should
+        // hand over the first headline and then get out of the way, not
+        // spend the model's thinking time and a spoken summary the user
+        // didn't ask for.
     }
 
     private func fileText(_ path: String) -> String {
@@ -383,7 +381,7 @@ final class NewsReader {
         case .searchRepeat:
             guard let last = lastSearch else { Earcon.error(); return }
             search(last.query, last.direction)
-        case .triage: triage(auto: false)
+        case .triage: triage()
         case .exit: break
         }
     }
@@ -629,12 +627,6 @@ final class NewsReader {
     // MARK: - Triage (local Ollama: top-3 + dedup over unread headlines)
 
     private var triageGeneration = 0
-    private static func dayStamp() -> Int {
-        let parts = Calendar.current.dateComponents([.year, .month, .day],
-                                                    from: Date())
-        return (parts.year ?? 0) * 10000 + (parts.month ?? 0) * 100
-            + (parts.day ?? 0)
-    }
 
     private var ollamaBase: String {
         newsConfig?.ollamaURL ?? "http://127.0.0.1:11434"
@@ -642,7 +634,7 @@ final class NewsReader {
 
     /// The whole flow: collect unread → model → spoken top-3 → 1/2/3
     /// jump window. Headlines go to LOCALHOST only and are never logged.
-    private func triage(auto: Bool) {
+    private func triage() {
         guard active else { return }
         if db == nil { db = NewsboatDB(path: env?.cacheFile ?? "") }
         let feedNames = feedTitleByURL()
@@ -653,12 +645,11 @@ final class NewsReader {
                             title: row.title)
         }
         guard !items.isEmpty else {
-            if !auto { announce("Nothing unread to triage.") }
+            announce("Nothing unread to triage.")
             return
         }
-        // The auto run must not talk over the entry title — announce
-        // chains behind it naturally; the manual run acknowledges now.
-        if !auto { announce("Triaging \(items.count) headlines.") }
+        // Every triage is asked for now, so every one acknowledges.
+        announce("Triaging \(items.count) headlines.")
         fputs("[news] triage — \(items.count) headlines\n", stderr)
         triageGeneration += 1
         let generation = triageGeneration
@@ -671,7 +662,7 @@ final class NewsReader {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.active,
                       generation == self.triageGeneration else { return }
-                self.triageArrived(outcome, auto: auto)
+                self.triageArrived(outcome)
             }
         }
     }
@@ -770,7 +761,7 @@ final class NewsReader {
         return data
     }
 
-    private func triageArrived(_ outcome: TriageOutcome, auto: Bool) {
+    private func triageArrived(_ outcome: TriageOutcome) {
         // Never talk over a read the user chose meanwhile — the drop is
         // logged and t re-runs (slower now that an owned server is shut
         // down after each triage — the model reloads on retry)
@@ -781,7 +772,7 @@ final class NewsReader {
         switch outcome {
         case .failure(let spokenError):
             fputs("[news] triage failed\n", stderr)
-            if !auto { Earcon.error() }
+            Earcon.error()
             announce(spokenError)
         case .result(let result):
             fputs("[news] triage: top \(result.top.count), "

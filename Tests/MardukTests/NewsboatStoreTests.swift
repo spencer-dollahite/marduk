@@ -227,4 +227,80 @@ final class NewsboatStoreTests: XCTestCase {
     func testDBOnAMissingFileIsNilNotACrash() {
         XCTAssertNil(NewsboatDB(path: "/nonexistent/nowhere.db"))
     }
+
+    // MARK: - Reload report (what the cache says a reload brought in)
+
+    func testSnapshotCountsLiveItemsUndatedOnesAndStaleFeeds() throws {
+        let path = try makeFixture()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        // An item whose feed shipped no parseable date — exactly the shape
+        // a date-based ignore-article rule discards without a word
+        var handle: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(path, &handle), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(handle, """
+            INSERT INTO rss_item VALUES (6, 'g6', 'Undated', 'a',
+                'https://x/6', 'https://f3', 0, '<p>u</p>', 1, 0);
+            """, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(handle)
+
+        guard let db = NewsboatDB(path: path) else {
+            return XCTFail("fixture db failed to open")
+        }
+        let snap = db.snapshot()
+        XCTAssertEqual(snap.items, 5)        // the deleted row never counts
+        XCTAssertEqual(snap.unread, 4)
+        XCTAssertEqual(snap.undated, 1)
+        XCTAssertEqual(snap.feedsWithItems, 3)
+        XCTAssertEqual(snap.newest, 400)     // the deleted 300 can't win
+
+        // f1 tops out at 200, f2 at 400, f3 is undated
+        XCTAssertEqual(db.feedsStale(since: 300, subscribed: 3), 2)
+        XCTAssertEqual(db.feedsStale(since: 50, subscribed: 3), 1)
+        // Subscribed feeds that have never delivered anything are stale too
+        XCTAssertEqual(db.feedsStale(since: 300, subscribed: 6), 5)
+    }
+
+    func testCacheReportIsCountsOnlyAndOmitsWhatItHasNothingToSay() {
+        var snap = NewsboatDB.CacheSnapshot()
+        snap.items = 812
+        snap.unread = 40
+        snap.feedsWithItems = 34
+        snap.newest = 1_000_000
+        XCTAssertEqual(
+            NewsboatDB.cacheReport(snap, subscribed: 40, staleFeeds: 6,
+                                   now: 1_000_000 + 3 * 3600),
+            "812 items, 40 unread, 34/40 feeds have items, newest 3h old, "
+                + "6 feeds stale")
+        XCTAssertFalse(
+            NewsboatDB.cacheReport(snap, subscribed: 40, staleFeeds: 0,
+                                   now: 1_000_000).contains("stale"))
+        // An empty cache says so rather than claiming a 55-year-old item
+        XCTAssertTrue(
+            NewsboatDB.cacheReport(NewsboatDB.CacheSnapshot(), subscribed: 3,
+                                   staleFeeds: 3, now: 1_000_000)
+                .contains("nothing dated"))
+    }
+
+    func testReloadReportNamesTheNothingArrivedCase() {
+        var before = NewsboatDB.CacheSnapshot()
+        before.items = 800
+        before.unread = 10
+        var after = NewsboatDB.CacheSnapshot()
+        after.items = 814
+        after.unread = 24
+        XCTAssertEqual(
+            NewsboatDB.reloadReport(before: before, after: after, elapsed: 31),
+            "+14 items in 31s, unread +14")
+        // The whole point of the report: a silent reload is stated plainly
+        XCTAssertEqual(
+            NewsboatDB.reloadReport(before: before, after: before, elapsed: 45),
+            "NO new items in 45s, unread +0")
+    }
+
+    func testAgeWordsAreCoarseAndSurviveClockSkew() {
+        XCTAssertEqual(NewsboatDB.age(seconds: 90), "1m")
+        XCTAssertEqual(NewsboatDB.age(seconds: 7200), "2h")
+        XCTAssertEqual(NewsboatDB.age(seconds: 3 * 86_400), "3d")
+        XCTAssertEqual(NewsboatDB.age(seconds: -500), "0m")
+    }
 }

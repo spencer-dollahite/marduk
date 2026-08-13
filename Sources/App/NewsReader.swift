@@ -58,6 +58,8 @@ final class NewsReader {
     private var db: NewsboatDB?
     private var unread: [String: Int] = [:]
     private var lastCountRefresh = Date.distantPast
+    // Guards the delayed reload report: a second open supersedes the first
+    private var reloadGeneration = 0
     // Where newsboat parks the article-list cursor on feed entry —
     // parsed from the effective config at arm time
     private var gotoFirstUnread = true
@@ -189,10 +191,52 @@ final class NewsReader {
         startNewsboat(feeds: feeds, attached: pid != nil)
     }
 
+    /// A reload runs INSIDE newsboat, which reports its per-feed results in
+    /// its own TUI and nowhere else — so Marduk brackets it instead:
+    /// snapshot the cache when the reload is requested, again once it has
+    /// had time to land, and log the difference. This is what makes "it
+    /// isn't grabbing fresh items" answerable from the daemon log alone,
+    /// without a sqlite3 session against cache.db.
+    private static let reloadReportDelay: TimeInterval = 45
+
+    /// Log a cache snapshot; returns it for the before/after delta.
+    @discardableResult
+    private func reportCache(feeds: Int, stage: String)
+        -> NewsboatDB.CacheSnapshot? {
+        guard let path = env?.cacheFile else { return nil }
+        guard let store = NewsboatDB(path: path) else {
+            fputs("[news] cache \(stage): no readable cache yet\n", stderr)
+            return nil
+        }
+        let now = Int64(Date().timeIntervalSince1970)
+        let snap = store.snapshot()
+        let stale = store.feedsStale(since: now - 7 * 86_400, subscribed: feeds)
+        fputs("[news] cache \(stage) — "
+            + NewsboatDB.cacheReport(snap, subscribed: feeds,
+                                     staleFeeds: stale, now: now)
+            + "\n", stderr)
+        return snap
+    }
+
     private func startNewsboat(feeds: [NewsboatURLEntry], attached: Bool) {
         guard let env else { entering = false; return }
         fputs("[news] loading (\(attached ? "attach" : "launch"))"
             + " — \(feeds.count) feeds\n", stderr)
+        let baseline = reportCache(feeds: feeds.count, stage: "before reload")
+        reloadGeneration += 1
+        let generation = reloadGeneration
+        let requested = Date()
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.reloadReportDelay) { [self] in
+            // A newer open owns the report; this one's numbers are moot
+            guard generation == reloadGeneration else { return }
+            let after = reportCache(feeds: feeds.count, stage: "after reload")
+            guard let baseline, let after else { return }
+            fputs("[news] reload — " + NewsboatDB.reloadReport(
+                before: baseline, after: after,
+                elapsed: Int(Date().timeIntervalSince(requested))) + "\n",
+                stderr)
+        }
         if attached {
             activateTerminal()
             // Feeds refresh on every load (user ruling): a fresh launch
@@ -203,6 +247,7 @@ final class NewsReader {
                 guard entering else { return }
                 ensureTerminalFront({ [self] in
                     postKeys(15, true, 1)  // Shift+R — reload-all
+                    fputs("[news] reload-all keystroke sent\n", stderr)
                 }, orFail: { [self] in
                     Earcon.error()
                     announce("Couldn't reload the feeds. Terminal wouldn't "

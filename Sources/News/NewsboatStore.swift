@@ -342,6 +342,92 @@ final class NewsboatDB {
         return content
     }
 
+    /// What a reload actually brought in — the ONLY observable Marduk has.
+    /// newsboat reports per-feed fetch results in its own TUI and nowhere
+    /// else, so "are we getting fresh items" can only be answered by
+    /// watching the cache before and after.
+    ///
+    /// Counts and timestamps ONLY, never titles or feed URLs: the daemon
+    /// log is designed to be pasted into public issues (`:log copy`,
+    /// `:bug`), and a subscription list is the user's business. A stale
+    /// COUNT still says "something is eating items"; naming the feeds is
+    /// what sqlite3 on the cache is for.
+    struct CacheSnapshot: Equatable {
+        var items = 0
+        var unread = 0
+        /// pubDate <= 0: items whose feed shipped no parseable date. Worth
+        /// counting because date-based `ignore-article` rules silently
+        /// discard exactly these.
+        var undated = 0
+        var feedsWithItems = 0
+        var newest: Int64 = 0       // max pubDate; 0 = nothing dated
+    }
+
+    func snapshot() -> CacheSnapshot {
+        var snap = CacheSnapshot()
+        query("""
+            SELECT COUNT(*), SUM(unread = 1), SUM(pubDate <= 0),
+                   COUNT(DISTINCT feedurl), MAX(pubDate)
+            FROM rss_item WHERE deleted = 0
+            """) { stmt in
+            snap.items = Int(sqlite3_column_int64(stmt, 0))
+            snap.unread = Int(sqlite3_column_int64(stmt, 1))
+            snap.undated = Int(sqlite3_column_int64(stmt, 2))
+            snap.feedsWithItems = Int(sqlite3_column_int64(stmt, 3))
+            snap.newest = sqlite3_column_int64(stmt, 4)
+        }
+        return snap
+    }
+
+    /// How many subscribed feeds have brought in NOTHING since `cutoff`,
+    /// feeds with no items at all included. The single most diagnostic
+    /// number in the report: a few is normal (quiet blogs), most of them
+    /// means a filter or the fetch is eating items.
+    func feedsStale(since cutoff: Int64, subscribed: Int) -> Int {
+        var fresh = 0
+        query("""
+            SELECT COUNT(*) FROM (
+                SELECT feedurl FROM rss_item WHERE deleted = 0
+                GROUP BY feedurl HAVING MAX(pubDate) >= \(cutoff))
+            """) { stmt in
+            fresh = Int(sqlite3_column_int64(stmt, 0))
+        }
+        return max(0, subscribed - fresh)
+    }
+
+    /// One log line describing the cache. Pure so the wording is testable.
+    static func cacheReport(_ snap: CacheSnapshot, subscribed: Int,
+                            staleFeeds: Int, now: Int64) -> String {
+        var parts = ["\(snap.items) items", "\(snap.unread) unread",
+                     "\(snap.feedsWithItems)/\(subscribed) feeds have items"]
+        parts.append(snap.newest > 0
+            ? "newest \(age(seconds: now - snap.newest)) old"
+            : "nothing dated")
+        if staleFeeds > 0 { parts.append("\(staleFeeds) feeds stale") }
+        if snap.undated > 0 { parts.append("\(snap.undated) undated") }
+        return parts.joined(separator: ", ")
+    }
+
+    /// What a reload changed, or why it looks like it changed nothing.
+    static func reloadReport(before: CacheSnapshot, after: CacheSnapshot,
+                             elapsed: Int) -> String {
+        let gained = after.items - before.items
+        let head = gained > 0
+            ? "+\(gained) items in \(elapsed)s"
+            : "NO new items in \(elapsed)s"
+        let unread = after.unread - before.unread
+        return head + ", unread \(unread >= 0 ? "+" : "")\(unread)"
+    }
+
+    /// Coarse age words — a log reader wants the order of magnitude, and
+    /// a precise timestamp would date the user's reading session.
+    static func age(seconds: Int64) -> String {
+        if seconds <= 0 { return "0m" }     // clock skew / future pubDate
+        if seconds < 3600 { return "\(seconds / 60)m" }
+        if seconds < 86_400 { return "\(seconds / 3600)h" }
+        return "\(seconds / 86_400)d"
+    }
+
     private func query(_ sql: String, bind text: String? = nil,
                        row: (OpaquePointer) -> Void) {
         guard let db else { return }

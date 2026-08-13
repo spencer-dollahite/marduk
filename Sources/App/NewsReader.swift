@@ -971,17 +971,7 @@ final class NewsReader {
     private func ensureNewsWindowFront(_ action: @escaping () -> Void,
                                        cached: Bool,
                                        orFail: (() -> Void)?) {
-        // No reference window means we can't tell newsboat's window from
-        // any other — refuse rather than guess. Adoption happens ONCE, at
-        // arm; adopting later would bless whatever window the user had
-        // just switched to, which is the bug this exists to stop.
-        guard let ours = terminalWindowID else {
-            fputs("[news] no newsboat window to aim at — key dropped\n", stderr)
-            orFail?()
-            standDownOffWindow()
-            return
-        }
-        if cached, windowVerified,
+        if cached, windowVerified, terminalWindowID != nil,
            Date().timeIntervalSince(windowCheckedAt) < Self.windowRecheckInterval {
             action()
             return
@@ -990,6 +980,30 @@ final class NewsReader {
             let front = frontTerminalWindowID()
             DispatchQueue.main.async { [self] in
                 guard active || entering else { return }
+                // ENTRY is the one moment adoption is allowed. The user
+                // has just pressed n and Terminal has been brought
+                // forward for newsboat, so the front window is newsboat's
+                // by construction — the same assumption the attach path
+                // already rests on. It has to happen HERE and not only in
+                // `arm`, because the attach path posts its Shift+R reload
+                // at +0.7s and arms at +1.2s: adopting only at arm meant
+                // the session's first key found no window and stood the
+                // whole thing down before it started (field, same day as
+                // the fix). Once armed, an unknown window is a REFUSAL,
+                // never a guess — that direction is what stops a
+                // destructive key reaching a window the user switched to.
+                if terminalWindowID == nil, entering, let front {
+                    terminalWindowID = front
+                    fputs("[news] aiming at the front Terminal window\n",
+                          stderr)
+                }
+                guard let ours = terminalWindowID else {
+                    fputs("[news] no newsboat window to aim at — "
+                        + "key dropped\n", stderr)
+                    orFail?()
+                    standDownOffWindow()
+                    return
+                }
                 windowCheckedAt = Date()
                 windowVerified = (front == ours)
                 guard windowVerified else {

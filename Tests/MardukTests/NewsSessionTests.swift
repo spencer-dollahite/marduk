@@ -165,4 +165,33 @@ final class NewsSessionTests: XCTestCase {
         XCTAssertEqual(NewsSession.articleLine(title: "Headline", unread: false),
                        "Headline")
     }
+
+    // MARK: - Which Terminal window newsboat is in
+    //
+    // Field 2026-08-13: every posted key went to whichever Terminal window
+    // was front, and `d`'s Shift+D deleted six articles out of a newsboat
+    // the user couldn't see. The id in `do script`'s reply is the only
+    // handle we get on the right window; a parse that silently returns nil
+    // is a mirror that refuses to post, which is the safe failure — a
+    // parse that returns the WRONG number aims destructive keys at a
+    // stranger's window, so the digits are taken strictly.
+
+    func testWindowIDParsesDoScriptReply() {
+        XCTAssertEqual(NewsReader.windowID(
+            fromDoScriptReply: "tab 1 of window id 3274\n"), 3274)
+        XCTAssertEqual(NewsReader.windowID(
+            fromDoScriptReply: "tab 12 of window id 8\n"), 8)
+    }
+
+    func testWindowIDRefusesRepliesWithoutOne() {
+        // No reply at all, an error, and a tab specifier with no window —
+        // all mean "we don't know", and nil is what makes the caller
+        // refuse rather than guess.
+        XCTAssertNil(NewsReader.windowID(fromDoScriptReply: ""))
+        XCTAssertNil(NewsReader.windowID(
+            fromDoScriptReply: "execution error: Terminal got an error"))
+        XCTAssertNil(NewsReader.windowID(fromDoScriptReply: "tab 1"))
+        XCTAssertNil(NewsReader.windowID(
+            fromDoScriptReply: "tab 1 of window id notanumber"))
+    }
 }

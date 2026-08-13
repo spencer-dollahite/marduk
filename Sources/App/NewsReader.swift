@@ -63,6 +63,19 @@ final class NewsReader {
     // Where newsboat parks the article-list cursor on feed entry —
     // parsed from the effective config at arm time
     private var gotoFirstUnread = true
+    // Which Terminal WINDOW newsboat is in — see ensureTerminalFront.
+    // Captured from `do script`'s reply on the launch path, adopted at arm
+    // on the attach path, and nil means "refuse to post", never "any
+    // window will do".
+    private var terminalWindowID: Int?
+    private var windowVerified = false
+    private var windowCheckedAt = Date.distantPast
+    /// How long an arrow may ride a previous window check. Short enough
+    /// that a window hop costs at most a glide's worth of arrows (which
+    /// are harmless in a shell), long enough that holding j doesn't spawn
+    /// an osascript per repeat.
+    private static let windowRecheckInterval: TimeInterval = 1.0
+    private let windowQueue = DispatchQueue(label: "com.marduk.news.window")
 
     func configure(_ config: MardukConfig.NewsConfig?) {
         newsConfig = config
@@ -332,6 +345,10 @@ final class NewsReader {
         }
         active = true
         setCaptured(true)
+        // The attach path never ran `do script`, so this is where its
+        // window gets identified — once, while newsboat is still the
+        // window the user just opened.
+        adoptNewsWindow()
         showKeyBar(Self.listKeyBar)
         fputs("[news] armed — \(session.feeds.count) feeds\n", stderr)
         // Straight into the first title — no feed-count preamble (user
@@ -625,6 +642,12 @@ final class NewsReader {
         setCaptured(false)
         hideKeyBar()
         db = nil
+        // Never carry a window across opens: the next `n` may launch a new
+        // one, and a stale id would either refuse every key or — worse —
+        // aim at a window Terminal has since given to something else.
+        terminalWindowID = nil
+        windowVerified = false
+        windowCheckedAt = .distantPast
         fputs("[news] closed\n", stderr)
         if !quiet { announce("News closed.") }
     }
@@ -895,9 +918,12 @@ final class NewsReader {
     // MARK: - Terminal plumbing
 
     private func postArrows(_ steps: Int) {
-        ensureTerminalFront { [self] in
+        // The one cached call site: j/k autorepeat glides would otherwise
+        // spawn an osascript per repeat, and a stray arrow in a shell is
+        // the cheapest key we post.
+        ensureTerminalFront({ [self] in
             postKeys(steps > 0 ? 125 : 126, false, abs(steps))  // Down / Up
-        }
+        }, cached: true)
     }
 
     /// Posted keys land wherever focus is — make sure that's Terminal, and
@@ -906,21 +932,133 @@ final class NewsReader {
     /// nothing beats both). `orFail` is for keys whose loss the user must
     /// HEAR about — a dropped arrow is self-evident, a dropped reload is
     /// silently stale news.
+    ///
+    /// TERMINAL IS NOT A WINDOW. The bundle check above says the keys will
+    /// reach Terminal.app; it says NOTHING about WHICH of its windows, and
+    /// a user with newsboat in one window and a shell in another is the
+    /// normal case, one Cmd+` apart. Field 2026-08-13: with the shell
+    /// window front, every posted key went there — arrows harmlessly, but
+    /// `d`'s Shift+D deleted six articles out of the newsboat the user
+    /// could not see, and the deleted flag is keyed by guid and permanent.
+    /// So the window `do script` handed us is checked too, and a mismatch
+    /// stands the mirror down exactly like an app switch (user ruling):
+    /// Marduk must never drive a screen the user has navigated away from.
+    ///
+    /// `cached` is for the arrow path ONLY, where autorepeat glides would
+    /// otherwise spawn an osascript per repeat. Every other key — and
+    /// every destructive one — pays for a fresh answer.
     private func ensureTerminalFront(_ action: @escaping () -> Void,
+                                     cached: Bool = false,
                                      orFail: (() -> Void)? = nil) {
-        if frontmostApp() == Self.terminalBundle {
+        guard frontmostApp() == Self.terminalBundle else {
+            activateTerminal()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
+                guard frontmostApp() == Self.terminalBundle else {
+                    fputs("[news] Terminal wouldn't come forward — "
+                        + "key dropped\n", stderr)
+                    orFail?()
+                    return
+                }
+                ensureNewsWindowFront(action, cached: false, orFail: orFail)
+            }
+            return
+        }
+        ensureNewsWindowFront(action, cached: cached, orFail: orFail)
+    }
+
+    /// The window half of the check. A fresh answer costs one osascript,
+    /// taken OFF-MAIN (the ducker rule) with the action dispatched back.
+    private func ensureNewsWindowFront(_ action: @escaping () -> Void,
+                                       cached: Bool,
+                                       orFail: (() -> Void)?) {
+        // No reference window means we can't tell newsboat's window from
+        // any other — refuse rather than guess. Adoption happens ONCE, at
+        // arm; adopting later would bless whatever window the user had
+        // just switched to, which is the bug this exists to stop.
+        guard let ours = terminalWindowID else {
+            fputs("[news] no newsboat window to aim at — key dropped\n", stderr)
+            orFail?()
+            standDownOffWindow()
+            return
+        }
+        if cached, windowVerified,
+           Date().timeIntervalSince(windowCheckedAt) < Self.windowRecheckInterval {
             action()
             return
         }
-        activateTerminal()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
-            guard frontmostApp() == Self.terminalBundle else {
-                fputs("[news] Terminal wouldn't come forward — key dropped\n",
-                      stderr)
-                orFail?()
-                return
+        windowQueue.async { [self] in
+            let front = frontTerminalWindowID()
+            DispatchQueue.main.async { [self] in
+                guard active || entering else { return }
+                windowCheckedAt = Date()
+                windowVerified = (front == ours)
+                guard windowVerified else {
+                    fputs("[news] front Terminal window isn't newsboat's — "
+                        + "key dropped, standing down\n", stderr)
+                    orFail?()
+                    standDownOffWindow()
+                    return
+                }
+                action()
             }
-            action()
+        }
+    }
+
+    /// A window switch is an app switch as far as the mirror is concerned:
+    /// silent, no announcement (the user knows they switched), `n` to
+    /// resume. Logged, because "news stopped responding" must be
+    /// answerable from the log alone.
+    private func standDownOffWindow() {
+        guard active || entering else { return }
+        fputs("[news] stood down — newsboat's window is no longer front\n",
+              stderr)
+        deactivate(quiet: true)
+    }
+
+    /// Terminal's own window id for its frontmost window, or nil when it
+    /// has none / AppleScript fails. Same kill-on-timeout watchdog every
+    /// osascript in this project carries.
+    private func frontTerminalWindowID() -> Int? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e",
+            "tell application \"Terminal\" to return id of front window"]
+        let out = Pipe()
+        task.standardOutput = out
+        task.standardError = FileHandle.nullDevice
+        do { try task.run() } catch { return nil }
+        let deadline = Date().addingTimeInterval(3)
+        while task.isRunning, Date() < deadline { usleep(20_000) }
+        if task.isRunning {
+            task.terminate()
+            fputs("[news] window query timed out — killed\n", stderr)
+            return nil
+        }
+        guard task.terminationStatus == 0,
+              let text = String(data: out.fileHandleForReading
+                  .readDataToEndOfFile(), encoding: .utf8)
+        else { return nil }
+        return Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Adopt the front Terminal window as newsboat's. Called ONCE per open,
+    /// from `arm` — on the launch path `do script` has usually already
+    /// supplied the id and this is a no-op; on the ATTACH path it is the
+    /// only source, and it rests on the same assumption attaching already
+    /// makes (the newsboat we're attaching to is the window in front).
+    private func adoptNewsWindow() {
+        guard terminalWindowID == nil else { return }
+        windowQueue.async { [self] in
+            let front = frontTerminalWindowID()
+            DispatchQueue.main.async { [self] in
+                guard active || entering, terminalWindowID == nil else { return }
+                terminalWindowID = front
+                windowVerified = front != nil
+                windowCheckedAt = Date()
+                fputs("[news] " + (front != nil
+                    ? "adopted the front Terminal window"
+                    : "couldn't identify newsboat's window") + "\n", stderr)
+            }
         }
     }
 
@@ -1007,10 +1145,16 @@ final class NewsReader {
                 do script "\(escaped)"
             end tell
             """
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
             task.arguments = ["-e", script]
+            // `do script` replies with the tab it created — "tab 1 of
+            // window id 3274". That id is the ONLY handle we get on
+            // newsboat's window, and every posted key is checked against
+            // it, so it goes to a pipe rather than the log.
+            let out = Pipe()
+            task.standardOutput = out
             do {
                 try task.run()
             } catch {
@@ -1024,10 +1168,34 @@ final class NewsReader {
             if task.isRunning {
                 task.terminate()
                 fputs("[news] Terminal launch timed out — killed\n", stderr)
-            } else if task.terminationStatus != 0 {
+                return
+            }
+            guard task.terminationStatus == 0 else {
                 fputs("[news] Terminal launch exited "
                     + "\(task.terminationStatus)\n", stderr)
+                return
+            }
+            let reply = String(data: out.fileHandleForReading
+                .readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let id = Self.windowID(fromDoScriptReply: reply)
+            DispatchQueue.main.async { [self] in
+                guard active || entering else { return }
+                terminalWindowID = id
+                windowVerified = id != nil
+                windowCheckedAt = Date()
+                fputs("[news] " + (id != nil
+                    ? "newsboat launched in its own Terminal window"
+                    : "launch gave no window id — arm will adopt one")
+                    + "\n", stderr)
             }
         }
+    }
+
+    /// Pull the window id out of `do script`'s reply ("tab 1 of window id
+    /// 3274"). Pure so the parse is testable without a Mac.
+    static func windowID(fromDoScriptReply reply: String) -> Int? {
+        guard let marker = reply.range(of: "window id ") else { return nil }
+        let digits = reply[marker.upperBound...].prefix { $0.isNumber }
+        return digits.isEmpty ? nil : Int(digits)
     }
 }

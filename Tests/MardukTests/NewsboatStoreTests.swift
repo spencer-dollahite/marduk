@@ -274,6 +274,12 @@ final class NewsboatStoreTests: XCTestCase {
         XCTAssertFalse(
             NewsboatDB.cacheReport(snap, subscribed: 40, staleFeeds: 0,
                                    now: 1_000_000).contains("stale"))
+        // A cache holding feeds the urls file dropped says so, so "34/30"
+        // never reads as a miscount
+        XCTAssertTrue(
+            NewsboatDB.cacheReport(snap, subscribed: 30, staleFeeds: 0,
+                                   now: 1_000_000)
+                .contains("4 unsubscribed feeds still cached"))
         // An empty cache says so rather than claiming a 55-year-old item
         XCTAssertTrue(
             NewsboatDB.cacheReport(NewsboatDB.CacheSnapshot(), subscribed: 3,

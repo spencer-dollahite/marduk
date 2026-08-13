@@ -383,6 +383,13 @@ final class NewsboatDB {
     /// feeds with no items at all included. The single most diagnostic
     /// number in the report: a few is normal (quiet blogs), most of them
     /// means a filter or the fetch is eating items.
+    ///
+    /// APPROXIMATE BY ONE THING: an unsubscribed feed whose rows newsboat
+    /// hasn't cleaned up yet still counts as fresh, so it can mask one
+    /// stale subscription. Matching the live urls list would mean binding
+    /// every feed URL into the query for a number that only has to be
+    /// right to an order of magnitude — `cacheReport` flags leftover feeds
+    /// separately instead, which is the signal that this is happening.
     func feedsStale(since cutoff: Int64, subscribed: Int) -> Int {
         var fresh = 0
         query("""
@@ -405,6 +412,14 @@ final class NewsboatDB {
             : "nothing dated")
         if staleFeeds > 0 { parts.append("\(staleFeeds) feeds stale") }
         if snap.undated > 0 { parts.append("\(snap.undated) undated") }
+        // More feeds in the cache than in the urls file = rows from
+        // unsubscribed feeds newsboat hasn't cleaned up yet. Called out so
+        // "34/40" never reads as a miscount, and because those rows are
+        // what blunt the stale count above.
+        if snap.feedsWithItems > subscribed {
+            parts.append("\(snap.feedsWithItems - subscribed) unsubscribed "
+                + "feeds still cached")
+        }
         return parts.joined(separator: ", ")
     }
 

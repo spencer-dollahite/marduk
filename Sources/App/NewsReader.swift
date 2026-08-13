@@ -407,13 +407,22 @@ final class NewsReader {
         moveBy(target - from)
     }
 
-    /// c — the current article's URL to the clipboard (the feed's URL on
+    /// Where an article points: its own link, else the destination in its
+    /// show notes — the same ladder `o` walks, so yanking and opening can
+    /// never disagree about what the article IS.
+    private func articleLink(_ article: NewsSession.Article) -> String? {
+        if !article.url.isEmpty { return article.url }
+        return db?.content(id: article.id)
+            .flatMap(NewsHTML.destination(inBody:))
+    }
+
+    /// y — the current article's URL to the clipboard (the feed's URL on
     /// the feed list). URLs are user content: never logged, only copied.
     private func copyLink() {
         let url: String?
         switch session.level {
         case .articles:
-            url = session.currentArticle?.url
+            url = session.currentArticle.flatMap { articleLink($0) }
         case .feeds:
             url = session.currentFeed.flatMap { $0.isQuery ? nil : $0.url }
         }
@@ -555,15 +564,42 @@ final class NewsReader {
         startRead("\(article.title).\n\n\(body)")
     }
 
+    /// o — open the article. A LADDER, because not every feed gives its
+    /// items a link: the item's OWN link first (newsboat opens it), else
+    /// the destination in the show notes (Marduk opens it). Either way the
+    /// browser activating stands NEWS mode down (the workspace watcher);
+    /// n re-opens with a fresh mirror.
     private func openInBrowser() {
-        guard session.level == .articles, session.currentArticle != nil else {
+        guard session.level == .articles,
+              let article = session.currentArticle else {
             Earcon.error()
             return
         }
-        // newsboat's own o — it opens the configured browser and marks the
-        // article read. The browser activating stands NEWS mode down (the
-        // workspace watcher); n re-opens with a fresh mirror.
-        ensureTerminalFront { [self] in postKeys(31, false, 1) }  // o
+        // Rung 1: a link the FEED gave us is newsboat's business — posting
+        // its own o opens it and marks the article read in one gesture.
+        // Never second-guessed with the body: a news article that merely
+        // EMBEDS a video must still open the article.
+        if !article.url.isEmpty {
+            fputs("[news] opening the item's link\n", stderr)
+            ensureTerminalFront { [self] in postKeys(31, false, 1) }  // o
+            session.markCurrentArticleRead()
+            announce("Opening in the browser.")
+            return
+        }
+        // Rung 2: no <link> at all — podcast feeds routinely ship none, so
+        // newsboat's o has nothing to open and the destination lives in the
+        // show notes. URLs are user content: the RUNG is logged, never the
+        // link.
+        guard let body = db?.content(id: article.id),
+              let link = NewsHTML.destination(inBody: body),
+              let url = URL(string: link) else {
+            Earcon.error()
+            announce("This article has no link.")
+            return
+        }
+        fputs("[news] opening a link from the show notes"
+            + (NewsHTML.isVideo(link) ? " (video)\n" : "\n"), stderr)
+        NSWorkspace.shared.open(url)
         session.markCurrentArticleRead()
         announce("Opening in the browser.")
     }

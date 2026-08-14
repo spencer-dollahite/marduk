@@ -162,9 +162,21 @@ final class DisplayInverter: @unchecked Sendable {
     /// Packet Tracer versions its bundle ID per release
     /// (com.netacad.PacketTracer9.0.0…). User-ratified hardcoding after
     /// auto-detection lost the war against PT's activation/window churn.
+    /// PAGES SHIPS TWICE (field 2026-08-14). Apple's January 2026 Creator
+    /// Studio release did not update the iWork apps in place on macOS — it
+    /// installed a SECOND Pages beside the old one, under a NEW bundle ID:
+    /// `com.apple.Pages` (15.x, freemium/AI tier) versus the legacy
+    /// `com.apple.iWork.Pages` (frozen at 14.5). Both live in
+    /// /Applications, both are named "Pages", and a user who opens the new
+    /// one gets an app this list had never heard of — the inversion simply
+    /// stopped happening, and `resolveFront`'s listed-app bias stopped
+    /// breaking the activation/window disagreements in its favour too. One
+    /// row per app, per the table doctrine; the old ID stays because the
+    /// old app stays installed.
     static let builtInInvertPrefixes = [
         "com.netacad.PacketTracer",
         "com.apple.iWork.Pages",
+        "com.apple.Pages",
     ]
 
     private func isListed(_ bundleID: String) -> Bool {

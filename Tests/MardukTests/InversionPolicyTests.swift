@@ -249,6 +249,27 @@ final class InversionPolicyTests: XCTestCase {
             sinceSeen: away + 0.01, away: away), .expired)
     }
 
+    /// Pages ships TWICE on macOS since Apple's January 2026 Creator
+    /// Studio release: the legacy `com.apple.iWork.Pages` (frozen at 14.5)
+    /// and the new `com.apple.Pages` (15.x), side by side in
+    /// /Applications under the same name. A user who opens the new one and
+    /// finds the display no longer inverts has no way to tell which of the
+    /// two they're in, so BOTH stay covered for as long as both ship.
+    func testBothPagesBundlesAreBuiltIn() {
+        let prefixes = DisplayInverter.builtInInvertPrefixes
+        for id in ["com.apple.iWork.Pages", "com.apple.Pages"] {
+            XCTAssertTrue(prefixes.contains { id.hasPrefix($0) },
+                          "\(id) must be a built-in inversion candidate")
+        }
+        // Prefix matching is the mechanism (Packet Tracer versions its ID),
+        // so a row must never be broad enough to claim unrelated apps
+        for unrelated in ["com.apple.Preview", "com.apple.iWork.Numbers",
+                          "com.apple.Safari", "org.mozilla.firefox"] {
+            XCTAssertFalse(prefixes.contains { unrelated.hasPrefix($0) },
+                           "\(unrelated) must not match a built-in prefix")
+        }
+    }
+
     /// The structural guarantee: for every config permutation, the ability
     /// to invert and the ability to revert are the SAME answer. If these
     /// could ever differ, an inversion could be created that nothing was

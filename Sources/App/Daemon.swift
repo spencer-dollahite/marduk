@@ -137,6 +137,7 @@ final class DaemonServer {
     private let tutorial = Tutorial()
     private let onboarding: Onboarding
     private let dialogSentinel = DialogSentinel()
+    private let health = HealthMonitor()
     // dialogfocus consent state (ask | always | off); markers make the
     // full pitch and the zoom pointer speak once ever (OnceMarker slugs
     // "dialogfocus-explained" / "zoomfollow-hinted")
@@ -378,6 +379,13 @@ final class DaemonServer {
         dialogFocusSetting = DialogFocus.Setting(
             rawValue: config.keyboard?.dialogFocus ?? "") ?? .ask
         if !safeMode { dialogSentinel.start() }
+
+        // The health heartbeat runs even in SAFE MODE: a crash-looping
+        // daemon is exactly when a resource reading earns its keep, and
+        // this observer touches nothing — it reads counters and logs a line.
+        health.utteranceCount = { [speech] in speech.utterancesSpoken }
+        health.rebuildCount = { [speech] in speech.synthesizerRebuilds }
+        health.start()
 
         // One-time onboarding: automatic dark PDFs are an invisible
         // automation — the first success explains itself, once ever
@@ -3345,6 +3353,11 @@ final class DaemonServer {
 
     private func cleanup() {
         BootGuard.markStable()  // reaching teardown at all means no crash
+        // One last reading BEFORE anything is torn down, so every session
+        // ends on a measurement instead of a guess — including the sessions
+        // that end because the user restarted a daemon that had gone bad.
+        health.emit()
+        health.stop()
         modeOverlay?.stop()
         displayInverter?.stop()
         keyboardMonitor?.stop()

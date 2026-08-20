@@ -960,6 +960,18 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     }
     private var utteranceInfo: [ObjectIdentifier: UtteranceInfo] = [:]
     private var utteranceSeq = 0
+    /// How many times the instance has been thrown away (see
+    /// `rebuildSynthesizer`). One per INTERRUPTION, never on the steady
+    /// path — so paired with `utterancesSpoken` it says how hard this
+    /// session has been churning the speech service. News mode interrupts
+    /// on nearly every keystroke and dominates this number.
+    private var synthesizerRebuildSeq = 0
+
+    /// Read-only, for the health heartbeat. Sampled from another queue:
+    /// plain Int reads whose exact value at the instant of sampling
+    /// doesn't matter — these are trend lines, not accounting.
+    var utterancesSpoken: Int { utteranceSeq }
+    var synthesizerRebuilds: Int { synthesizerRebuildSeq }
     /// When the last utterance of any kind ended. Logged as the gap before
     /// the next handover, because that gap is the whole story of the
     /// swallowed read: the failures cluster within a few hundred
@@ -1169,6 +1181,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         if retiredSynthesizers.count > 3 { retiredSynthesizers.removeFirst() }
         synthesizer = AVSpeechSynthesizer()
         synthesizer.delegate = self
+        synthesizerRebuildSeq += 1
         handoff.freshInstance()
     }
 

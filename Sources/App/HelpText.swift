@@ -61,8 +61,7 @@ enum HelpText {
         newsboat's own hints are hidden, they list newsboat's keys, \
         not Marduk's. t asks a local A I on your own Mac to pick the \
         three most critical or novel unread stories and fold the \
-        duplicates — it also runs by itself on your first news of each \
-        day — then 1, 2, or 3 jumps straight into that story. Needs \
+        duplicates — then 1, 2, or 3 jumps straight into that story. Needs \
         Ollama running; nothing leaves your Mac. \
         Slash searches titles forward and question mark backward — \
         type, then Return jumps to the match, and period repeats the \
@@ -79,6 +78,14 @@ enum HelpText {
         sell, from anywhere. Escape leaves. A terminal style panel shows \
         the list and its keys while stocks is open, if you can see some \
         of the screen. \
+        d: your daily brief, spoken — the date and time, the weather, a \
+        note of your own out of Notes, your watchlist, and the newest \
+        unread headlines. It is a read, not an announcement, so \
+        everything a read can do works on it: space pauses, a right \
+        brace skips to the next part, slash searches it, and r r says it \
+        again. Escape stops it. Say colon segments to choose which parts \
+        it includes and colon config note to name the note it reads. On \
+        a source install, d d still cuts a release. \
         Escape, stop speech. Space, pause or resume a read. \
         With read motions on, a read takes the whole keyboard, from any \
         mode: b and w step back and forward a word, h and l do the same. \
@@ -122,6 +129,11 @@ enum HelpText {
         were just in comes first, so Return alone adds it, and Return on \
         one already listed removes it. Also reachable as colon config invert \
         apps list. \
+        brief, speak the daily brief now, the same as pressing d. \
+        segments, choose which parts your daily brief includes — Return \
+        adds a part, or takes it out if it is already in, and the brief \
+        keeps them in the order it lists them. Also reachable as colon \
+        config segments. \
         pronunciation, open the system pronunciation editor — Marduk \
         speaks every entry you add there the way you taught it. \
         typing, open the system typing feedback settings — macOS can \
@@ -171,9 +183,19 @@ enum HelpText {
         actually bright — needs the Screen Recording permission. It judges \
         the apps invert apps does not cover. dock, on \
         or off: show Marduk in the Dock, the app switcher, and the Force \
-        Quit window. news, on or off, and stocks, on or off: the \
-        extension switches — off returns each key to its old meaning, n \
-        to a plain letter and capital S to hover speech.
+        Quit window. news, on or off, stocks, on or off, and brief, on or \
+        off: the extension switches — off returns each key to its old \
+        meaning, n and d to a plain letter and capital S to hover speech. \
+        The daily brief's own setup: place, then your city, sets the \
+        weather location — say colon config place, then the name, and \
+        Marduk looks up the coordinates for you. units, imperial or \
+        metric. note, then the title of a note in Notes — the brief reads \
+        the first note whose title matches, so part of the title is \
+        enough; colon config note off stops it. headlines, 0 to 20, how \
+        many unread news titles the brief reads. horoscope, then part of \
+        the name of a horoscope feed you have added to newsboat; the \
+        horoscope and the moon phase are off until you add them with \
+        colon segments.
         """
 
     /// ":tip" — one is picked at random (never the same twice in a row).
@@ -206,7 +228,7 @@ enum HelpText {
         "Have newsboat installed? Press n and your feeds become a spoken news list: j and k walk the titles, uppercase R reads an article like an audiobook with every reading motion live, o opens it in the browser. Feeds refresh every time you open it.",
         "Capital S speaks your stock watchlist: j and k walk the tickers with live prices, b sets a buy alert and s a sell alert, and Marduk announces the moment a price crosses your level. a adds a ticker by typing its symbol, d d takes it off.",
         "In the news list, d deletes an article — vim's d d works too, it deletes just the one — capital C marks everything read, and i hands the keyboard to newsboat itself for its own tricks — hold Escape to climb back to the spoken list.",
-        "Drowning in duplicate headlines? In the news list, t sends the unread titles to an A I running entirely on your own Mac, which picks the three most critical stories and folds the copies. It runs by itself on your first news of the day, and 1, 2, or 3 jumps straight into the story.",
+        "Drowning in duplicate headlines? In the news list, t sends the unread titles to an A I running entirely on your own Mac, which picks the three most critical stories and folds the copies. Then 1, 2, or 3 jumps straight into the story.",
         "Marduk's reading keys are vim's keys on purpose: b and w for words, parens for sentences, slash to search, dot to repeat. If you already know vim, everything carries over. If you don't, the choices may feel odd for a few days — then the muscle memory kicks in, and it pays off for good.",
         "Vim keys work inside a read: open paren replays the sentence you just missed, b and w step by word, j and k by line, braces by paragraph, and slash searches the text. Wait, what did it just say? Open paren.",
         "Reading a web page, a PDF, or a styled note? Right bracket twice jumps to the next heading, left bracket twice goes back one. Right bracket then u climbs to the section's parent heading.",
@@ -228,7 +250,11 @@ enum HelpText {
         "Marduk mispronouncing a name? Colon pronunciation opens the system pronunciation editor. Add the word there, typed or spoken, and Marduk says it your way from the very next read — including entries you scope to a single app.",
         "Lost in a long read? Control G is vim's ruler: it says the page and how far through you are, without stopping the voice. A number then the percent sign jumps — fifty percent starts halfway through the document.",
         "Jumping around a long document is safe: Control O takes you back to where you jumped from, however far you went, and Control I walks forward again. It is vim's jumplist — so g g to the top, or fifty percent, is never a one-way trip.",
-        "When Marduk announces a dialog, it can also bring it to the front for you: press a for always, o for just this one, n for not now, or s to stop asking. And in Settings, Accessibility, Zoom, Advanced, follow keyboard focus makes your zoom pan straight to whatever Marduk focuses.",
+        "Press d for your daily brief: the date, the weather, a note of your own, your watchlist, and the newest headlines, all in one go. It is a read, so space pauses it, a right brace skips to the next part, and r r plays it back. Say colon segments to choose what goes in it.",
+        "The daily brief can read one of your own notes aloud. Say colon config note, then the title — or just part of it — and every brief reads the first note in Notes that matches. Keep one note called something like Today and the brief becomes your morning agenda.",
+        "Set the brief's weather with colon config place, then your city: Marduk looks up the coordinates itself, no account and no location permission. Colon config units metric if you would rather hear Celsius.",
+        "The daily brief has two extras that are off until you ask for them: the moon phase, which is pure arithmetic and needs nothing, and a horoscope read from any horoscope feed you add to newsboat. Colon segments turns them on.",
+                "When Marduk announces a dialog, it can also bring it to the front for you: press a for always, o for just this one, n for not now, or s to stop asking. And in Settings, Accessibility, Zoom, Advanced, follow keyboard focus makes your zoom pan straight to whatever Marduk focuses.",
     ]
 
     /// First-run gateway: a brief orientation, then a one-key choice of

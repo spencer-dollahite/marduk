@@ -63,6 +63,7 @@ final class ConfigPermutationTests: XCTestCase {
          ("overlay", MardukConfig.OverlayConfig()),
          ("onboarding", MardukConfig.OnboardingConfig()),
          ("news", MardukConfig.NewsConfig()),
+         ("brief", MardukConfig.BriefConfig()),
          ("extensions", MardukConfig.ExtensionsConfig())]
     }
 

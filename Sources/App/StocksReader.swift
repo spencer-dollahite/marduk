@@ -301,7 +301,10 @@ final class StocksReader {
         }
     }
 
-    private static func fetchQuote(_ symbol: String) -> StockQuote? {
+    /// Internal, not private: the DAILY BRIEF's stocks segment fetches
+    /// the same watchlist through the same endpoint, and two copies of a
+    /// quote fetch would drift.
+    static func fetchQuote(_ symbol: String) -> StockQuote? {
         let url = "https://query1.finance.yahoo.com/v8/finance/chart/"
             + symbol + "?range=1d&interval=1d"
         let task = Process()

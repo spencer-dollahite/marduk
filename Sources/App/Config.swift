@@ -14,6 +14,8 @@ struct MardukConfig: Codable {
     var onboarding: OnboardingConfig? = OnboardingConfig()
     var news: NewsConfig? = NewsConfig()
 
+    var brief: BriefConfig? = BriefConfig()
+
     var extensions: ExtensionsConfig? = ExtensionsConfig()
 
     /// Extension switches (`:config news off`, `:config stocks off`):
@@ -23,6 +25,25 @@ struct MardukConfig: Codable {
     struct ExtensionsConfig: Codable {
         var news: Bool? = true    // n — the newsboat reader
         var stocks: Bool? = true  // S — the stock watchlist
+        var brief: Bool? = true   // d — the daily brief
+    }
+
+    /// DAILY BRIEF (`d`): the spoken morning rundown. `segments` carries
+    /// both MEMBERSHIP and ORDER (managed by the `:segments` picker, which
+    /// inserts in canonical order; hand-edits may reorder freely) — nil
+    /// means `BriefPlan.defaultSegments`, an empty array means the user
+    /// really did turn everything off. The rest is per-segment setup,
+    /// every key reachable from `:config` so nothing here requires opening
+    /// a file.
+    struct BriefConfig: Codable {
+        var segments: [String]?      // e.g. ["date", "weather", "news"]
+        var place: String?           // spoken place name — ":config place"
+        var latitude: Double?        // geocoded from `place`, keyless
+        var longitude: Double?
+        var metric: Bool?            // ":config units metric"; nil = imperial
+        var noteTitle: String?       // ":config note" — searched in Notes.app
+        var horoscopeFeed: String?   // ":config horoscope" — a newsboat feed
+        var headlines: Int?          // ":config headlines"; nil = 5
     }
 
     /// NEWS mode (`n`): the newsboat handoff. All paths optional — unset
@@ -194,6 +215,7 @@ struct MardukConfig: Codable {
         overlay = try c.decodeIfPresent(OverlayConfig.self, forKey: .overlay)
         onboarding = try c.decodeIfPresent(OnboardingConfig.self, forKey: .onboarding)
         news = try c.decodeIfPresent(NewsConfig.self, forKey: .news)
+        brief = try c.decodeIfPresent(BriefConfig.self, forKey: .brief)
         extensions = try c.decodeIfPresent(ExtensionsConfig.self, forKey: .extensions)
     }
 }

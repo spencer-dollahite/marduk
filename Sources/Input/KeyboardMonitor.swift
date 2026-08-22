@@ -291,11 +291,20 @@ final class KeyboardMonitor {
         postKey(keycode: keycode, shift: shift, count: count)
     }
 
-    // Extension gates (:config news/stocks off): a disabled extension's
-    // key falls through to its old meaning — n to the NORMAL buzz, S to
-    // the hover toggle — zero surface, the releaseAvailable pattern.
+    // Extension gates (:config news/stocks/brief off): a disabled
+    // extension's key falls through to its old meaning — n and d to the
+    // NORMAL buzz, S to the hover toggle — zero surface, the
+    // releaseAvailable pattern.
     var newsExtensionEnabled = true
     var stocksExtensionEnabled = true
+    var briefExtensionEnabled = true
+
+    /// DAILY BRIEF (`d`): a lone d, resolved on burst expiry exactly like
+    /// s/t/u/n. `d` is deliberately NOT one of BurstPolicy's command
+    /// letters, so words keep their typing rescue — and on source installs
+    /// the `dd` release gesture still resolves inside the burst layer,
+    /// before a lone d can ever reach here.
+    var onBriefOpen: (() -> Void)?
 
     // STOCKS mode (`S` — Marduk-native watchlist, no external app, no
     // key posting). Same shape as NEWS: daemon arms via setStocksActive,
@@ -2230,6 +2239,14 @@ final class KeyboardMonitor {
             DispatchQueue.main.async { [self] in onHoverToggle?() }
             return nil
 
+        case 2 where briefExtensionEnabled: // d — speak the daily brief
+                 // Reaches here only on burst expiry (a lone d), so `dd`
+                 // on a source install still cuts a release and double-d
+                 // words still rescue to typing. Extension off → the plain
+                 // NORMAL buzz d has always been.
+            DispatchQueue.main.async { [self] in onBriefOpen?() }
+            return nil
+
         case 45 where isFirefoxFrontmost: // n — Firefox Reader narration handoff
             // Marduk steps aside for Firefox's own Narrate: stop our
             // speech, pause media and HOLD it paused, then hand the n to
@@ -2790,10 +2807,12 @@ final class KeyboardMonitor {
     // NORMAL-mode command keys that must fire once per physical press —
     // derived from commandLetterKeys so a future command letter can't be
     // added to one set but not the other, plus Escape (53).
-    // 45 = n: one-shot even though it's only a command in Firefox —
-    // suppressing a held n's autorepeat everywhere is harmless (NORMAL
-    // mode letters don't type anyway)
-    private static let oneShotNormalKeys: Set<Int64> = commandLetterKeys.union([53, 45])
+    // 45 = n and 2 = d: one-shot even though neither is a command LETTER
+    // (both stay out of the rescue's table so words keep their typing
+    // rescue) — suppressing a held n's or d's autorepeat everywhere is
+    // harmless (NORMAL mode letters don't type anyway) and stops a leaned-on
+    // key from reopening the news or restarting the brief on every repeat.
+    private static let oneShotNormalKeys: Set<Int64> = commandLetterKeys.union([53, 45, 2])
 
     // macOS key codes for a-z suppressed in Normal mode to prevent typing.
     // Note: k (40) is deliberately omitted so it passes through to the app.
@@ -4681,22 +4700,14 @@ final class KeyboardMonitor {
 
     // MARK: - Time / Date
 
+    /// The wording lives in `BriefPlan.spokenClock` — pure, tested, and
+    /// SHARED with the daily brief, so `t` and the brief can never drift
+    /// into saying the time two different ways.
     private static func spokenTime() -> String {
         let cal = Calendar.current
         let now = Date()
-        let hour = cal.component(.hour, from: now)
-        let minute = cal.component(.minute, from: now)
-
-        let hourPart = hour < 10 ? "oh \(hour)" : "\(hour)"
-        let minutePart: String
-        if minute == 0 {
-            minutePart = "hundred"
-        } else if minute < 10 {
-            minutePart = "oh \(minute)"
-        } else {
-            minutePart = "\(minute)"
-        }
-        return "\(hourPart) \(minutePart)"
+        return BriefPlan.spokenClock(hour: cal.component(.hour, from: now),
+                                     minute: cal.component(.minute, from: now))
     }
 
     private static func currentTime() -> String {

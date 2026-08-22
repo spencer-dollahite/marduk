@@ -149,6 +149,11 @@ final class DaemonServer {
     private let newsReader = NewsReader()
     // STOCKS mode (`S`): Marduk-native spoken watchlist with alert levels
     private let stocksReader = StocksReader()
+    // DAILY BRIEF (`d`): the spoken morning rundown — assembled from the
+    // clock, weather, a Notes note, the watchlist, and the news cache,
+    // then spoken as ONE READ (so Space, Escape, `}`, `/` and `rr` all
+    // work on it)
+    private let briefReader = BriefReader()
     // Its TUI panel — title bar, ticker rows, newsboat-style key bar
     private let stocksPanel = StocksPanel()
     // NEWS mode's floating key bar (newsboat's own hints are hidden by
@@ -466,6 +471,10 @@ final class DaemonServer {
             },
             onStop: { [self] reason in
                 longReadGeneration += 1  // a stop beats an in-flight chunk
+                // A brief still being gathered has nothing to stop yet —
+                // Escape during those seconds must not be answered by the
+                // brief starting to talk a moment later.
+                briefReader.abort()
                 speech.stop(reason: reason)
             },
             onAnnounce: { [self] text in
@@ -512,6 +521,7 @@ final class DaemonServer {
                     tutorial.abort(silent: true)
                     palette.hide()
                     hoverSpeech.deactivate()
+                    briefReader.abort()
                     // "Systems disengaged" must mean ALL systems: the
                     // sentinel's toggle gating was lost in the level
                     // migration and the inverter was never wired (field:
@@ -780,11 +790,26 @@ final class DaemonServer {
         stocksReader.showDisplay = { [self] rows in stocksPanel.update(rows: rows) }
         stocksReader.hideDisplay = { [self] in stocksPanel.hide() }
         stocksPanel.onRowClick = { [self] row in stocksReader.selectRow(row) }
-        // Extension gates (:config news/stocks) — the monitor's `where`
-        // clauses read these flags live
+        // DAILY BRIEF (`d`): announce the opening line, gather off-main,
+        // then speak the whole rundown through the READ path — every
+        // reading motion applies to it, which is the entire reason it is
+        // a read and not a chain of announcements.
+        briefReader.announce = { [self] text in speech.announce(text) }
+        briefReader.announceThen = { [self] text, done in
+            speech.announce(text) { DispatchQueue.main.async(execute: done) }
+        }
+        briefReader.startRead = { [self] text in speakDocument(text, start: 0) }
+        briefReader.settings = { [self] in config }
+        briefReader.isEngaged = { [self] in keyboardMonitor?.isEnabled ?? false }
+        keyboardMonitor?.onBriefOpen = { [self] in briefReader.run() }
+
+        // Extension gates (:config news/stocks/brief) — the monitor's
+        // `where` clauses read these flags live
         keyboardMonitor?.newsExtensionEnabled = config.extensions?.news ?? true
         keyboardMonitor?.stocksExtensionEnabled =
             config.extensions?.stocks ?? true
+        keyboardMonitor?.briefExtensionEnabled =
+            config.extensions?.brief ?? true
 
         // Clicking a palette row acts like Tab on that row (mouseDown arrives
         // on the main thread already)
@@ -1428,10 +1453,18 @@ final class DaemonServer {
             }
             lastTipIndex = index
             speech.speak("Tip: " + HelpText.tips[index])
-        case .voices, .invertAppsList:
+        case .voices, .invertAppsList, .segments:
             // Unreachable in practice — every picker-prefixed buffer is
             // intercepted above before parse. Compiler exhaustiveness only.
             break
+        case .brief:
+            guard config.extensions?.brief ?? true else {
+                Earcon.error()
+                speech.announce("The daily brief is off. "
+                    + "Say colon config brief on.")
+                return
+            }
+            briefReader.run()
         case .news:
             guard config.extensions?.news ?? true else {
                 Earcon.error()
@@ -2373,6 +2406,7 @@ final class DaemonServer {
         switch picker {
         case "voices": applyVoice(identifier: identifier)
         case "invertappslist": toggleInvertApp(identifier: identifier)
+        case "segments": toggleBriefSegment(identifier: identifier)
         default: break
         }
     }
@@ -2385,6 +2419,10 @@ final class DaemonServer {
             speech.announce("invert apps list. Choose an app to invert the display "
                 + "while it is in front. Return adds it, or removes it if it "
                 + "is already on the list.")
+        case "segments":
+            speech.announce("segments. Choose what your daily brief includes. "
+                + "Return adds a part, or takes it out if it is already in. "
+                + "The brief keeps them in this order.")
         default: break
         }
     }
@@ -2482,6 +2520,34 @@ final class DaemonServer {
             : "\(name) added. The display will invert while it is in front.\(caveat)")
     }
 
+    /// The ":segments" picker's Return: one row of the daily brief in or
+    /// out. Turning one ON puts it at its canonical position, so the brief
+    /// keeps a sensible running order without the user having to think
+    /// about ordering at all (config.json can still reorder by hand).
+    private func toggleBriefSegment(identifier: String) {
+        guard let segment = BriefSegment(rawValue: identifier) else {
+            Earcon.error()
+            speech.announce("That isn't a part of the brief.")
+            return
+        }
+        let current = BriefPlan.resolve(config.brief?.segments)
+        let updated = BriefPlan.toggle(current, segment)
+        var brief = config.brief ?? .init()
+        brief.segments = updated.map(\.rawValue)
+        config.brief = brief
+        ConfigLoader.save(config)
+        let removing = !updated.contains(segment)
+        fputs("[brief] segments: \(removing ? "removed" : "added") "
+            + "\(identifier) (\(updated.count) total)\n", stderr)
+        // Adding a part whose source isn't set up yet says so NOW rather
+        // than saving the surprise for tomorrow morning.
+        let pointer = BriefPlan.unconfigured(segment)
+        let setup = removing || pointer.isEmpty ? "" : " " + pointer
+        speech.announce(removing
+            ? "\(segment.spokenName) taken out of the brief."
+            : "\(segment.spokenName) added to the brief.\(setup)")
+    }
+
     /// Applies a setting live AND persists it. Failures speak and change
     /// nothing. Number ranges come from the same table the palette shows.
     private func applyConfig(key: String, value: String) {
@@ -2496,6 +2562,12 @@ final class DaemonServer {
             guard case .number(let min, let max, _)? = ColonCommand.kind(for: key),
                   let n = Int(value), n >= min, n <= max else { return nil }
             return n
+        }
+        /// Free-text settings have no "unset" spelling of their own, so
+        /// "off" clears one — the same word every toggle already uses.
+        func clears(_ text: String) -> Bool {
+            let trimmed = text.trimmingCharacters(in: .whitespaces).lowercased()
+            return trimmed.isEmpty || trimmed == "off" || trimmed == "none"
         }
 
         switch key {
@@ -2781,6 +2853,115 @@ final class DaemonServer {
                 ? "Stocks extension on. Press capital S for your watchlist."
                 : "Stocks extension off. Capital S toggles hover speech again.")
 
+        case "brief":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            var ext = config.extensions ?? .init()
+            ext.brief = on
+            config.extensions = ext
+            ConfigLoader.save(config)
+            keyboardMonitor?.briefExtensionEnabled = on
+            if !on { briefReader.abort() }
+            speech.announce(on
+                ? "Daily brief on. Press d for your rundown."
+                : "Daily brief off. d is a plain letter again.")
+
+        // MARK: Daily-brief setup — free-text settings
+        //
+        // These are the reason `.text` exists as a setting kind: a note
+        // title and a city name are PHRASES, and sending a blind user to
+        // a JSON file to type one would make the brief the only feature
+        // in Marduk you cannot finish setting up by voice and keyboard.
+
+        case "note":
+            var brief = config.brief ?? .init()
+            if clears(value) {
+                brief.noteTitle = nil
+                config.brief = brief
+                ConfigLoader.save(config)
+                speech.announce("Brief note cleared.")
+                return
+            }
+            brief.noteTitle = value
+            config.brief = brief
+            ConfigLoader.save(config)
+            // Say it back: the title is a SEARCH, so hearing what was
+            // stored is how the user knows it will match what they meant.
+            speech.announce("The brief will read the note matching "
+                + "\(value). Say colon config note off to stop.")
+
+        case "horoscope":
+            var brief = config.brief ?? .init()
+            if clears(value) {
+                brief.horoscopeFeed = nil
+                config.brief = brief
+                ConfigLoader.save(config)
+                speech.announce("Horoscope feed cleared.")
+                return
+            }
+            brief.horoscopeFeed = value
+            config.brief = brief
+            ConfigLoader.save(config)
+            let included = BriefPlan.resolve(config.brief?.segments)
+                .contains(.horoscope)
+            speech.announce("The horoscope will come from the feed matching "
+                + "\(value)."
+                + (included ? "" : " Say colon segments to add it to the brief."))
+
+        case "place":
+            guard !clears(value) else {
+                var brief = config.brief ?? .init()
+                brief.place = nil
+                brief.latitude = nil
+                brief.longitude = nil
+                config.brief = brief
+                ConfigLoader.save(config)
+                speech.announce("Weather location cleared.")
+                return
+            }
+            // Geocoding is a network round trip — say what is happening,
+            // then answer with what came back. Keyless, same service the
+            // forecast comes from.
+            speech.announce("Looking up \(value).")
+            BriefReader.geocode(value) { [self] place in
+                guard let place else {
+                    Earcon.error()
+                    speech.announce("Couldn't find \(value). Try the city "
+                        + "name on its own.")
+                    return
+                }
+                var brief = config.brief ?? .init()
+                brief.place = place.spokenName
+                brief.latitude = place.latitude
+                brief.longitude = place.longitude
+                config.brief = brief
+                ConfigLoader.save(config)
+                speech.announce("Weather set to \(place.spokenName).")
+            }
+
+        case "units":
+            guard ["imperial", "metric"].contains(value) else {
+                return fail("Say imperial or metric.")
+            }
+            var brief = config.brief ?? .init()
+            brief.metric = value == "metric"
+            config.brief = brief
+            ConfigLoader.save(config)
+            speech.announce(value == "metric"
+                ? "Weather in Celsius."
+                : "Weather in Fahrenheit.")
+
+        case "headlines":
+            guard let count = number() else {
+                return fail("Headlines must be 0 to 20.")
+            }
+            var brief = config.brief ?? .init()
+            brief.headlines = count
+            config.brief = brief
+            ConfigLoader.save(config)
+            speech.announce(count == 0
+                ? "The brief will give the unread count without headlines."
+                : "The brief will read \(count) headlines.")
+
         case "dock":
             guard let on = toggle() else { return fail("Say on or off.") }
             config.display.dockIcon = on
@@ -2926,6 +3107,14 @@ final class DaemonServer {
             "preferdarkinpreview": config.display.pdfDark ?? "auto",
             "smartinvert": (config.display.autoInvert ?? false) ? "on" : "off",
             "dock": (config.display.dockIcon ?? false) ? "on" : "off",
+            "news": (config.extensions?.news ?? true) ? "on" : "off",
+            "stocks": (config.extensions?.stocks ?? true) ? "on" : "off",
+            "brief": (config.extensions?.brief ?? true) ? "on" : "off",
+            "note": config.brief?.noteTitle ?? "not set",
+            "place": config.brief?.place ?? "not set",
+            "horoscope": config.brief?.horoscopeFeed ?? "not set",
+            "units": (config.brief?.metric ?? false) ? "metric" : "imperial",
+            "headlines": "\(config.brief?.headlines ?? BriefPlan.defaultHeadlines)",
         ]
     }
 
@@ -2979,8 +3168,13 @@ final class DaemonServer {
         // Recognize the bare AND `:config`-namespaced picker buffer.
         let apps = (ColonCommand.strippedPickerBuffer(buffer)?.hasPrefix("invertappslist") ?? false)
             ? invertAppOptions() : []
+        // Segment rows say whether each part is in — cheap, but built only
+        // while the picker is open, like the app list.
+        let segments = (ColonCommand.strippedPickerBuffer(buffer)?.hasPrefix("segments") ?? false)
+            ? BriefPlan.pickerRows(BriefPlan.resolve(config.brief?.segments)) : []
         commandCandidates = CommandCompleter.candidates(for: buffer, values: settingValues(),
-                                                        voices: voiceOptions, apps: apps)
+                                                        voices: voiceOptions, apps: apps,
+                                                        segments: segments)
         commandSelected = 0
         if paletteEnabled {
             palette.update(buffer: buffer, candidates: commandCandidates,

@@ -63,7 +63,12 @@ final class ColonCommandTests: XCTestCase {
         XCTAssertEqual(ColonCommand.parse("un"), .uninstall)
         XCTAssertEqual(ColonCommand.parse("log"), .log)
         XCTAssertEqual(ColonCommand.parse("f"), .feedback)
-        XCTAssertEqual(ColonCommand.parse("b"), .bug)
+        // ":b" stopped being unique the day the daily brief arrived — this
+        // is the unique-prefix rule working, not a regression. Two letters
+        // still separate them.
+        XCTAssertEqual(ColonCommand.parse("b"), .unknown("b"))
+        XCTAssertEqual(ColonCommand.parse("bu"), .bug)
+        XCTAssertEqual(ColonCommand.parse("br"), .brief)
         XCTAssertEqual(ColonCommand.autoResolve("q"), .execute("quit"))
     }
 

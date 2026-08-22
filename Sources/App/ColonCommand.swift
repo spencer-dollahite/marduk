@@ -11,6 +11,8 @@ enum ColonCommand: Equatable {
     case invertAppsList
     case news
     case stock(args: [String])
+    case brief
+    case segments
     case pronunciation
     case typing
     case quit
@@ -27,6 +29,7 @@ enum ColonCommand: Equatable {
     // No name may be a prefix of another — auto-accept relies on it
     static let commandNames = ["help", "commands", "tutorial", "tip", "config",
                                "voices", "invertappslist", "news", "stock",
+                               "brief", "segments",
                                "pronunciation", "typing", "quit", "restart",
                                "update", "uninstall", "log", "feedback", "bug",
                                "security"]
@@ -40,7 +43,8 @@ enum ColonCommand: Equatable {
     /// TABLE, not a code path: `voices` used to own eight hardcoded
     /// `hasPrefix("voices")` checks across three files, so a second picker
     /// would have meant a second copy of all of them.
-    static let pickerCommands: Set<String> = ["voices", "invertappslist"]
+    static let pickerCommands: Set<String> = ["voices", "invertappslist",
+                                             "segments"]
 
     /// Pickers that ALSO answer under `:config` (the user asked for the
     /// whole inversion family to be `:config`-namespaced). These are NOT
@@ -49,7 +53,7 @@ enum ColonCommand: Equatable {
     /// settings-prefix rule forbids. Instead `strippedPickerBuffer` rewrites
     /// `:config invertappslist …` down to the bare `:invertappslist …` form
     /// so ONE set of picker plumbing serves both. Bare still works too.
-    static let configPickers: Set<String> = ["invertappslist"]
+    static let configPickers: Set<String> = ["invertappslist", "segments"]
 
     /// Commands that EXPAND to "<name> " rather than executing — every
     /// picker, plus `config` and `stock` (which want more tokens next; a
@@ -138,6 +142,12 @@ enum ColonCommand: Equatable {
             return .news
         case "stock":
             return .stock(args: Array(tokens.dropFirst()))
+        case "brief":
+            return .brief
+        case "segments":
+            // Picker — the daemon intercepts the buffer before parse; this
+            // is the bare fallback (and compiler exhaustiveness).
+            return .segments
         case "pronunciation":
             return .pronunciation
         case "typing":
@@ -162,12 +172,22 @@ enum ColonCommand: Equatable {
         case "security":
             return .security
         case "config":
-            guard tokens.count == 3 else { return .unknown(raw) }
+            guard tokens.count >= 3 else { return .unknown(raw) }
             // Expand key and (for enum kinds) value the same way, so
             // ":conf ra 230" runs as ":config rate 230". Ambiguous or
             // unknown prefixes pass through raw — the executor speaks
             // the error.
             let key = expand(tokens[1], in: settings.map(\.key)) ?? tokens[1]
+            // A text setting swallows the whole tail, spaces included, and
+            // keeps the user's own capitalization — `tokens` is lowercased
+            // for grammar matching, but a note title is CONTENT.
+            if kind(for: key)?.isText == true {
+                let original = raw.split(separator: " ").map(String.init)
+                return .config(key: key,
+                               value: original.dropFirst(2)
+                                   .joined(separator: " "))
+            }
+            guard tokens.count == 3 else { return .unknown(raw) }
             let value: String
             switch kind(for: key) {
             case .toggle:
@@ -275,6 +295,20 @@ enum ColonCommand: Equatable {
         case number(min: Int, max: Int, unit: String)
         case toggle
         case choice([String])
+        /// Free text, spaces and all — a note title, a city, a feed name.
+        /// The ONLY kind whose value may span more than one token, so
+        /// `parse` takes the whole tail and Return is always required
+        /// (auto-accept can never know the user has finished typing a
+        /// phrase). `hint` is spoken in the palette's value stage.
+        case text(hint: String)
+
+        /// Free text is the only kind `parse` treats specially (it takes
+        /// the whole tail), so the question gets a name instead of a
+        /// pattern match repeated at three call sites.
+        var isText: Bool {
+            if case .text = self { return true }
+            return false
+        }
     }
 
     static let settings: [(key: String, kind: SettingKind)] = [
@@ -326,6 +360,21 @@ enum ColonCommand: Equatable {
         // namespaces — settings only ever parse under `config`.
         ("news", .toggle),
         ("stocks", .toggle),
+        ("brief", .toggle),
+        // DAILY BRIEF setup. Every one of these is reachable from `:config`
+        // on purpose — the brief is the one feature whose usefulness
+        // depends entirely on setup, and a blind user must never be sent
+        // to a JSON file to finish it. `place` geocodes; `note` searches
+        // Notes by title; `horoscope` names a feed already in newsboat.
+        // The segment LIST is the `:segments` picker, not a key here (a
+        // picker manages a list, and "brief" is a prefix of any
+        // "briefsegments" spelling, which the settings-prefix rule
+        // forbids).
+        ("note", .text(hint: "the title of a note in Notes")),
+        ("place", .text(hint: "your city, for the weather")),
+        ("horoscope", .text(hint: "part of a horoscope feed's name, or off")),
+        ("units", .choice(["imperial", "metric"])),
+        ("headlines", .number(min: 0, max: 20, unit: "headlines")),
     ]
 
     /// Spoken forms for keys that don't read aloud well. Anything absent
@@ -378,6 +427,8 @@ enum CommandCompleter {
         "invertappslist": "choose which apps invert the display",
         "news": "open the newsboat news reader",
         "stock": "manage the stock watchlist",
+        "brief": "speak the daily brief now",
+        "segments": "choose what the daily brief includes",
         "pronunciation": "open the system pronunciation editor",
         "typing": "open the system typing feedback settings",
         "quit": "stop Marduk",
@@ -467,7 +518,9 @@ enum CommandCompleter {
     /// installed list; tests pass a fixture).
     static func candidates(for buffer: String, values: [String: String],
                            voices: [(name: String, identifier: String)] = [],
-                           apps: [(name: String, identifier: String)] = []) -> [Candidate] {
+                           apps: [(name: String, identifier: String)] = [],
+                           segments: [(name: String, identifier: String)] = [])
+        -> [Candidate] {
         var lowered = buffer.lowercased()
 
         // A `:config`-namespaced picker reuses the bare-picker completion
@@ -515,8 +568,13 @@ enum CommandCompleter {
         // Return/Tab/click accept a row; the completion carries the
         // identifier the daemon acts on.
         if ColonCommand.pickerCommands.contains(tokens[0]) {
-            return pickerRows(command: tokens[0], tokens: tokens,
-                              source: tokens[0] == "voices" ? voices : apps)
+            let source: [(name: String, identifier: String)]
+            switch tokens[0] {
+            case "voices": source = voices
+            case "segments": source = segments
+            default: source = apps
+            }
+            return pickerRows(command: tokens[0], tokens: tokens, source: source)
         }
 
         // "log" has one optional argument
@@ -565,6 +623,13 @@ enum CommandCompleter {
 
         // Stage 3: choosing a value
         let key = tokens[1]
+        // Free text spans any number of tokens, so it never has a
+        // "partial" to filter on — the row is a spoken prompt for what to
+        // type, and it stays up until Return.
+        if case .text(let hint)? = ColonCommand.kind(for: key), tokens.count >= 2 {
+            let current = values[key].map { " — now \($0)" } ?? ""
+            return [Candidate(display: "\(hint)\(current)", completion: nil)]
+        }
         let valuePartial: String? = {
             if tokens.count == 2 && trailingSpace { return "" }
             if tokens.count == 3 && !trailingSpace { return tokens[2] }
@@ -584,6 +649,8 @@ enum CommandCompleter {
                 .map { Candidate(display: $0, completion: "\(prefix) \(key) \($0)") }
         case .number(let min, let max, let unit):
             return [Candidate(display: "\(min) to \(max) \(unit)", completion: nil)]
+        case .text:
+            return []   // handled above — free text has no candidate list
         }
     }
 }

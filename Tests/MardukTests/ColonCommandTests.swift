@@ -409,6 +409,8 @@ final class ColonCommandTests: XCTestCase {
         "invertappslist — choose which apps invert the display",
         "news — open the newsboat news reader",
         "stock — manage the stock watchlist",
+        "brief — speak the daily brief now",
+        "segments — choose what the daily brief includes",
         "pronunciation — open the system pronunciation editor",
         "typing — open the system typing feedback settings",
         "quit — stop Marduk",

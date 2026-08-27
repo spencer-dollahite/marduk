@@ -511,48 +511,45 @@ final class NewsReader {
         })
     }
 
-    /// dd — delete the current article: mark it read, delete it, and purge
-    /// it out of the view, so it is gone from the screen and from the voice
-    /// and does not come back. The mirror drops the row and speaks where
-    /// you landed.
+    /// dd — delete the current article and purge it out of the view, so
+    /// it is gone from the screen and from the voice and does not come
+    /// back. TWO keys, both semantics read from newsboat's source
+    /// (2026-08-27) after two shipped guesses drifted in the field:
+    /// Shift+D marks the article READ itself (OP_DELETE calls
+    /// mark_article_read) — the old Shift+N was pure risk, a TOGGLE that
+    /// flipped the flag the wrong way whenever the mirror's unread guess
+    /// was stale — and advances the cursor one row except on the last;
+    /// `$` purges the row out of the view, restoring the cursor BY GUID,
+    /// which on a last-row delete finds nothing and falls to THE TOP.
+    /// The mirror lands wherever newsboat lands, and says so.
     private func deleteArticle() {
         guard let target = session.currentArticle,
-              session.deleteCurrentArticle() else { Earcon.error(); return }
+              let landing = session.deleteCurrentArticle() else {
+            Earcon.error()
+            return
+        }
         let feed = session.currentFeed?.url ?? ""
-        let wasUnread = target.unread
-        // THREE keys, because newsboat's D alone does neither of the things
-        // "delete this" means to a reader (field 2026-08-27: "I don't see it
-        // disappear… it just moves on to the next item").
-        //
-        // D flags the row deleted and advances the cursor, but LEAVES IT ON
-        // SCREEN, still carrying its unread N. That is not merely cosmetic:
-        // it is a desync source, because newsboat's visible list still holds
-        // a row the mirror has already dropped, so the very next k lands on
-        // the corpse in the TUI and on the article above it in the voice.
-        // `$` (purge-deleted) is what actually takes the row out of the
-        // view, and doing it here is what keeps the two lists the same
-        // length. N marks it read first — only when it IS unread, since the
-        // binding is a TOGGLE and would otherwise resurrect the flag on an
-        // article already read.
         // The ledger records what HAPPENED, not what was intended: its
         // writes ride inside the delivered closure, because a dropped key
-        // (Terminal wouldn't come forward, window mismatch) with a ledger
-        // entry already filed would hide an article newsboat still shows —
-        // a phantom the mirror could never shake until newsboat quit,
-        // which is the exact desync class the ledger exists to kill.
+        // with a ledger entry already filed would hide an article newsboat
+        // still shows — a phantom the mirror could never shake until
+        // newsboat quit, the exact desync class the ledger exists to kill.
         ensureTerminalFront { [self] in
-            if wasUnread { postKeys(45, true, 1) }  // Shift+N — mark read
-            postKeys(2, true, 1)                    // Shift+D — delete
-            postKeys(21, true, 1)                   // $ — purge-deleted
+            postKeys(2, true, 1)   // Shift+D — delete (marks read itself)
+            postKeys(21, true, 1)  // $ — purge-deleted
             // cache.db keeps `deleted = 0` and `unread = 1` until newsboat
             // quits, so the ledger carries both facts until then.
             ledger.markRead(target, feed: feed)
             ledger.markDeleted(target, feed: feed)
         }
-        fputs("[news] article deleted"
-            + (wasUnread ? " (was unread — marked read)" : "") + "\n", stderr)
+        fputs("[news] article deleted\n", stderr)
         if session.articles.isEmpty {
             goBack()
+        } else if landing == .top {
+            // newsboat is at row 0 now — say where we landed, because a
+            // silent jump to a different part of the list reads as the
+            // gesture misfiring.
+            announce("Top of the list. " + currentLine())
         } else {
             speakCurrent()
         }
@@ -685,7 +682,12 @@ final class NewsReader {
             closeOwnedWindow(window)
             return
         }
-        waitForExit(pid: pid, triesLeft: 16) { [self] exited in
+        // Generous: a quit landing mid-reload is answered only after
+        // newsboat JOINS its reload threads (source-verified), and a
+        // 41-feed refresh holds the process alive well past a polite
+        // wait — the field log's "newsboat wouldn't quit" was this, not
+        // a lost keystroke.
+        waitForExit(pid: pid, triesLeft: 60) { [self] exited in
             guard exited else {
                 fputs("[news] newsboat still running after q — "
                     + "ledger and window kept\n", stderr)

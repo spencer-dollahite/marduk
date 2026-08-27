@@ -98,23 +98,31 @@ final class NewsSessionTests: XCTestCase {
         XCTAssertEqual(session.articleIndex, 4)
     }
 
+    /// The landings mirror newsboat's SOURCE, not vim's taste: a middle
+    /// delete lands on the following item (OP_DELETE advances, the purge
+    /// restores by guid), a LAST-row delete lands at the TOP (the purge
+    /// stored the doomed row's own guid, found nothing, fell to
+    /// set_position(0)). The mirror modeling anything nicer is exactly
+    /// how six deletes drifted the whole session in the field.
     func testDeleteCurrentArticleMirrorsNewsboatsD() {
         var session = NewsSession()
         session.feeds = feeds(1)
         session.enterArticles(articles(3))
         _ = session.move(1)
-        // Deleting the middle row lands on the NEXT row (same index)
-        XCTAssertTrue(session.deleteCurrentArticle())
+        // Middle row → the NEXT row, same index
+        XCTAssertEqual(session.deleteCurrentArticle(), .next)
         XCTAssertEqual(session.articles.map(\.title), ["Article 0", "Article 2"])
         XCTAssertEqual(session.currentArticle?.title, "Article 2")
-        // Deleting the last row steps back instead of falling off
-        XCTAssertTrue(session.deleteCurrentArticle())
+        // Last row → newsboat jumps to the TOP, so the mirror does too
+        XCTAssertEqual(session.deleteCurrentArticle(), .top)
+        XCTAssertEqual(session.articleIndex, 0)
         XCTAssertEqual(session.currentArticle?.title, "Article 0")
-        XCTAssertTrue(session.deleteCurrentArticle())
-        XCTAssertFalse(session.deleteCurrentArticle())  // empty — nothing left
+        // Emptying the list has no top to land on — the reader backs out
+        XCTAssertEqual(session.deleteCurrentArticle(), .next)
+        XCTAssertNil(session.deleteCurrentArticle())  // empty — nothing left
         // Feed level never deletes
         session.backToFeeds()
-        XCTAssertFalse(session.deleteCurrentArticle())
+        XCTAssertNil(session.deleteCurrentArticle())
     }
 
     func testMarkCurrentArticleRead() {

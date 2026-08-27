@@ -110,17 +110,31 @@ struct NewsSession: Equatable {
         level = .feeds
     }
 
-    /// Remove the current article from the mirror. The reader pairs the
-    /// delete with a purge so newsboat's view drops the row too — D alone
-    /// leaves it on screen, which is how the two lists used to end up
-    /// different lengths. The cursor lands on the next row, same index.
-    /// False = nothing to delete.
-    mutating func deleteCurrentArticle() -> Bool {
+    /// Where newsboat's cursor lands after a delete+purge — read out of
+    /// newsboat's SOURCE (itemlistformaction.cpp, 2026-08-27), not
+    /// guessed, after two shipped guesses drifted in the field:
+    /// OP_DELETE advances the cursor one row EXCEPT on the last row
+    /// (`if (itempos < visible_items.size() - 1)`), and OP_PURGE_DELETED
+    /// remembers the selected row BY GUID and restores onto it — so a
+    /// non-last delete lands on the following item at the same index,
+    /// while a LAST-row delete stores the doomed row's own guid and the
+    /// restore, finding nothing, falls to `set_position(0)`: THE TOP.
+    enum DeleteLanding: Equatable {
+        case next  // same index — the item that followed
+        case top   // newsboat jumped to row 0; the mirror must follow
+    }
+
+    /// Remove the current article from the mirror, landing where NEWSBOAT
+    /// lands. Nil = nothing to delete.
+    mutating func deleteCurrentArticle() -> DeleteLanding? {
         guard level == .articles,
-              articles.indices.contains(articleIndex) else { return false }
+              articles.indices.contains(articleIndex) else { return nil }
+        let wasLast = articleIndex == articles.count - 1
         articles.remove(at: articleIndex)
-        if articleIndex >= articles.count, articleIndex > 0 { articleIndex -= 1 }
-        return true
+        guard wasLast else { return .next }
+        articleIndex = 0
+        // An emptied list has no top to land on — the reader backs out.
+        return articles.isEmpty ? .next : .top
     }
 
     /// Mark the current article read in the mirror (newsboat marks its own

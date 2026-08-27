@@ -32,6 +32,19 @@ final class DriftGuardTests: XCTestCase {
         }
     }
 
+    /// The palette speaks "name — what it does" on every arrow press. A
+    /// command with no blurb shows and says its bare name, which tells an
+    /// audio-only user nothing — and that shipped once, caught only
+    /// because another test happened to pin the whole list.
+    func testEveryCommandHasAPaletteDescription() {
+        let rows = CommandCompleter.candidates(for: "", values: [:])
+        for name in ColonCommand.commandNames {
+            XCTAssertTrue(rows.contains { $0.display.hasPrefix(name + " — ") },
+                          "':\(name)' has no palette description — it would "
+                          + "speak as a bare name with no hint what it does")
+        }
+    }
+
     /// Same for settings: a new `:config` key that is never spoken may as
     /// well not ship.
     func testEverySettingAppearsInTheSpokenReference() {

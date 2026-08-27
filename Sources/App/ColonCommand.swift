@@ -435,6 +435,7 @@ enum CommandCompleter {
         "segments": "choose what the daily brief includes",
         "pronunciation": "open the system pronunciation editor",
         "typing": "open the system typing feedback settings",
+        "karabiner": "apply your own Karabiner rules",
         "quit": "stop Marduk",
         "restart": "restart the daemon",
         "update": "install updates now",

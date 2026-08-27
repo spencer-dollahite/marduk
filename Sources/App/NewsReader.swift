@@ -1050,13 +1050,26 @@ final class NewsReader {
     private func ensureNewsWindowFront(_ action: @escaping () -> Void,
                                        cached: Bool,
                                        orFail: (() -> Void)?) {
-        if cached, windowVerified, terminalWindowID != nil,
-           Date().timeIntervalSince(windowCheckedAt) < Self.windowRecheckInterval {
-            action()
-            return
-        }
+        // ORDER IS PART OF THE CONTRACT, and it used to be luck. The cached
+        // arrow path acted INLINE while an uncached key — every destructive
+        // one — was still waiting on its osascript, so `d` then a quick `j`
+        // reached newsboat as `j` then `d`: the cursor moved first and the
+        // delete landed on the NEXT article. Field 2026-08-27, and the
+        // three-key delete made it worse than a mis-aimed delete, because
+        // the mark-read rode along: "it still marked it as read and removed
+        // the N… I wanted to save it for later."
+        //
+        // So EVERY post now goes through the same serial queue in the order
+        // it was asked for. `cached` no longer means "act now", it means
+        // "skip the osascript" — which is all it was ever for (autorepeat
+        // glides must not spawn one per repeat). The cost is a queue hop.
+        //
+        // The decision is taken HERE, on main, because the cache fields
+        // live on main; only the round trip belongs on the queue.
+        let reuse = cached && windowVerified && terminalWindowID != nil
+            && Date().timeIntervalSince(windowCheckedAt) < Self.windowRecheckInterval
         windowQueue.async { [self] in
-            let front = frontTerminalWindowID()
+            let front = reuse ? nil : frontTerminalWindowID()
             DispatchQueue.main.async { [self] in
                 guard active || entering else { return }
                 // Nothing is adopted here. Newsboat's window is IDENTIFIED
@@ -1072,8 +1085,10 @@ final class NewsReader {
                     standDownOffWindow()
                     return
                 }
-                windowCheckedAt = Date()
-                windowVerified = (front == ours)
+                if !reuse {
+                    windowCheckedAt = Date()
+                    windowVerified = (front == ours)
+                }
                 guard windowVerified else {
                     fputs("[news] front Terminal window isn't newsboat's — "
                         + "key dropped, standing down\n", stderr)

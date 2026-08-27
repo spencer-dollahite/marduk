@@ -138,6 +138,9 @@ enum HelpText {
         speaks every entry you add there the way you taught it. \
         typing, open the system typing feedback settings — macOS can \
         speak every key and word as you type, in every app. \
+        karabiner, apply your own Karabiner rules — if they live in a \
+        repository Marduk pulls the newest ones first, then restarts \
+        Karabiner so they take effect straight away. \
         quit. restart. update, install \
         updates now. uninstall, remove the launch agent. log, open the log \
         file. log copy, copy recent log lines to the clipboard. \

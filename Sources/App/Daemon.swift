@@ -1589,6 +1589,8 @@ final class DaemonServer {
             let encoded = setup.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
             openURL("https://github.com/spencer-dollahite/marduk/issues/new"
                 + "?template=bug_report.yml&setup=\(encoded)")
+        case .karabiner:
+            syncKarabinerRules()
         case .security:
             // Security reports go to email, never public issues — say the
             // address aloud too, in case no mail client is configured
@@ -2173,7 +2175,8 @@ final class DaemonServer {
     /// user's config, is what the tests pin down). Nil = leave the file
     /// alone (no profiles / no usable source).
     static func rewriteKarabinerConfig(_ input: [String: Any], key: String,
-                                       vendorId: Int, productId: Int?)
+                                       vendorId: Int, productId: Int?,
+                                       userRules: [KarabinerRules.Entry] = [])
         -> (root: [String: Any], userProfile: String?)? {
         var root = input
         guard var profiles = root["profiles"] as? [[String: Any]],
@@ -2204,6 +2207,10 @@ final class DaemonServer {
             let d = ($0["description"] as? String) ?? ""
             return d.hasPrefix("Marduk read button") || d.hasPrefix("Marduk panic chord")
         }
+        // The user's own rules ride in under the same strip-and-reinsert
+        // contract as ours, so a rule deleted from rules.json leaves here.
+        rules = KarabinerRules.merge(into: rules, entries: userRules,
+                                     target: .marduk)
         rules.insert(panicRule(), at: 0)
         rules.insert(readButtonRule(key: key, vendorId: vendorId,
                                     productId: productId), at: 0)
@@ -2215,11 +2222,149 @@ final class DaemonServer {
         } else {
             profiles.append(marduk)
         }
+
+        // THE ONE PLACE MARDUK WRITES INTO A PROFILE IT DOES NOT OWN.
+        // Rules targeting `.user` exist so a binding can survive Marduk
+        // being stopped, which is only possible in the profile the user
+        // falls back to. It stays narrow by construction: only TAGGED
+        // rules are added or removed, so every other rule in that profile
+        // — and the profile itself when the user has no such rules —
+        // comes through byte-identical. Nothing to add and nothing stale
+        // to remove means the profile is not touched at all.
+        let forUser = userRules.filter { $0.targets.contains(.user) }
+        if let name = userProfile,
+           let index = profiles.firstIndex(where: { ($0["name"] as? String) == name }) {
+            var profile = profiles[index]
+            var cm = profile["complex_modifications"] as? [String: Any] ?? [:]
+            let existing = cm["rules"] as? [[String: Any]] ?? []
+            let stale = existing.count != KarabinerRules.strip(existing).count
+            if !forUser.isEmpty || stale {
+                cm["rules"] = KarabinerRules.merge(into: existing,
+                                                   entries: userRules,
+                                                   target: .user)
+                profile["complex_modifications"] = cm
+                profiles[index] = profile
+            }
+        }
+
         root["profiles"] = profiles
         return (root, userProfile)
     }
 
-    private func activateKarabinerProfile() {
+    /// The user's own rules, versioned OUTSIDE this repo. A clone of a
+    /// private repo is the intended shape (the marduk-news pattern) but a
+    /// plain hand-edited file works identically — `.git` is what decides
+    /// whether `:karabiner` pulls first, nothing else.
+    static var karabinerRulesDir: String {
+        NSHomeDirectory() + "/.config/marduk/ke"
+    }
+    static var karabinerRulesPath: String { karabinerRulesDir + "/rules.json" }
+
+    /// Absent file = zero rules = exactly the behaviour before this
+    /// existed. Counts only in the log: a rule description is written by
+    /// the user and the log is designed to be pasted into public issues.
+    private func loadKarabinerRules() -> [KarabinerRules.Entry] {
+        guard let data = FileManager.default.contents(
+                  atPath: Self.karabinerRulesPath) else { return [] }
+        let entries = KarabinerRules.parse(data)
+        let mine = entries.filter { $0.targets.contains(.marduk) }.count
+        let theirs = entries.filter { $0.targets.contains(.user) }.count
+        fputs("[marduk] karabiner rules: \(entries.count) "
+            + "(\(mine) Marduk profile, \(theirs) user profile)\n", stderr)
+        return entries
+    }
+
+    /// `:karabiner` — pull the rules repo if there is one, then re-apply.
+    /// The pull is DELIBERATELY absent from startup: booting the daemon
+    /// must never wait on a network, and the local file is already the
+    /// truth for everything except a change made on another machine.
+    func syncKarabinerRules() {
+        let dir = Self.karabinerRulesDir
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: Self.karabinerRulesPath) else {
+            Earcon.error()
+            speech.announce("No Karabiner rules to apply. Put a rules file "
+                + "in the k e folder inside your Marduk config directory.")
+            return
+        }
+        // Only when `.git` exists: /usr/bin/git without the command line
+        // tools pops a GUI dialog, which an audio-first user cannot see.
+        guard fm.fileExists(atPath: dir + "/.git") else {
+            applyKarabinerRules(pull: .notARepo)
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let git = Process()
+            git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            git.arguments = ["-C", dir, "pull", "--ff-only"]
+            git.standardOutput = FileHandle.nullDevice
+            git.standardError = FileHandle.nullDevice
+            // A private remote over https will ASK for credentials, and a
+            // prompt nobody can see is a hang. Refuse to prompt instead —
+            // an unauthenticated pull then fails fast and says so, and the
+            // local rules still apply. (SSH remotes with a loaded agent,
+            // or a stored credential helper, are unaffected.)
+            var env = ProcessInfo.processInfo.environment
+            env["GIT_TERMINAL_PROMPT"] = "0"
+            env["GIT_ASKPASS"] = "/usr/bin/true"
+            git.environment = env
+            var pull = KarabinerPull.failed
+            do {
+                try git.run()
+                // Kill-on-timeout, the osascript watchdog shape: a hung
+                // credential prompt must not wedge the rules forever.
+                let deadline = DispatchTime.now() + .seconds(25)
+                let done = DispatchSemaphore(value: 0)
+                DispatchQueue.global().async { git.waitUntilExit(); done.signal() }
+                if done.wait(timeout: deadline) == .timedOut {
+                    git.terminate()
+                    fputs("[marduk] karabiner rules pull timed out\n", stderr)
+                } else if git.terminationStatus == 0 {
+                    pull = .updated
+                } else {
+                    fputs("[marduk] karabiner rules pull failed "
+                        + "(exit \(git.terminationStatus))\n", stderr)
+                }
+            } catch {
+                fputs("[marduk] karabiner rules pull could not run\n", stderr)
+            }
+            DispatchQueue.main.async { [self] in
+                applyKarabinerRules(pull: pull)
+            }
+        }
+    }
+
+    enum KarabinerPull {
+        case notARepo
+        case updated
+        case failed
+    }
+
+    /// A failed pull still applies what is on disk — the local rules are
+    /// the user's rules, and refusing to act on them because a network was
+    /// down would be the wrong trade. It SAYS SO, though: silently serving
+    /// yesterday's rules is how a user concludes the feature is broken.
+    private func applyKarabinerRules(pull: KarabinerPull) {
+        let entries = loadKarabinerRules()
+        activateKarabinerProfile(forceReload: true)
+        guard !entries.isEmpty else {
+            Earcon.error()
+            speech.announce("No usable Karabiner rules in the file.")
+            return
+        }
+        switch pull {
+        case .notARepo:
+            speech.announce("Karabiner rules applied.")
+        case .updated:
+            speech.announce("Karabiner rules updated and applied.")
+        case .failed:
+            Earcon.error()
+            speech.announce("Couldn't fetch the newest rules. Applied the "
+                + "ones already here.")
+        }
+    }
+
+    private func activateKarabinerProfile(forceReload: Bool = false) {
         let fm = FileManager.default
         guard fm.fileExists(atPath: Self.karabinerConfigPath) else { return }
         guard let data = fm.contents(atPath: Self.karabinerConfigPath),
@@ -2231,7 +2376,8 @@ final class DaemonServer {
                   parsed,
                   key: config.keyboard?.karabinerReadKey ?? "equal_sign",
                   vendorId: config.keyboard?.karabinerReadVendorId ?? 5426,
-                  productId: config.keyboard?.karabinerReadProductId) else { return }
+                  productId: config.keyboard?.karabinerReadProductId,
+                  userRules: loadKarabinerRules()) else { return }
         karabinerUserProfile = userProfile
 
         do {
@@ -2248,6 +2394,21 @@ final class DaemonServer {
         fputs("[marduk] Karabiner profile ready (user profile: "
             + "\"\(karabinerUserProfile ?? "?")\")\n", stderr)
         Self.karabinerCLI("--select-profile", "Marduk")
+        // Selecting a profile reliably re-reads it; changing the CONTENT of
+        // a profile that is ALREADY selected does not always take — the
+        // running instance keeps posting stale events with a correct file
+        // on disk (field, July 2026). Restarting the console user server
+        // (it relaunches itself) is the only dependable nudge, so the
+        // explicit :karabiner path always pays for it. Startup does not:
+        // the select above is a real profile change there.
+        if forceReload {
+            let killall = Process()
+            killall.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+            killall.arguments = ["karabiner_console_user_server"]
+            killall.standardError = FileHandle.nullDevice
+            try? killall.run()
+            fputs("[marduk] karabiner console user server restarted\n", stderr)
+        }
         if let name = karabinerUserProfile {
             Self.armCrashRestore(userProfile: name)
         }

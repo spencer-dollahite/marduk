@@ -15,6 +15,7 @@ enum ColonCommand: Equatable {
     case segments
     case pronunciation
     case typing
+    case karabiner
     case quit
     case restart
     case update
@@ -30,7 +31,8 @@ enum ColonCommand: Equatable {
     static let commandNames = ["help", "commands", "tutorial", "tip", "config",
                                "voices", "invertappslist", "news", "stock",
                                "brief", "segments",
-                               "pronunciation", "typing", "quit", "restart",
+                               "pronunciation", "typing", "karabiner",
+                               "quit", "restart",
                                "update", "uninstall", "log", "feedback", "bug",
                                "security"]
 
@@ -152,6 +154,8 @@ enum ColonCommand: Equatable {
             return .pronunciation
         case "typing":
             return .typing
+        case "karabiner":
+            return .karabiner
         case "quit":
             return .quit
         case "restart":

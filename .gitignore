@@ -49,3 +49,6 @@ Marduk.app/
 Marduk.app.new/
 Marduk.app.old/
 notes/
+
+# Personal Karabiner config — belongs in the private rules repo, not here
+ke/

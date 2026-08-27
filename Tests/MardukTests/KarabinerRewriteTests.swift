@@ -125,4 +125,92 @@ final class KarabinerRewriteTests: XCTestCase {
             XCTAssertFalse(conditions.contains { ($0["type"] as? String) == "device_if" })
         }
     }
+
+    // MARK: - The user's own rules (per-rule profile targeting)
+
+    private func userRule(_ description: String,
+                          profiles: [String]) -> [String: Any] {
+        ["profiles": profiles,
+         "rule": ["description": description,
+                  "manipulators": [["type": "basic",
+                                    "from": ["key_code": "f"],
+                                    "to": [["shell_command": "open -a FaceTime"]]]]]]
+    }
+
+    private func entries(_ items: [[String: Any]]) -> [KarabinerRules.Entry] {
+        KarabinerRules.parse(try! JSONSerialization.data(withJSONObject: items))
+    }
+
+    private func rewrite(_ profiles: [[String: Any]],
+                         userRules: [KarabinerRules.Entry])
+        -> (root: [String: Any], userProfile: String?)? {
+        DaemonServer.rewriteKarabinerConfig(["profiles": profiles],
+                                            key: "equal_sign",
+                                            vendorId: 5426, productId: nil,
+                                            userRules: userRules)
+    }
+
+    private func named(_ root: [String: Any], _ name: String) -> [String: Any]? {
+        profiles(of: root).first { ($0["name"] as? String) == name }
+    }
+
+    private func descriptions(_ profile: [String: Any]?) -> [String] {
+        rules(of: profile ?? [:]).compactMap { $0["description"] as? String }
+    }
+
+    /// The default target is Marduk's own profile, and a rule that lands
+    /// there must leave the user's profile completely alone.
+    func testMardukTargetedRuleNeverTouchesTheUserProfile() {
+        let existing = ["description": "Zoom In", "manipulators": [["type": "basic"]]]
+            as [String: Any]
+        let result = rewrite([profile("Default", selected: true, rules: [existing]),
+                              profile("Marduk")],
+                             userRules: entries([userRule("FaceTime",
+                                                          profiles: ["marduk"])]))
+        XCTAssertTrue(descriptions(named(result!.root, "Marduk"))
+            .contains(KarabinerRules.tagPrefix + "FaceTime"))
+        XCTAssertEqual(descriptions(named(result!.root, "Default")), ["Zoom In"])
+    }
+
+    /// "Sometimes I want both" — the user's ruling, so one entry can name
+    /// both profiles and appear in each.
+    func testBothTargetsLandInBothProfiles() {
+        let result = rewrite([profile("Default", selected: true),
+                              profile("Marduk")],
+                             userRules: entries([userRule("FaceTime",
+                                                 profiles: ["marduk", "user"])]))
+        let tagged = KarabinerRules.tagPrefix + "FaceTime"
+        XCTAssertTrue(descriptions(named(result!.root, "Marduk")).contains(tagged))
+        XCTAssertTrue(descriptions(named(result!.root, "Default")).contains(tagged))
+    }
+
+    /// Reversibility is the whole point of tagging: dropping a rule from
+    /// rules.json has to remove it from the user's own profile too, or
+    /// Marduk can add bindings there but never take them back.
+    func testDeletedRuleLeavesTheUserProfile() {
+        let applied = rewrite([profile("Default", selected: true),
+                               profile("Marduk")],
+                              userRules: entries([userRule("FaceTime",
+                                                  profiles: ["user"])]))!
+        let after = rewrite(profiles(of: applied.root), userRules: [])!
+        XCTAssertEqual(descriptions(named(after.root, "Default")), [])
+    }
+
+    /// A user with no rules at all must get a profile back untouched —
+    /// not one newly furnished with an empty complex_modifications block.
+    func testUserProfileIsUntouchedWhenThereIsNothingToDo() {
+        let plain: [String: Any] = ["name": "Default", "selected": true]
+        let result = rewrite([plain], userRules: [])
+        XCTAssertNil(named(result!.root, "Default")?["complex_modifications"])
+    }
+
+    /// Marduk's own rules stay first, ahead of anything the user carries.
+    func testOurOwnRulesStayOnTop() {
+        let result = rewrite([profile("Default", selected: true)],
+                             userRules: entries([userRule("FaceTime",
+                                                          profiles: ["marduk"])]))
+        let ours = descriptions(named(result!.root, "Marduk")).prefix(2)
+        XCTAssertTrue(ours.allSatisfy { $0.hasPrefix("Marduk read button")
+                                     || $0.hasPrefix("Marduk panic chord") })
+    }
 }

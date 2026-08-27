@@ -110,9 +110,11 @@ struct NewsSession: Equatable {
         level = .feeds
     }
 
-    /// Remove the current article from the mirror (dd → newsboat's D
-    /// filters it out of its list immediately; the cursor lands on the
-    /// next row, which is the same index). False = nothing to delete.
+    /// Remove the current article from the mirror. The reader pairs the
+    /// delete with a purge so newsboat's view drops the row too — D alone
+    /// leaves it on screen, which is how the two lists used to end up
+    /// different lengths. The cursor lands on the next row, same index.
+    /// False = nothing to delete.
     mutating func deleteCurrentArticle() -> Bool {
         guard level == .articles,
               articles.indices.contains(articleIndex) else { return false }

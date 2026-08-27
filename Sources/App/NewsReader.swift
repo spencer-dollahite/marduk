@@ -488,20 +488,40 @@ final class NewsReader {
         announce("All feeds read.")
     }
 
-    /// dd — delete the current article (newsboat's D). The article
-    /// vanishes from newsboat's list in place, cursor on the next row —
-    /// the mirror does the same and speaks where you landed.
+    /// dd — delete the current article: mark it read, delete it, and purge
+    /// it out of the view, so it is gone from the screen and from the voice
+    /// and does not come back. The mirror drops the row and speaks where
+    /// you landed.
     private func deleteArticle() {
-        let deleted = session.currentArticle
-        guard session.deleteCurrentArticle() else { Earcon.error(); return }
-        ensureTerminalFront { [self] in postKeys(2, true, 1) }  // Shift+D
-        // newsboat filters it out of ITS list at once, but the row keeps
-        // `deleted = 0` in cache.db until it quits — without this the item
-        // returns on the next entry and every move is off by one more.
-        if let deleted {
-            ledger.markDeleted(deleted, feed: session.currentFeed?.url ?? "")
+        guard let target = session.currentArticle,
+              session.deleteCurrentArticle() else { Earcon.error(); return }
+        let feed = session.currentFeed?.url ?? ""
+        let wasUnread = target.unread
+        // THREE keys, because newsboat's D alone does neither of the things
+        // "delete this" means to a reader (field 2026-08-27: "I don't see it
+        // disappear… it just moves on to the next item").
+        //
+        // D flags the row deleted and advances the cursor, but LEAVES IT ON
+        // SCREEN, still carrying its unread N. That is not merely cosmetic:
+        // it is a desync source, because newsboat's visible list still holds
+        // a row the mirror has already dropped, so the very next k lands on
+        // the corpse in the TUI and on the article above it in the voice.
+        // `$` (purge-deleted) is what actually takes the row out of the
+        // view, and doing it here is what keeps the two lists the same
+        // length. N marks it read first — only when it IS unread, since the
+        // binding is a TOGGLE and would otherwise resurrect the flag on an
+        // article already read.
+        ensureTerminalFront { [self] in
+            if wasUnread { postKeys(45, true, 1) }  // Shift+N — mark read
+            postKeys(2, true, 1)                    // Shift+D — delete
+            postKeys(21, true, 1)                   // $ — purge-deleted
         }
-        fputs("[news] article deleted\n", stderr)
+        // cache.db keeps `deleted = 0` and `unread = 1` until newsboat
+        // quits, so the ledger carries both facts until then.
+        ledger.markRead(target, feed: feed)
+        ledger.markDeleted(target, feed: feed)
+        fputs("[news] article deleted"
+            + (wasUnread ? " (was unread — marked read)" : "") + "\n", stderr)
         if session.articles.isEmpty {
             goBack()
         } else {

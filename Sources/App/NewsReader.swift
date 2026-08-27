@@ -68,10 +68,14 @@ final class NewsReader {
     // on the attach path, and nil means "refuse to post", never "any
     // window will do".
     private var terminalWindowID: Int?
-    /// Did MARDUK create this Terminal window? Only then may Marduk close
-    /// it (the ownership doctrine: "running" is not "we started it"). An
-    /// attached newsboat is sitting in a window the user opened.
-    private var ownsTerminalWindow = false
+    /// The window `do script` created THIS session — the only window
+    /// Marduk may ever close (the ownership doctrine: "running" is not
+    /// "we started it"). Kept SEPARATE from `terminalWindowID` because
+    /// the arm-time raise re-aims that at whatever window is running
+    /// newsboat — a user's own instance included — and ownership must
+    /// not travel with the re-aim: close only when the aim still equals
+    /// the window Marduk launched.
+    private var launchedWindowID: Int?
     /// What we have caused that cache.db has not caught up with.
     private var ledger = NewsSession.Ledger()
     private var windowVerified = false
@@ -82,6 +86,9 @@ final class NewsReader {
     /// an osascript per repeat.
     private static let windowRecheckInterval: TimeInterval = 1.0
     private let windowQueue = DispatchQueue(label: "com.marduk.news.window")
+    /// The osascript round trips ride here, OFF the FIFO spine: a parked
+    /// windowQueue job waits on work that must not queue behind itself.
+    private let scriptQueue = DispatchQueue(label: "com.marduk.news.script")
 
     func configure(_ config: MardukConfig.NewsConfig?) {
         newsConfig = config
@@ -241,7 +248,7 @@ final class NewsReader {
         guard let env else { entering = false; return }
         fputs("[news] loading (\(attached ? "attach" : "launch"))"
             + " — \(feeds.count) feeds\n", stderr)
-        ownsTerminalWindow = false
+        launchedWindowID = nil
         // A NEW newsboat loads its state from cache.db, so at this instant
         // the file and the TUI agree and everything we recorded about the
         // old one is void. An ATTACH is the opposite: that process still
@@ -481,11 +488,27 @@ final class NewsReader {
     /// blind.
     private func markAllRead() {
         guard session.level == .feeds else { Earcon.error(); return }
-        ensureTerminalFront { [self] in postKeys(8, true, 1) }  // Shift+C
-        unread = [:]
-        lastCountRefresh = Date()  // the db lags newsboat's write — don't
-                                   // requery a stale count right away
-        announce("All feeds read.")
+        ensureTerminalFront({ [self] in
+            postKeys(8, true, 1)  // Shift+C
+            // Every currently-unread item goes into the ledger — C writes
+            // newsboat's MEMORY, and cache.db keeps saying unread until it
+            // quits, so without this the very next forced count refresh
+            // (goBack, reclaim) resurrected every count in the voice while
+            // the TUI showed zero, and goto-first-unread aimed feed entry
+            // at rows newsboat had already marked. Delivery-gated like
+            // every other ledger write.
+            for item in db?.unreadItems() ?? [] {
+                ledger.markRead(NewsSession.Article(
+                    id: item.id, title: "", url: "", unread: true),
+                    feed: item.feed)
+            }
+            unread = [:]
+            lastCountRefresh = Date()
+            announce("All feeds read.")
+        }, orFail: { [self] in
+            Earcon.error()
+            announce("Couldn't reach newsboat.")
+        })
     }
 
     /// dd — delete the current article: mark it read, delete it, and purge
@@ -511,15 +534,21 @@ final class NewsReader {
         // length. N marks it read first — only when it IS unread, since the
         // binding is a TOGGLE and would otherwise resurrect the flag on an
         // article already read.
+        // The ledger records what HAPPENED, not what was intended: its
+        // writes ride inside the delivered closure, because a dropped key
+        // (Terminal wouldn't come forward, window mismatch) with a ledger
+        // entry already filed would hide an article newsboat still shows —
+        // a phantom the mirror could never shake until newsboat quit,
+        // which is the exact desync class the ledger exists to kill.
         ensureTerminalFront { [self] in
             if wasUnread { postKeys(45, true, 1) }  // Shift+N — mark read
             postKeys(2, true, 1)                    // Shift+D — delete
             postKeys(21, true, 1)                   // $ — purge-deleted
+            // cache.db keeps `deleted = 0` and `unread = 1` until newsboat
+            // quits, so the ledger carries both facts until then.
+            ledger.markRead(target, feed: feed)
+            ledger.markDeleted(target, feed: feed)
         }
-        // cache.db keeps `deleted = 0` and `unread = 1` until newsboat
-        // quits, so the ledger carries both facts until then.
-        ledger.markRead(target, feed: feed)
-        ledger.markDeleted(target, feed: feed)
         fputs("[news] article deleted"
             + (wasUnread ? " (was unread — marked read)" : "") + "\n", stderr)
         if session.articles.isEmpty {
@@ -606,33 +635,72 @@ final class NewsReader {
             speakCurrent()
         case .feeds:
             // q from the feed list quits newsboat itself — mirror that,
-            // hand the keyboard back, and say so.
+            // hand the keyboard back, and say so. ORDER IS EVERYTHING
+            // here, and the first shipping of this got it wrong twice
+            // over (field 2026-08-27, the "sheet in Terminal" log line):
+            // deactivate() ran synchronously while the q was still in
+            // the delivery queue, so the queued continuation failed its
+            // own `guard active` and the q was NEVER POSTED — and the
+            // 0.8s close timer then told Terminal to close a window
+            // whose newsboat was still running, raising the "terminate
+            // running processes?" sheet, killing newsboat without its
+            // cache.db flush, after ledger.forget() had already
+            // discarded the only other record of the session's reads
+            // and deletes.
             //
-            // Quitting newsboat does NOT close the window it was running
-            // in: `do script` runs the command in a shell, so the shell
-            // outlives it and Terminal is left showing a prompt the user
-            // has to find and close by hand. Marduk opened that window, so
-            // Marduk closes it — but ONLY that one, and only when Marduk
-            // opened it. Attaching means the window is the user's, and
-            // theirs stays exactly where it was.
-            let window = ownsTerminalWindow ? terminalWindowID : nil
-            ensureTerminalFront { [self] in postKeys(12, false, 1) }
-            // newsboat flushes cache.db on the way out — let it finish
-            // before the window (and its shell) go away.
-            if let window {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
-                    windowQueue.async {
-                        _ = Self.runWindowScript(Self.closeScript(id: window))
-                        fputs("[news] closed newsboat's Terminal window\n",
-                              stderr)
-                    }
-                }
-            }
-            // newsboat is going away, so cache.db is about to become the
-            // whole truth again.
+            // So: capture state, DELIVER the q, and only then tear down
+            // — with everything downstream of the quit waiting on the
+            // PID actually dying, not on a hopeful delay, because the
+            // flush is what makes forgetting the ledger legal.
+            let window = terminalWindowID != nil
+                && terminalWindowID == launchedWindowID
+                ? terminalWindowID : nil
+            let pid = NewsboatLocator.runningPID(
+                cachePath: env?.cacheFile ?? "")
+            ensureTerminalFront({ [self] in
+                postKeys(12, false, 1)  // q — newsboat quits and flushes
+                finishQuit(window: window, pid: pid)
+            }, orFail: { [self] in
+                // The q never reached newsboat: it is still running, its
+                // state unflushed — keep the ledger, leave the window.
+                deactivate(quiet: true)
+                announce("News closed.")
+            })
+        }
+    }
+
+    /// The back half of quitting: tear the mirror down, then wait for
+    /// newsboat's PID to actually exit before forgetting the ledger
+    /// (the quit flush is what writes our recorded reads and deletes
+    /// into cache.db) and before closing the window Marduk launched
+    /// (closing it any earlier raises Terminal's terminate-processes
+    /// sheet). A newsboat that will not die keeps both: an honest
+    /// leftover window beats a killed flush.
+    private func finishQuit(window: Int?, pid: Int32?) {
+        deactivate(quiet: true)
+        announce("News closed.")
+        guard let pid else {
+            // Nothing was running — nothing to wait on, nothing unflushed.
             ledger.forget()
-            deactivate(quiet: true)
-            announce("News closed.")
+            closeOwnedWindow(window)
+            return
+        }
+        waitForExit(pid: pid, triesLeft: 16) { [self] exited in
+            guard exited else {
+                fputs("[news] newsboat still running after q — "
+                    + "ledger and window kept\n", stderr)
+                return
+            }
+            ledger.forget()
+            closeOwnedWindow(window)
+        }
+    }
+
+    private func closeOwnedWindow(_ window: Int?) {
+        guard let window else { return }
+        windowQueue.async {
+            _ = Self.runWindowScript(Self.closeScript(id: window))
+            fputs("[news] closed newsboat's Terminal window\n", stderr)
         }
     }
 
@@ -648,10 +716,16 @@ final class NewsReader {
             return
         }
         // Enter opens newsboat's pager — newsboat marks the article read
-        ensureTerminalFront { [self] in postKeys(36, false, 1) }
-        // Record it BEFORE the mirror clears the flag — the ledger needs to
-        // know whether this article was one of the feed's unread ones.
-        ledger.markRead(article, feed: session.currentFeed?.url ?? "")
+        // The pager Enter marks it read in NEWSBOAT — so the ledger entry
+        // rides the delivered key, never the intent (a dropped Enter with
+        // the entry already filed would desync the mirror durably). The
+        // article value is captured before the mirror clears its flag, so
+        // the ledger still learns whether it was one of the unread.
+        let feed = session.currentFeed?.url ?? ""
+        ensureTerminalFront { [self] in
+            postKeys(36, false, 1)
+            ledger.markRead(article, feed: feed)
+        }
         session.markCurrentArticleRead()
         readInFlight = true
         showKeyBar(Self.readingKeyBar)
@@ -676,7 +750,11 @@ final class NewsReader {
         // EMBEDS a video must still open the article.
         if !article.url.isEmpty {
             fputs("[news] opening the item's link\n", stderr)
-            ensureTerminalFront { [self] in postKeys(31, false, 1) }  // o
+            let feed = session.currentFeed?.url ?? ""
+            ensureTerminalFront { [self] in
+                postKeys(31, false, 1)  // o — opens AND marks read
+                ledger.markRead(article, feed: feed)
+            }
             session.markCurrentArticleRead()
             announce("Opening in the browser.")
             return
@@ -724,7 +802,7 @@ final class NewsReader {
         // one, and a stale id would either refuse every key or — worse —
         // aim at a window Terminal has since given to something else.
         terminalWindowID = nil
-        ownsTerminalWindow = false
+        launchedWindowID = nil
         windowVerified = false
         windowCheckedAt = .distantPast
         fputs("[news] closed\n", stderr)
@@ -1029,6 +1107,39 @@ final class NewsReader {
     private func ensureTerminalFront(_ action: @escaping () -> Void,
                                      cached: Bool = false,
                                      orFail: (() -> Void)? = nil) {
+        // The FIFO covers the ACTIVATION branch too. The first ordering
+        // fix serialized only the window check, so a key parked 0.35s
+        // waiting for Terminal to come forward was still overtaken by a
+        // later key that found Terminal already front — the same j-beats-d
+        // reorder through the branch the fix didn't route (review finding,
+        // 2026-08-27; the frontmost cache is documented to flap). Every
+        // call now takes a windowQueue slot IN CALL ORDER and holds it
+        // until its whole delivery resolves — activation wait, window
+        // check, action — so nothing asked later can land earlier. The
+        // wait is bounded well above the worst honest path (0.35s
+        // activation + a watchdogged osascript), because a lost signal
+        // must strand one key, never the queue.
+        windowQueue.async { [self] in
+            let done = DispatchSemaphore(value: 0)
+            DispatchQueue.main.async { [self] in
+                deliverToTerminal(action, cached: cached, orFail: orFail) {
+                    done.signal()
+                }
+            }
+            if done.wait(timeout: .now() + 8) == .timedOut {
+                fputs("[news] delivery timed out — releasing the key "
+                    + "queue\n", stderr)
+            }
+        }
+    }
+
+    /// The main-queue half of a delivery: frontmost check (with one
+    /// activate-and-retry), then the window check, then the action.
+    /// `completion` fires at EVERY exit — it is what releases the FIFO.
+    private func deliverToTerminal(_ action: @escaping () -> Void,
+                                   cached: Bool,
+                                   orFail: (() -> Void)?,
+                                   completion: @escaping () -> Void) {
         guard frontmostApp() == Self.terminalBundle else {
             activateTerminal()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
@@ -1036,20 +1147,24 @@ final class NewsReader {
                     fputs("[news] Terminal wouldn't come forward — "
                         + "key dropped\n", stderr)
                     orFail?()
+                    completion()
                     return
                 }
-                ensureNewsWindowFront(action, cached: false, orFail: orFail)
+                ensureNewsWindowFront(action, cached: false, orFail: orFail,
+                                      completion: completion)
             }
             return
         }
-        ensureNewsWindowFront(action, cached: cached, orFail: orFail)
+        ensureNewsWindowFront(action, cached: cached, orFail: orFail,
+                              completion: completion)
     }
 
     /// The window half of the check. A fresh answer costs one osascript,
     /// taken OFF-MAIN (the ducker rule) with the action dispatched back.
     private func ensureNewsWindowFront(_ action: @escaping () -> Void,
                                        cached: Bool,
-                                       orFail: (() -> Void)?) {
+                                       orFail: (() -> Void)?,
+                                       completion: @escaping () -> Void = {}) {
         // ORDER IS PART OF THE CONTRACT, and it used to be luck. The cached
         // arrow path acted INLINE while an uncached key — every destructive
         // one — was still waiting on its osascript, so `d` then a quick `j`
@@ -1068,9 +1183,10 @@ final class NewsReader {
         // live on main; only the round trip belongs on the queue.
         let reuse = cached && windowVerified && terminalWindowID != nil
             && Date().timeIntervalSince(windowCheckedAt) < Self.windowRecheckInterval
-        windowQueue.async { [self] in
+        scriptQueue.async { [self] in
             let front = reuse ? nil : frontTerminalWindowID()
             DispatchQueue.main.async { [self] in
+                defer { completion() }
                 guard active || entering else { return }
                 // Nothing is adopted here. Newsboat's window is IDENTIFIED
                 // by the process running in it (`raiseNewsboatWindow`),
@@ -1261,6 +1377,13 @@ final class NewsReader {
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
             task.arguments = ["-C", dir, "pull", "--ff-only", "--quiet"]
+            // Same hardening as the Karabiner rules pull: a credential
+            // prompt nobody can see is a hang, and this private-repo pull
+            // burned its whole deadline on every open when auth lapsed.
+            var env = ProcessInfo.processInfo.environment
+            env["GIT_TERMINAL_PROMPT"] = "0"
+            env["GIT_ASKPASS"] = "/usr/bin/true"
+            task.environment = env
             task.standardOutput = FileHandle.nullDevice
             task.standardError = FileHandle.nullDevice
             do {
@@ -1344,7 +1467,7 @@ final class NewsReader {
             DispatchQueue.main.async { [self] in
                 guard active || entering else { return }
                 terminalWindowID = id
-                ownsTerminalWindow = id != nil
+                launchedWindowID = id
                 windowVerified = id != nil
                 windowCheckedAt = Date()
                 fputs("[news] " + (id != nil

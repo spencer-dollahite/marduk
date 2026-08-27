@@ -213,4 +213,31 @@ final class KarabinerRewriteTests: XCTestCase {
         XCTAssertTrue(ours.allSatisfy { $0.hasPrefix("Marduk read button")
                                      || $0.hasPrefix("Marduk panic chord") })
     }
+
+    /// The strip must sweep EVERY non-Marduk profile: a tagged rule left
+    /// in a profile that is no longer the resolved user profile would
+    /// otherwise be orphaned forever.
+    func testDeletedRuleLeavesEveryProfile() {
+        let tagged: [String: Any] = [
+            "description": KarabinerRules.tagPrefix + "FaceTime",
+            "manipulators": [["type": "basic"]]]
+        let result = rewrite([profile("Default", selected: true),
+                              profile("Laptop", rules: [tagged]),
+                              profile("Marduk")],
+                             userRules: [])
+        XCTAssertEqual(descriptions(named(result!.root, "Laptop")), [])
+    }
+
+    /// …while an untagged rule in that same swept profile is untouchable.
+    func testSweepNeverTouchesUntaggedRulesInOtherProfiles() {
+        let own: [String: Any] = ["description": "Zoom In",
+                                  "manipulators": [["type": "basic"]]]
+        let tagged: [String: Any] = [
+            "description": KarabinerRules.tagPrefix + "FaceTime",
+            "manipulators": [["type": "basic"]]]
+        let result = rewrite([profile("Default", selected: true),
+                              profile("Laptop", rules: [own, tagged])],
+                             userRules: [])
+        XCTAssertEqual(descriptions(named(result!.root, "Laptop")), ["Zoom In"])
+    }
 }

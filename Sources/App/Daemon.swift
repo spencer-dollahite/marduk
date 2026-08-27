@@ -2223,25 +2223,37 @@ final class DaemonServer {
             profiles.append(marduk)
         }
 
-        // THE ONE PLACE MARDUK WRITES INTO A PROFILE IT DOES NOT OWN.
+        // THE ONE PLACE MARDUK WRITES INTO PROFILES IT DOES NOT OWN.
         // Rules targeting `.user` exist so a binding can survive Marduk
         // being stopped, which is only possible in the profile the user
         // falls back to. It stays narrow by construction: only TAGGED
-        // rules are added or removed, so every other rule in that profile
-        // — and the profile itself when the user has no such rules —
-        // comes through byte-identical. Nothing to add and nothing stale
-        // to remove means the profile is not touched at all.
+        // rules are added or removed, so every other rule in a profile
+        // — and any profile with nothing to add and nothing stale to
+        // remove — comes through byte-identical.
+        //
+        // The STRIP sweeps every non-Marduk profile, not just the one
+        // currently resolved as the user's: a rule injected while
+        // profile A was selected, deleted from rules.json after a switch
+        // to profile B, would otherwise survive in A forever — firing
+        // whenever A came back with Marduk stopped, removable only by
+        // hand-editing karabiner.json. "A rule deleted from rules.json
+        // disappears from karabiner.json too" has to mean ALL of
+        // karabiner.json. Fresh insertion still goes only to the
+        // resolved user profile.
         let forUser = userRules.filter { $0.targets.contains(.user) }
-        if let name = userProfile,
-           let index = profiles.firstIndex(where: { ($0["name"] as? String) == name }) {
+        for index in profiles.indices {
+            let name = profiles[index]["name"] as? String
+            guard name != "Marduk" else { continue }
             var profile = profiles[index]
             var cm = profile["complex_modifications"] as? [String: Any] ?? [:]
             let existing = cm["rules"] as? [[String: Any]] ?? []
             let stale = existing.count != KarabinerRules.strip(existing).count
-            if !forUser.isEmpty || stale {
-                cm["rules"] = KarabinerRules.merge(into: existing,
-                                                   entries: userRules,
-                                                   target: .user)
+            let inserting = name == userProfile && !forUser.isEmpty
+            if inserting || stale {
+                cm["rules"] = KarabinerRules.merge(
+                    into: existing,
+                    entries: inserting ? userRules : [],
+                    target: .user)
                 profile["complex_modifications"] = cm
                 profiles[index] = profile
             }
@@ -2260,18 +2272,49 @@ final class DaemonServer {
     }
     static var karabinerRulesPath: String { karabinerRulesDir + "/rules.json" }
 
-    /// Absent file = zero rules = exactly the behaviour before this
-    /// existed. Counts only in the log: a rule description is written by
-    /// the user and the log is designed to be pasted into public issues.
-    private func loadKarabinerRules() -> [KarabinerRules.Entry] {
+    /// The four states of the rules file, because they call for four
+    /// different behaviours: missing and empty both apply ZERO rules —
+    /// which STRIPS previously injected ones, that being how deletion
+    /// stays reversible all the way down to deleting the file itself —
+    /// while a file that will not parse applies NOTHING AT ALL: broken
+    /// JSON is an accident, and an accident must never cost the user
+    /// every binding they had ("a stray comma costs one rule, never the
+    /// keyboard"; a whole file of stray commas costs zero).
+    enum KarabinerRulesFile {
+        case missing
+        case unreadable
+        case empty
+        case rules([KarabinerRules.Entry])
+    }
+
+    /// Counts only in the log: a rule description is written by the user
+    /// and the log is designed to be pasted into public issues.
+    private func readKarabinerRulesFile() -> KarabinerRulesFile {
         guard let data = FileManager.default.contents(
-                  atPath: Self.karabinerRulesPath) else { return [] }
+                  atPath: Self.karabinerRulesPath) else {
+            fputs("[marduk] karabiner rules: no file\n", stderr)
+            return .missing
+        }
+        guard (try? JSONSerialization.jsonObject(with: data)) != nil else {
+            fputs("[marduk] karabiner rules: file is not valid JSON\n",
+                  stderr)
+            return .unreadable
+        }
         let entries = KarabinerRules.parse(data)
         let mine = entries.filter { $0.targets.contains(.marduk) }.count
         let theirs = entries.filter { $0.targets.contains(.user) }.count
         fputs("[marduk] karabiner rules: \(entries.count) "
             + "(\(mine) Marduk profile, \(theirs) user profile)\n", stderr)
-        return entries
+        return entries.isEmpty ? .empty : .rules(entries)
+    }
+
+    /// The startup shape: entries or nothing, with unreadable treated as
+    /// zero (startup must never refuse to bring the profile up).
+    private func loadKarabinerRules() -> [KarabinerRules.Entry] {
+        if case .rules(let entries) = readKarabinerRulesFile() {
+            return entries
+        }
+        return []
     }
 
     /// `:karabiner` — pull the rules repo if there is one, then re-apply.
@@ -2280,16 +2323,16 @@ final class DaemonServer {
     /// truth for everything except a change made on another machine.
     func syncKarabinerRules() {
         let dir = Self.karabinerRulesDir
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: Self.karabinerRulesPath) else {
-            Earcon.error()
-            speech.announce("No Karabiner rules to apply. Put a rules file "
-                + "in the k e folder inside your Marduk config directory.")
-            return
-        }
-        // Only when `.git` exists: /usr/bin/git without the command line
-        // tools pops a GUI dialog, which an audio-first user cannot see.
-        guard fm.fileExists(atPath: dir + "/.git") else {
+        // A missing rules file is NOT an early exit: applying it means
+        // applying zero rules, which strips everything previously
+        // injected — deleting the file (or the whole ke directory) is
+        // how a user walks the feature back, and it must actually walk
+        // it back rather than announce failure while every binding keeps
+        // firing. The pull runs first regardless when `.git` exists (it
+        // may be about to DELIVER the file); only when it exists —
+        // /usr/bin/git without the command line tools pops a GUI dialog,
+        // which an audio-first user cannot see.
+        guard FileManager.default.fileExists(atPath: dir + "/.git") else {
             applyKarabinerRules(pull: .notARepo)
             return
         }
@@ -2342,42 +2385,74 @@ final class DaemonServer {
 
     /// A failed pull still applies what is on disk — the local rules are
     /// the user's rules, and refusing to act on them because a network was
-    /// down would be the wrong trade. It SAYS SO, though: silently serving
-    /// yesterday's rules is how a user concludes the feature is broken.
+    /// down would be the wrong trade. Every outcome is SPOKEN honestly,
+    /// including the apply itself failing: activateKarabinerProfile bails
+    /// on a missing or unparseable karabiner.json (Karabiner not
+    /// installed, hand-corrupted config) and a success line over a bailed
+    /// apply would be a lie in a product whose only output is the voice.
     private func applyKarabinerRules(pull: KarabinerPull) {
-        let entries = loadKarabinerRules()
-        activateKarabinerProfile(forceReload: true)
-        guard !entries.isEmpty else {
+        let file = readKarabinerRulesFile()
+        if case .unreadable = file {
+            // Broken JSON applies NOTHING — stripping on an accident
+            // would cost every binding over a stray comma.
             Earcon.error()
-            speech.announce("No usable Karabiner rules in the file.")
+            speech.announce("The Karabiner rules file isn't valid JSON. "
+                + "Nothing was changed.")
             return
         }
-        switch pull {
-        case .notARepo:
-            speech.announce("Karabiner rules applied.")
-        case .updated:
-            speech.announce("Karabiner rules updated and applied.")
-        case .failed:
+        var entries: [KarabinerRules.Entry] = []
+        if case .rules(let parsed) = file { entries = parsed }
+        guard activateKarabinerProfile(forceReload: true, entries: entries)
+        else {
             Earcon.error()
-            speech.announce("Couldn't fetch the newest rules. Applied the "
-                + "ones already here.")
+            let installed = FileManager.default.fileExists(
+                atPath: Self.karabinerConfigPath)
+            speech.announce(installed
+                ? "Couldn't update Karabiner's configuration. The log has "
+                    + "details."
+                : "Karabiner Elements doesn't seem to be installed.")
+            return
+        }
+        switch file {
+        case .missing:
+            speech.announce("No rules file. Any rules applied before "
+                + "have been removed.")
+        case .empty:
+            speech.announce("The rules file is empty. Any rules applied "
+                + "before have been removed.")
+        case .unreadable:
+            break  // handled above
+        case .rules:
+            switch pull {
+            case .notARepo:
+                speech.announce("Karabiner rules applied.")
+            case .updated:
+                speech.announce("Karabiner rules updated and applied.")
+            case .failed:
+                Earcon.error()
+                speech.announce("Couldn't fetch the newest rules. Applied "
+                    + "the ones already here.")
+            }
         }
     }
 
-    private func activateKarabinerProfile(forceReload: Bool = false) {
+    @discardableResult
+    private func activateKarabinerProfile(forceReload: Bool = false,
+                                          entries: [KarabinerRules.Entry]? = nil)
+        -> Bool {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: Self.karabinerConfigPath) else { return }
+        guard fm.fileExists(atPath: Self.karabinerConfigPath) else { return false }
         guard let data = fm.contents(atPath: Self.karabinerConfigPath),
               let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             fputs("[marduk] karabiner.json unreadable — leaving it alone\n", stderr)
-            return
+            return false
         }
         guard let (root, userProfile) = Self.rewriteKarabinerConfig(
                   parsed,
                   key: config.keyboard?.karabinerReadKey ?? "equal_sign",
                   vendorId: config.keyboard?.karabinerReadVendorId ?? 5426,
                   productId: config.keyboard?.karabinerReadProductId,
-                  userRules: loadKarabinerRules()) else { return }
+                  userRules: entries ?? loadKarabinerRules()) else { return false }
         karabinerUserProfile = userProfile
 
         do {
@@ -2389,7 +2464,7 @@ final class DaemonServer {
             try out.write(to: URL(fileURLWithPath: Self.karabinerConfigPath), options: .atomic)
         } catch {
             fputs("[marduk] karabiner.json write failed: \(error.localizedDescription)\n", stderr)
-            return
+            return false
         }
         fputs("[marduk] Karabiner profile ready (user profile: "
             + "\"\(karabinerUserProfile ?? "?")\")\n", stderr)
@@ -2408,10 +2483,25 @@ final class DaemonServer {
             killall.standardError = FileHandle.nullDevice
             try? killall.run()
             fputs("[marduk] karabiner console user server restarted\n", stderr)
+            // The restarted server has no runtime state — marduk_up is a
+            // VARIABLE, set at daemon start, and if it does not survive
+            // the restart every read-button press silently reverts to
+            // plain Option+Escape (macOS Speak Selection: wrong voice,
+            // no ducking) until the next toggle. Re-asserting it is a
+            // no-op when it did survive, so the insurance is free; the
+            // delay lets the relaunched server come up first.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
+                // Gated on the live toggle: a Ctrl+Option+M inside the
+                // window must not be overwritten with a stale "up".
+                if keyboardMonitor?.isEnabled ?? false {
+                    Self.setKarabinerVariable(up: true)
+                }
+            }
         }
         if let name = karabinerUserProfile {
             Self.armCrashRestore(userProfile: name)
         }
+        return true
     }
 
     /// Marduk assumes Karabiner but never requires it — runtime absence

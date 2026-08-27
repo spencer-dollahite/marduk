@@ -272,6 +272,22 @@ final class NewsboatDB {
     }
 
     /// feedurl → unread article count.
+    /// Every unread, undeleted item — the ledger marks them all when C
+    /// (mark-all-read) is delivered, since newsboat writes only its own
+    /// memory until quit.
+    func unreadItems() -> [(id: Int64, feed: String)] {
+        var items: [(id: Int64, feed: String)] = []
+        query("""
+            SELECT id, feedurl FROM rss_item
+            WHERE unread = 1 AND deleted = 0
+            """) { stmt in
+            if let feed = column(stmt, 1) {
+                items.append((sqlite3_column_int64(stmt, 0), feed))
+            }
+        }
+        return items
+    }
+
     func unreadCounts() -> [String: Int] {
         var counts: [String: Int] = [:]
         query("""

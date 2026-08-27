@@ -485,6 +485,25 @@
                             },
                             {
                                 "from": {
+                                    "key_code": "f",
+                                    "modifiers": {
+                                        "mandatory": [
+                                            "right_shift"
+                                        ],
+                                        "optional": [
+                                            "caps_lock"
+                                        ]
+                                    }
+                                },
+                                "to": [
+                                    {
+                                        "shell_command": "open /System/Applications/FaceTime.app"
+                                    }
+                                ],
+                                "type": "basic"
+                            },
+                            {
+                                "from": {
                                     "key_code": "n",
                                     "modifiers": {
                                         "mandatory": [
@@ -1505,6 +1524,25 @@
                                 "to": [
                                     {
                                         "shell_command": "open /System/Applications/Utilities/Terminal.app"
+                                    }
+                                ],
+                                "type": "basic"
+                            },
+                            {
+                                "from": {
+                                    "key_code": "f",
+                                    "modifiers": {
+                                        "mandatory": [
+                                            "right_shift"
+                                        ],
+                                        "optional": [
+                                            "caps_lock"
+                                        ]
+                                    }
+                                },
+                                "to": [
+                                    {
+                                        "shell_command": "open /System/Applications/FaceTime.app"
                                     }
                                 ],
                                 "type": "basic"

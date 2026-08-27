@@ -68,6 +68,12 @@ final class NewsReader {
     // on the attach path, and nil means "refuse to post", never "any
     // window will do".
     private var terminalWindowID: Int?
+    /// Did MARDUK create this Terminal window? Only then may Marduk close
+    /// it (the ownership doctrine: "running" is not "we started it"). An
+    /// attached newsboat is sitting in a window the user opened.
+    private var ownsTerminalWindow = false
+    /// What we have caused that cache.db has not caught up with.
+    private var ledger = NewsSession.Ledger()
     private var windowVerified = false
     private var windowCheckedAt = Date.distantPast
     /// How long an arrow may ride a previous window check. Short enough
@@ -235,6 +241,13 @@ final class NewsReader {
         guard let env else { entering = false; return }
         fputs("[news] loading (\(attached ? "attach" : "launch"))"
             + " — \(feeds.count) feeds\n", stderr)
+        ownsTerminalWindow = false
+        // A NEW newsboat loads its state from cache.db, so at this instant
+        // the file and the TUI agree and everything we recorded about the
+        // old one is void. An ATTACH is the opposite: that process still
+        // remembers reads the file has never seen, which is exactly what
+        // the ledger is holding.
+        if !attached { ledger.forget() }
         let baseline = reportCache(feeds: feeds.count, stage: "before reload")
         reloadGeneration += 1
         let generation = reloadGeneration
@@ -482,9 +495,14 @@ final class NewsReader {
         let deleted = session.currentArticle
         guard session.deleteCurrentArticle() else { Earcon.error(); return }
         ensureTerminalFront { [self] in postKeys(2, true, 1) }  // Shift+D
+        // newsboat filters it out of ITS list at once, but the row keeps
+        // `deleted = 0` in cache.db until it quits — without this the item
+        // returns on the next entry and every move is off by one more.
+        if let deleted {
+            ledger.markDeleted(deleted, feed: session.currentFeed?.url ?? "")
+        }
         fputs("[news] article deleted\n", stderr)
         if session.articles.isEmpty {
-            _ = deleted
             goBack()
         } else {
             speakCurrent()
@@ -499,7 +517,7 @@ final class NewsReader {
         guard active else { return }
         refreshCounts(force: true)
         if session.level == .articles, let feed = session.currentFeed {
-            let fresh = db?.articles(feedURL: feed.url) ?? []
+            let fresh = ledger.applied(to: db?.articles(feedURL: feed.url) ?? [])
             let keepID = session.currentArticle?.id
             let start = keepID.flatMap { id in fresh.firstIndex { $0.id == id } }
                 ?? min(session.articleIndex, max(0, fresh.count - 1))
@@ -541,7 +559,7 @@ final class NewsReader {
                 announce("Query feeds aren't mirrored yet.")
                 return
             }
-            let articles = db?.articles(feedURL: feed.url) ?? []
+            let articles = ledger.applied(to: db?.articles(feedURL: feed.url) ?? [])
             guard !articles.isEmpty else {
                 Earcon.error()
                 announce("No articles here yet. Feeds may still be refreshing.")
@@ -569,7 +587,30 @@ final class NewsReader {
         case .feeds:
             // q from the feed list quits newsboat itself — mirror that,
             // hand the keyboard back, and say so.
+            //
+            // Quitting newsboat does NOT close the window it was running
+            // in: `do script` runs the command in a shell, so the shell
+            // outlives it and Terminal is left showing a prompt the user
+            // has to find and close by hand. Marduk opened that window, so
+            // Marduk closes it — but ONLY that one, and only when Marduk
+            // opened it. Attaching means the window is the user's, and
+            // theirs stays exactly where it was.
+            let window = ownsTerminalWindow ? terminalWindowID : nil
             ensureTerminalFront { [self] in postKeys(12, false, 1) }
+            // newsboat flushes cache.db on the way out — let it finish
+            // before the window (and its shell) go away.
+            if let window {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
+                    windowQueue.async {
+                        _ = Self.runWindowScript(Self.closeScript(id: window))
+                        fputs("[news] closed newsboat's Terminal window\n",
+                              stderr)
+                    }
+                }
+            }
+            // newsboat is going away, so cache.db is about to become the
+            // whole truth again.
+            ledger.forget()
             deactivate(quiet: true)
             announce("News closed.")
         }
@@ -588,6 +629,9 @@ final class NewsReader {
         }
         // Enter opens newsboat's pager — newsboat marks the article read
         ensureTerminalFront { [self] in postKeys(36, false, 1) }
+        // Record it BEFORE the mirror clears the flag — the ledger needs to
+        // know whether this article was one of the feed's unread ones.
+        ledger.markRead(article, feed: session.currentFeed?.url ?? "")
         session.markCurrentArticleRead()
         readInFlight = true
         showKeyBar(Self.readingKeyBar)
@@ -660,6 +704,7 @@ final class NewsReader {
         // one, and a stale id would either refuse every key or — worse —
         // aim at a window Terminal has since given to something else.
         terminalWindowID = nil
+        ownsTerminalWindow = false
         windowVerified = false
         windowCheckedAt = .distantPast
         fputs("[news] closed\n", stderr)
@@ -694,7 +739,7 @@ final class NewsReader {
         guard force || Date().timeIntervalSince(lastCountRefresh) > 3 else { return }
         lastCountRefresh = Date()
         if db == nil { db = NewsboatDB(path: env?.cacheFile ?? "") }
-        unread = db?.unreadCounts() ?? [:]
+        unread = ledger.applied(to: db?.unreadCounts() ?? [:])
     }
 
     // MARK: - Triage (local Ollama: top-3 + dedup over unread headlines)
@@ -1032,6 +1077,13 @@ final class NewsReader {
         deactivate(quiet: true)
     }
 
+    /// Close one Terminal window by id. Pure string-building so the
+    /// interpolation is testable; the id is an Int, so nothing user-typed
+    /// reaches AppleScript source here.
+    static func closeScript(id: Int) -> String {
+        "tell application \"Terminal\" to close window id \(id)"
+    }
+
     /// Terminal's own window id for its frontmost window, or nil when it
     /// has none / AppleScript fails. Same kill-on-timeout watchdog every
     /// osascript in this project carries.
@@ -1257,6 +1309,7 @@ final class NewsReader {
             DispatchQueue.main.async { [self] in
                 guard active || entering else { return }
                 terminalWindowID = id
+                ownsTerminalWindow = id != nil
                 windowVerified = id != nil
                 windowCheckedAt = Date()
                 fputs("[news] " + (id != nil

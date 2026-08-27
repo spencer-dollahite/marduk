@@ -128,6 +128,77 @@ struct NewsSession: Equatable {
         articles[articleIndex].unread = false
     }
 
+    /// WHAT MARDUK HAS ALREADY CAUSED, held against cache.db's staleness.
+    ///
+    /// newsboat keeps its live state in MEMORY and flushes cache.db when it
+    /// QUITS. Marduk re-reads that file mid-session — on every feed entry,
+    /// every reclaim, every count refresh — and treats it as truth, which
+    /// silently discards everything Marduk itself just did. Read an article
+    /// and back out: newsboat's copy is read, the file's copy is not, so
+    /// re-entering the feed computes goto-first-unread against a row that
+    /// newsboat has already moved past. The mirror lands one row above the
+    /// TUI, and every j/k after that is off by one. Delete two and it is
+    /// off by three, because a `deleted = 0` row comes back into a list
+    /// newsboat is no longer showing.
+    ///
+    /// So the disk is not the truth — the disk PLUS what we caused is. This
+    /// is the cursor-ledger pattern: we cannot read newsboat's memory, but
+    /// we can observe our own actions, which is the half that went missing.
+    ///
+    /// Cleared exactly when the file becomes authoritative again: newsboat
+    /// quitting (it flushes on the way out) or being replaced by a fresh
+    /// launch. It deliberately SURVIVES news mode closing while newsboat
+    /// keeps running, because that is precisely when the two disagree.
+    struct Ledger: Equatable {
+        private(set) var read: Set<Int64> = []
+        private(set) var deleted: Set<Int64> = []
+        /// Per feed, how many of ITS unread items we have accounted for —
+        /// the spoken unread counts come from the same stale file.
+        private(set) var unreadDelta: [String: Int] = [:]
+
+        mutating func markRead(_ article: Article, feed: String) {
+            guard !deleted.contains(article.id) else { return }
+            guard read.insert(article.id).inserted else { return }
+            if article.unread { unreadDelta[feed, default: 0] += 1 }
+        }
+
+        mutating func markDeleted(_ article: Article, feed: String) {
+            guard deleted.insert(article.id).inserted else { return }
+            // Reading it already spent the count; deleting it must not
+            // spend it twice.
+            if article.unread, !read.contains(article.id) {
+                unreadDelta[feed, default: 0] += 1
+            }
+        }
+
+        func applied(to list: [Article]) -> [Article] {
+            guard !read.isEmpty || !deleted.isEmpty else { return list }
+            return list.compactMap { article in
+                guard !deleted.contains(article.id) else { return nil }
+                guard read.contains(article.id) else { return article }
+                var seen = article
+                seen.unread = false
+                return seen
+            }
+        }
+
+        func applied(to counts: [String: Int]) -> [String: Int] {
+            guard !unreadDelta.isEmpty else { return counts }
+            var adjusted = counts
+            for (feed, spent) in unreadDelta {
+                guard let current = adjusted[feed] else { continue }
+                adjusted[feed] = max(0, current - spent)
+            }
+            return adjusted
+        }
+
+        mutating func forget() {
+            read = []
+            deleted = []
+            unreadDelta = [:]
+        }
+    }
+
     /// The next title matching `query` from `from` (exclusive), smartcase
     /// (an all-lowercase query matches case-insensitively), NO WRAP —
     /// audio gives no wrap cue, the read-search rule. Pure, tested.

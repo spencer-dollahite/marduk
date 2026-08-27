@@ -209,4 +209,90 @@ final class NewsSessionTests: XCTestCase {
         XCTAssertNil(NewsReader.windowID(
             fromDoScriptReply: "tab 1 of window id notanumber"))
     }
+
+    // MARK: - The session ledger (cache.db is stale by design)
+
+    private func article(_ id: Int64, unread: Bool) -> NewsSession.Article {
+        NewsSession.Article(id: id, title: "Item \(id)",
+                            url: "https://example.test/\(id)", unread: unread)
+    }
+
+    /// Reading an article then re-entering the feed must not re-offer it as
+    /// unread — that off-by-one is what walks the mirror away from the TUI.
+    func testReadArticleStaysReadAcrossAFreshQuery() {
+        var ledger = NewsSession.Ledger()
+        let list = [article(1, unread: true), article(2, unread: true)]
+        ledger.markRead(list[0], feed: "f")
+        let applied = ledger.applied(to: list)
+        XCTAssertEqual(applied.map(\.unread), [false, true])
+        XCTAssertEqual(NewsSession.firstUnreadIndex(applied), 1,
+                       "goto-first-unread must land where newsboat's cursor "
+                       + "is, not on the row it already moved past")
+    }
+
+    func testDeletedArticleDoesNotComeBack() {
+        var ledger = NewsSession.Ledger()
+        let list = [article(1, unread: true), article(2, unread: false)]
+        ledger.markDeleted(list[0], feed: "f")
+        XCTAssertEqual(ledger.applied(to: list).map(\.id), [2])
+    }
+
+    func testUnreadCountsAreAdjustedByWhatWeCaused() {
+        var ledger = NewsSession.Ledger()
+        ledger.markRead(article(1, unread: true), feed: "f")
+        ledger.markDeleted(article(2, unread: true), feed: "f")
+        XCTAssertEqual(ledger.applied(to: ["f": 5]), ["f": 3])
+    }
+
+    /// Reading THEN deleting the same article spends one unread, not two.
+    func testReadThenDeletedCountsOnce() {
+        var ledger = NewsSession.Ledger()
+        let item = article(1, unread: true)
+        ledger.markRead(item, feed: "f")
+        ledger.markDeleted(item, feed: "f")
+        XCTAssertEqual(ledger.applied(to: ["f": 2]), ["f": 1])
+    }
+
+    func testAlreadyReadArticleSpendsNoCount() {
+        var ledger = NewsSession.Ledger()
+        ledger.markRead(article(1, unread: false), feed: "f")
+        XCTAssertEqual(ledger.applied(to: ["f": 4]), ["f": 4])
+    }
+
+    func testMarkingTheSameArticleTwiceIsIdempotent() {
+        var ledger = NewsSession.Ledger()
+        let item = article(1, unread: true)
+        ledger.markRead(item, feed: "f")
+        ledger.markRead(item, feed: "f")
+        XCTAssertEqual(ledger.applied(to: ["f": 3]), ["f": 2])
+    }
+
+    func testCountsNeverGoNegative() {
+        var ledger = NewsSession.Ledger()
+        ledger.markRead(article(1, unread: true), feed: "f")
+        ledger.markRead(article(2, unread: true), feed: "f")
+        XCTAssertEqual(ledger.applied(to: ["f": 1]), ["f": 0])
+    }
+
+    /// A fresh newsboat loads from cache.db, so the two agree again and
+    /// everything held against the old process must go.
+    func testForgetClearsEverything() {
+        var ledger = NewsSession.Ledger()
+        ledger.markRead(article(1, unread: true), feed: "f")
+        ledger.markDeleted(article(2, unread: true), feed: "f")
+        ledger.forget()
+        XCTAssertEqual(ledger, NewsSession.Ledger())
+    }
+
+    func testEmptyLedgerIsAPassThrough() {
+        let ledger = NewsSession.Ledger()
+        let list = [article(1, unread: true), article(2, unread: false)]
+        XCTAssertEqual(ledger.applied(to: list).map(\.id), [1, 2])
+        XCTAssertEqual(ledger.applied(to: ["f": 7]), ["f": 7])
+    }
+
+    func testCloseScriptNamesExactlyOneWindow() {
+        XCTAssertEqual(NewsReader.closeScript(id: 3274),
+                       "tell application \"Terminal\" to close window id 3274")
+    }
 }

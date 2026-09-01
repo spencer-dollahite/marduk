@@ -10,12 +10,18 @@ import AppKit
 /// from the cache — HTML stripped — through the full reading machinery,
 /// so every motion, search, and page key works mid-article.
 ///
+/// Re-entry RESUMES (2026-09-01): `n` against a running newsboat reads
+/// its title line off Terminal's screen (`NewsboatScreen`), climbs out
+/// of a pager or side dialog with q, and re-locks the row by posting
+/// Home plus the retained row's worth of Downs — an absolute position,
+/// so the mirror and the TUI agree even when the cursor was moved by
+/// hand. Held Escape out of raw control (`reclaim`) does the same.
+///
 /// Known limits (the Firefox-n "blind toggle" precedent): the mirror
-/// assumes newsboat's DEFAULT sort orders and view state — driving
-/// newsboat's TUI by hand mid-session, custom sort settings, or attaching
-/// to a newsboat that isn't sitting on its feed list can desync the
-/// mirror until the next `n`. All main-thread; the store's SQLite reads
-/// are small and read-only.
+/// assumes newsboat's DEFAULT sort orders — custom sort settings desync
+/// it, and a screen that can't be read (AX refused, an unrecognised
+/// title format) falls back to assuming the feed list, SPOKEN. All
+/// main-thread; the store's SQLite reads are small and read-only.
 final class NewsReader {
 
     // Wired by the daemon at startup
@@ -78,6 +84,11 @@ final class NewsReader {
     private var launchedWindowID: Int?
     /// What we have caused that cache.db has not caught up with.
     private var ledger = NewsSession.Ledger()
+    /// newsboat's title-line signatures, compiled from the effective
+    /// config at load — what `readScreen` matches the screen against.
+    private var screenSignatures: [NewsboatScreen.Signature] = []
+    /// The mirror as it stood when news mode last closed is kept in
+    /// `session` on purpose: re-entry lands the user back on that row.
     private var windowVerified = false
     private var windowCheckedAt = Date.distantPast
     /// How long an arrow may ride a previous window check. Short enough
@@ -147,10 +158,13 @@ final class NewsReader {
 
         entering = true
         fputs("[news] entering\n", stderr)
-        // Every open pulls the feed list and reloads every feed (user
-        // ruling) — say so up front, so the gesture is acknowledged even
-        // when the network makes the rest of it slow.
-        announce("News. Reloading feeds.")
+        // Acknowledge the gesture up front, before the feed-list pull can
+        // make the rest of it slow. A fresh launch reloads every feed
+        // (user ruling) and says so; a re-entry lands where the user was
+        // and only reloads when that turns out to be the feed list, so it
+        // promises nothing it may not do.
+        let running = NewsboatLocator.runningPID(cachePath: env.cacheFile) != nil
+        announce(running ? "News." : "News. Reloading feeds.")
         // The feed list syncs with its repo BEFORE anything is launched:
         // when the urls file lives in a git clone (the private-repo
         // pattern), newsboat must start against the pulled file, not race
@@ -184,6 +198,10 @@ final class NewsReader {
         // hand newsboat one list and the mirror another, and every posted
         // arrow would then act on the wrong row.
         let feeds = visibleFeeds(text: fileText(urlsPath))
+        screenSignatures = NewsboatScreen.signatures(
+            configText: env.configFile.flatMap {
+                try? String(contentsOfFile: $0, encoding: .utf8)
+            })
         guard !feeds.isEmpty else {
             entering = false
             Earcon.error()
@@ -276,38 +294,28 @@ final class NewsReader {
             // restores the last-front window, not newsboat's (user report
             // 2026-08-13: "newsboat did not hold itself in the front… I
             // did not actually switch away from it"). Find newsboat's own
-            // window, raise it, and only then send the reload key.
-            // Sequenced on the raise's completion, not a hopeful delay:
-            // the reload key is checked against newsboat's window, so
-            // sending it before the raise has answered would refuse it
-            // and stand the session down.
+            // window, raise it, and only then look at it: the screen read
+            // and every key that follows are checked against that window.
             raiseNewsboatWindow { [self] in
-                // Feeds refresh on every load (user ruling): a fresh
-                // launch carries -r, an attach gets newsboat's reload-all
-                // keystroke. A key we can't deliver is a reload that
-                // didn't happen — say so rather than pretending the feeds
-                // are fresh.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
+                guard entering else { return }
+                guard terminalWindowID != nil else {
+                    // Already spoken by the raise — nothing to aim at
+                    entering = false
+                    return
+                }
+                locateNewsboat(climbsLeft: 3) { [self] layer in
                     guard entering else { return }
-                    ensureTerminalFront({ [self] in
-                        postKeys(15, true, 1)  // Shift+R — reload-all
-                        fputs("[news] reload-all keystroke sent\n", stderr)
-                    }, orFail: { [self] in
-                        Earcon.error()
-                        announce("Couldn't reload the feeds. Terminal "
-                            + "wouldn't come forward.")
-                    })
+                    arm(feeds: feeds, retriesLeft: 2, how: .resume(layer))
                 }
             }
-        } else {
-            launchInTerminal(NewsboatLocator.launchCommand(env,
-                                                           command: newsConfig?.command))
+            return
         }
+        launchInTerminal(NewsboatLocator.launchCommand(env,
+                                                       command: newsConfig?.command))
         // Arm once the TUI can take keys — before that, a posted arrow
         // would land in the shell prompt.
-        let armDelay: TimeInterval = attached ? 1.2 : 2.2
-        DispatchQueue.main.asyncAfter(deadline: .now() + armDelay) { [self] in
-            arm(feeds: feeds, retriesLeft: 2)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [self] in
+            arm(feeds: feeds, retriesLeft: 2, how: .launch)
         }
     }
 
@@ -335,7 +343,14 @@ final class NewsReader {
         }
     }
 
-    private func arm(feeds: [NewsboatURLEntry], retriesLeft: Int) {
+    /// How the mirror comes up: a fresh newsboat sits on its feed list at
+    /// the top, a running one is wherever the screen said it was.
+    private enum ArmHow {
+        case launch
+        case resume(NewsboatScreen.Layer?)
+    }
+
+    private func arm(feeds: [NewsboatURLEntry], retriesLeft: Int, how: ArmHow) {
         guard entering else { return }
         // Marduk was toggled off while newsboat spun up — never arm a
         // capture the user can't see
@@ -346,7 +361,7 @@ final class NewsReader {
         guard NewsboatLocator.runningPID(cachePath: env?.cacheFile ?? "") != nil else {
             if retriesLeft > 0 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [self] in
-                    arm(feeds: feeds, retriesLeft: retriesLeft - 1)
+                    arm(feeds: feeds, retriesLeft: retriesLeft - 1, how: how)
                 }
                 return
             }
@@ -365,8 +380,7 @@ final class NewsReader {
             })
         let titles = db?.feedTitles() ?? [:]
         refreshCounts(force: true)
-        session = NewsSession()
-        session.feeds = feeds.map { entry in
+        let feedRows = feeds.map { entry in
             NewsSession.Feed(
                 title: entry.titleOverride
                     ?? entry.queryName
@@ -377,17 +391,29 @@ final class NewsReader {
         }
         active = true
         setCaptured(true)
-        // Identify newsboat's window by the process running in it and
-        // bring it forward — on BOTH paths. The launch path already has an
-        // id from `do script`, but the located one is the fact and this is
-        // also what makes opening the news put newsboat in front of you
-        // (user ruling 2026-08-13).
-        raiseNewsboatWindow()
+        var line: String
+        switch how {
+        case .launch:
+            // A fresh newsboat is on its feed list, row 0 — the one state
+            // that needs no screen read. Identify its window by the
+            // process running in it and bring it forward: `do script`'s
+            // id is a fallback, the located one is the fact, and this is
+            // also what makes opening the news put newsboat in front of
+            // you (user ruling 2026-08-13).
+            session = NewsSession()
+            session.feeds = feedRows
+            raiseNewsboatWindow()
+            fputs("[news] armed — \(feedRows.count) feeds\n", stderr)
+            line = currentLine()
+        case .resume(let layer):
+            line = resume(layer, feedRows: feedRows, reload: true)
+            fputs("[news] armed — \(feedRows.count) feeds, resumed on the "
+                + "\(session.level == .feeds ? "feed list" : "article list")\n",
+                stderr)
+        }
         showKeyBar(Self.listKeyBar)
-        fputs("[news] armed — \(session.feeds.count) feeds\n", stderr)
         // Straight into the first title — no feed-count preamble (user
         // ruling 2026-08-04: the count is ceremony, the title is the news)
-        var line = currentLine()
         if OnceMarker.firstTime("news-hinted") {
             line += " " + Self.helpLine
         }
@@ -556,22 +582,273 @@ final class NewsReader {
     }
 
     /// Held Escape out of raw-control INSERT: the user drove newsboat
-    /// directly (reloads, its own n/N hops), so refresh the mirror's DATA.
-    /// The TUI cursor can't be observed — the row we speak is where the
-    /// MIRROR still stands (documented limit; j/k re-lock the two).
+    /// directly (reloads, its own hops, a pager they opened themselves),
+    /// so the mirror re-locks the same way re-entry does — read the
+    /// layer off the screen, climb out of anything that isn't a list,
+    /// and put the cursor back on the mirror's row by absolute position.
+    /// The row spoken is where the MIRROR stood; the TUI is brought to it.
     private func reclaim() {
         guard active else { return }
-        refreshCounts(force: true)
-        if session.level == .articles, let feed = session.currentFeed {
-            let fresh = ledger.applied(to: db?.articles(feedURL: feed.url) ?? [])
-            let keepID = session.currentArticle?.id
-            let start = keepID.flatMap { id in fresh.firstIndex { $0.id == id } }
-                ?? min(session.articleIndex, max(0, fresh.count - 1))
-            session.enterArticles(fresh, startAt: start)
-        }
         showKeyBar(Self.listKeyBar)
-        fputs("[news] reclaimed from raw control\n", stderr)
-        speakCurrent()
+        locateNewsboat(climbsLeft: 3) { [self] layer in
+            guard active else { return }
+            refreshCounts(force: true)
+            let line = resume(layer, feedRows: session.feeds, reload: false)
+            fputs("[news] reclaimed from raw control on the "
+                + "\(session.level == .feeds ? "feed list" : "article list")\n",
+                stderr)
+            announce(line)
+        }
+    }
+
+    /// Put the mirror and the TUI on the same row, given what the screen
+    /// showed. Returns the line to speak. The retained `session` is the
+    /// row the user was on; `feedRows` is the (possibly re-pulled) feed
+    /// list; `reload` sends newsboat's reload-all once we are on the feed
+    /// list (it is a feed-list-only binding — a re-entry that lands in an
+    /// article list stays there and reloads nothing).
+    ///
+    /// Both lists are re-locked by ABSOLUTE position: Home, then the
+    /// row's worth of Downs. That is what makes a cursor the user moved
+    /// by hand come back into step, and it costs nothing when nothing
+    /// moved. An article list whose feed the mirror can't place (a query
+    /// feed, a title cut too short to match) is left with q — safe from
+    /// there — and the feed list resumed instead, spoken.
+    private func resume(_ layer: NewsboatScreen.Layer?,
+                        feedRows: [NewsSession.Feed], reload: Bool) -> String {
+        let retained = session
+        var next = NewsSession()
+        next.feeds = feedRows
+        var prefix = ""
+
+        if case .articles(let title)? = layer {
+            let placed = resumeFeed(title: title, retained: retained,
+                                    feeds: feedRows)
+            let articles = placed.map { feed in
+                ledger.applied(to: db?.articles(feedURL: feed.url) ?? [])
+            } ?? []
+            if let feedIndex = placed.flatMap({ feed in
+                feedRows.firstIndex(where: { $0.url == feed.url })
+            }), !articles.isEmpty {
+                let feed = feedRows[feedIndex]
+                let sameFeed = retained.level == .articles
+                    && retained.currentFeed?.url == feed.url
+                let row = NewsSession.resumeIndex(
+                    retainedID: sameFeed ? retained.currentArticle?.id : nil,
+                    in: articles)
+                let landing = min(row, NewsSession.resumeRowCap)
+                next.feedIndex = feedIndex
+                next.enterArticles(articles, startAt: landing)
+                postHome(thenDown: landing)
+                session = next
+                fputs("[news] resumed on the article list, row \(landing)\n",
+                      stderr)
+                if landing < row { prefix = "Top of the list. " }
+                return prefix + feed.title + ". " + currentLine()
+            }
+            // Newsboat is in an article list the mirror cannot place —
+            // q from there is the one climb that is always safe.
+            fputs("[news] article list not placeable — backing out to "
+                + "the feed list\n", stderr)
+            ensureTerminalFront { [self] in postKeys(12, false, 1) }  // q
+            prefix = "Back on the feed list. "
+        } else if layer == nil {
+            // The screen could not be read or recognised. The old blind
+            // assumption, but SPOKEN — a silent wrong guess is the bug
+            // this path replaces. Home is harmless in every dialog.
+            prefix = "Couldn't see newsboat's screen. Assuming the feed list. "
+        }
+
+        // The feed list: the row the user was on, if that feed survived
+        // the feed-list pull, else the top.
+        let row = retained.currentFeed.flatMap { feed in
+            feedRows.firstIndex(where: { $0.url == feed.url })
+        } ?? 0
+        let landing = min(row, NewsSession.resumeRowCap)
+        next.feedIndex = landing
+        postHome(thenDown: landing)
+        if reload {
+            // Feeds refresh on every open (user ruling). A key we can't
+            // deliver is a reload that didn't happen — say so rather than
+            // pretending the feeds are fresh.
+            ensureTerminalFront({ [self] in
+                postKeys(15, true, 1)  // Shift+R — reload-all
+                fputs("[news] reload-all keystroke sent\n", stderr)
+            }, orFail: { [self] in
+                Earcon.error()
+                announce("Couldn't reload the feeds. Terminal "
+                    + "wouldn't come forward.")
+            })
+        }
+        session = next
+        fputs("[news] resumed on the feed list, row \(landing)\n", stderr)
+        if landing < row { prefix += "Top of the list. " }
+        return prefix + currentLine()
+    }
+
+    /// Which feed an article-list title line belongs to. The feed the
+    /// mirror was already in wins when the title agrees with it (or the
+    /// format printed none); otherwise the title is looked up in the
+    /// list. Feed titles are user content — never logged.
+    private func resumeFeed(title: String?, retained: NewsSession,
+                            feeds: [NewsSession.Feed]) -> NewsSession.Feed? {
+        let inFeed = retained.level == .articles ? retained.currentFeed : nil
+        guard let title, !title.isEmpty else { return inFeed }
+        if let inFeed, inFeed.title == title || inFeed.title.hasPrefix(title) {
+            return inFeed
+        }
+        return NewsSession.feedRow(titled: title, in: feeds).map { feeds[$0] }
+    }
+
+    /// Home, then `steps` Downs — newsboat's own start-of-list key (bound
+    /// in every dialog) followed by the row. Both ride the delivery FIFO
+    /// behind whatever climb preceded them.
+    private func postHome(thenDown steps: Int) {
+        ensureTerminalFront({ [self] in
+            postKeys(115, false, 1)                       // Home
+            if steps > 0 { postKeys(125, false, steps) }  // Down × steps
+        }, orFail: { [self] in
+            Earcon.error()
+            announce("Couldn't reach newsboat.")
+        })
+    }
+
+    /// Read which dialog newsboat is showing and climb out of any that
+    /// isn't a list — q closes the pager, help, the URL view, search
+    /// results, the dialog list — re-reading after each step. q is NEVER
+    /// posted on the feed list (it quits newsboat) or on a screen we
+    /// couldn't read (it could be anything); those come back as they are.
+    private func locateNewsboat(climbsLeft: Int,
+                                completion: @escaping (NewsboatScreen.Layer?) -> Void) {
+        readScreen { [self] layer in
+            guard active || entering else { return }
+            fputs("[news] screen: \(NewsboatScreen.logName(layer))\n", stderr)
+            guard NewsboatScreen.climbsOut(of: layer) else {
+                completion(layer)
+                return
+            }
+            guard climbsLeft > 0 else {
+                fputs("[news] still not on a list after climbing — "
+                    + "giving up\n", stderr)
+                completion(nil)
+                return
+            }
+            ensureTerminalFront({ [self] in
+                postKeys(12, false, 1)  // q — back to the previous dialog
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [self] in
+                    locateNewsboat(climbsLeft: climbsLeft - 1,
+                                   completion: completion)
+                }
+            }, orFail: { completion(nil) })
+        }
+    }
+
+    /// Terminal's screen text, matched against the compiled title
+    /// signatures. The AX read is OFF-MAIN (synchronous IPC, the tap
+    /// rule); the verdict hops back. Logs sizes and the dialog name only.
+    private func readScreen(_ completion: @escaping (NewsboatScreen.Layer?) -> Void) {
+        guard let pid = NSRunningApplication
+                .runningApplications(withBundleIdentifier: Self.terminalBundle)
+                .first?.processIdentifier else {
+            completion(nil)
+            return
+        }
+        let signatures = screenSignatures
+        DispatchQueue.global(qos: .userInitiated).async {
+            let text = Self.terminalScreenText(pid: pid)
+            if let text {
+                fputs("[news] read \(text.count) chars of Terminal's screen\n",
+                      stderr)
+            } else {
+                fputs("[news] couldn't read Terminal's screen over AX\n", stderr)
+            }
+            let layer = text.flatMap {
+                NewsboatScreen.detect(screen: $0, signatures: signatures)
+            }
+            DispatchQueue.main.async { completion(layer) }
+        }
+    }
+
+    /// The text on screen in Terminal's focused window. OFF-MAIN ONLY.
+    /// The focused element when it is the terminal view, else a short
+    /// descent from the focused window to its text area. The VISIBLE
+    /// character range is preferred — newsboat runs on the alternate
+    /// screen, but a Terminal value can be a 9M-char scrollback (the R
+    /// field incident), and the title line is on screen by definition —
+    /// with the value's last lines as the fallback.
+    static func terminalScreenText(pid: pid_t) -> String? {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.5)
+        var area: AXUIElement?
+        var focusedRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+               app, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
+           let raw = focusedRef, CFGetTypeID(raw) == AXUIElementGetTypeID() {
+            let element = raw as! AXUIElement
+            if role(of: element) == "AXTextArea" { area = element }
+        }
+        if area == nil {
+            var windowRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                      app, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
+                  let raw = windowRef, CFGetTypeID(raw) == AXUIElementGetTypeID()
+            else { return nil }
+            var budget = 200
+            area = textArea(below: raw as! AXUIElement, depth: 8, budget: &budget)
+        }
+        guard let area else { return nil }
+        AXUIElementSetMessagingTimeout(area, 0.5)
+        var visRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+               area, kAXVisibleCharacterRangeAttribute as CFString, &visRef) == .success,
+           let vr = visRef, CFGetTypeID(vr) == AXValueGetTypeID() {
+            var range = CFRange(location: 0, length: 0)
+            if AXValueGetValue(vr as! AXValue, .cfRange, &range), range.length > 0,
+               let param = AXValueCreate(.cfRange, &range) {
+                var strRef: CFTypeRef?
+                if AXUIElementCopyParameterizedAttributeValue(
+                       area, kAXStringForRangeParameterizedAttribute as CFString,
+                       param, &strRef) == .success,
+                   let text = strRef as? String, !text.isEmpty {
+                    return text
+                }
+            }
+        }
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  area, kAXValueAttribute as CFString, &valueRef) == .success,
+              let value = valueRef as? String, !value.isEmpty else { return nil }
+        // The screen is the newest output — keep the tail only
+        return value.components(separatedBy: "\n").suffix(200)
+            .joined(separator: "\n")
+    }
+
+    private static func role(of element: AXUIElement) -> String? {
+        var roleRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  element, kAXRoleAttribute as CFString, &roleRef) == .success
+        else { return nil }
+        return roleRef as? String
+    }
+
+    /// First AXTextArea at or below `element`, budgeted (nodes, depth,
+    /// short per-element timeouts) like every AX walk in this project.
+    private static func textArea(below element: AXUIElement, depth: Int,
+                                 budget: inout Int) -> AXUIElement? {
+        guard depth > 0, budget > 0 else { return nil }
+        budget -= 1
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        if role(of: element) == "AXTextArea" { return element }
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                  element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else { return nil }
+        for child in children {
+            if let hit = textArea(below: child, depth: depth - 1, budget: &budget) {
+                return hit
+            }
+        }
+        return nil
     }
 
     private func moveBy(_ delta: Int) {

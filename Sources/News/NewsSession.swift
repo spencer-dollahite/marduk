@@ -215,6 +215,39 @@ struct NewsSession: Equatable {
         }
     }
 
+    // MARK: - Resuming where newsboat is (re-entry, reclaim)
+
+    /// The feed a title names, in the mirror's list: an exact match first,
+    /// else the ONE feed whose title starts with it — newsboat truncates
+    /// its title line to the terminal width, so a long feed name can
+    /// arrive cut short. Two feeds sharing the prefix is ambiguous: nil,
+    /// and the reader climbs back to the feed list rather than guess.
+    static func feedRow(titled title: String, in feeds: [Feed]) -> Int? {
+        let wanted = title.trimmingCharacters(in: .whitespaces)
+        guard !wanted.isEmpty else { return nil }
+        if let exact = feeds.firstIndex(where: { $0.title == wanted }) {
+            return exact
+        }
+        let prefixed = feeds.indices.filter { feeds[$0].title.hasPrefix(wanted) }
+        return prefixed.count == 1 ? prefixed[0] : nil
+    }
+
+    /// Where a resumed list lands: the retained row if its item is still
+    /// in the fresh list (a reload may have shifted it), else the top.
+    static func resumeIndex(retainedID: Int64?, in list: [Article]) -> Int {
+        guard let retainedID,
+              let index = list.firstIndex(where: { $0.id == retainedID })
+        else { return 0 }
+        return index
+    }
+
+    /// Re-entry restores the row by posting Home and then this many Down
+    /// arrows — an ABSOLUTE position, which is why a cursor the user moved
+    /// by hand comes back into step. Capped: a run of hundreds of arrows
+    /// into a TUI is a stall, not a resume, and past the cap the mirror
+    /// lands on the top and says so.
+    static let resumeRowCap = 300
+
     /// The next title matching `query` from `from` (exclusive), smartcase
     /// (an all-lowercase query matches case-insensitively), NO WRAP —
     /// audio gives no wrap cue, the read-search rule. Pure, tested.

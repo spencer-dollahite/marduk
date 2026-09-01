@@ -218,6 +218,36 @@ final class NewsSessionTests: XCTestCase {
             fromDoScriptReply: "tab 1 of window id notanumber"))
     }
 
+    // MARK: - Resuming where newsboat is (re-entry lands on the row)
+
+    func testFeedRowByTitleIsExactThenUniquePrefix() {
+        let list = [
+            NewsSession.Feed(title: "BBC World", url: "u1", isQuery: false),
+            NewsSession.Feed(title: "BBC World Business", url: "u2", isQuery: false),
+            NewsSession.Feed(title: "KSL", url: "u3", isQuery: false),
+        ]
+        XCTAssertEqual(NewsSession.feedRow(titled: "BBC World", in: list), 0)
+        XCTAssertEqual(NewsSession.feedRow(titled: "KSL", in: list), 2)
+        // newsboat truncates the title line — a unique prefix still places it
+        XCTAssertEqual(NewsSession.feedRow(titled: "KS", in: list), 2)
+        XCTAssertEqual(NewsSession.feedRow(titled: " KSL ", in: list), 2)
+        // Two feeds share the prefix: ambiguous, never a guess
+        XCTAssertNil(NewsSession.feedRow(titled: "BBC", in: list))
+        XCTAssertNil(NewsSession.feedRow(titled: "Nope", in: list))
+        XCTAssertNil(NewsSession.feedRow(titled: "", in: list))
+    }
+
+    func testResumeIndexFindsTheRetainedItemElseTheTop() {
+        let list = articles(5)
+        XCTAssertEqual(NewsSession.resumeIndex(retainedID: 3, in: list), 3)
+        // A reload dropped the item, or there was none — the top
+        XCTAssertEqual(NewsSession.resumeIndex(retainedID: 99, in: list), 0)
+        XCTAssertEqual(NewsSession.resumeIndex(retainedID: nil, in: list), 0)
+        XCTAssertEqual(NewsSession.resumeIndex(retainedID: 3, in: []), 0)
+        // The cap is what bounds the Down-arrow run after Home
+        XCTAssertGreaterThan(NewsSession.resumeRowCap, 0)
+    }
+
     // MARK: - The session ledger (cache.db is stale by design)
 
     private func article(_ id: Int64, unread: Bool) -> NewsSession.Article {

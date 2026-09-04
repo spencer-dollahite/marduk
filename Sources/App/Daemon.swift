@@ -390,6 +390,12 @@ final class DaemonServer {
         // this observer touches nothing — it reads counters and logs a line.
         health.utteranceCount = { [speech] in speech.utterancesSpoken }
         health.rebuildCount = { [speech] in speech.synthesizerRebuilds }
+        health.mainLagMax = { [weak self] in self?.keyboardMonitor?.drainMaxMainLag() ?? 0 }
+        health.axFlagsHeld = { AXNudge.shared.heldCount }
+        health.axObserverCounts = { [weak self] in
+            guard let self else { return (0, 0) }
+            return (self.dialogSentinel.registrations, self.dialogSentinel.deregistrations)
+        }
         health.start()
 
         // One-time onboarding: automatic dark PDFs are an invisible
@@ -3801,7 +3807,7 @@ final class DaemonServer {
         // One last reading BEFORE anything is torn down, so every session
         // ends on a measurement instead of a guess — including the sessions
         // that end because the user restarted a daemon that had gone bad.
-        health.emit()
+        health.emit(trigger: .shutdown)
         health.stop()
         modeOverlay?.stop()
         displayInverter?.stop()

@@ -55,6 +55,7 @@ final class KeyboardMonitor {
     /// closed. DispatchTime is mach_absolute_time, which stops with the
     /// system, so a lag reading now only ever means real congestion.
     private var lastMainBeat = DispatchTime.now().uptimeNanoseconds
+    private var maxMainLag: TimeInterval = 0  // failOpenLock-guarded
     private var latencySentinel: DispatchSourceTimer?
     private var onSpeak: SpeakHandler?
     private var onStop: StopHandler?
@@ -71,7 +72,11 @@ final class KeyboardMonitor {
     private var stopped = false
 
     private(set) var isEnabled = true {
-        didSet { if isEnabled != oldValue { onEnabledChange?(isEnabled) } }
+        didSet {
+            if isEnabled != oldValue { onEnabledChange?(isEnabled) }
+            // Disengaged means hands off every other process too
+            if !isEnabled { AXNudge.shared.restoreAll(reason: "disengaged") }
+        }
     }
     private(set) var mode: Mode = .normal {
         didSet { if mode != oldValue { onModeChange?(mode) } }
@@ -349,6 +354,7 @@ final class KeyboardMonitor {
     /// speech engine scopes system pronunciation entries per app).
     var frontmostApp: String? { frontmostBundleID.isEmpty ? nil : frontmostBundleID }
     private var workspaceObserver: NSObjectProtocol?
+    private var terminationObserver: NSObjectProtocol?
     private var isFirefoxFrontmost: Bool { frontmostBundleID == "org.mozilla.firefox" }
 
     /// Re-read the REAL frontmost app and resync the cache. Main thread
@@ -563,6 +569,21 @@ final class KeyboardMonitor {
             }
         }
 
+        // A quit app owes nothing and keeps nothing: its ledger rows (window
+        // tokens, typed marks, snapshots) and any AX flag we set on it go
+        // with it. Keyed by PID, so a recycled PID must never inherit a
+        // dead app's evidence — and dictionaries that only ever grow are
+        // how a daemon that runs for weeks turns into a slow one.
+        terminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self,
+                  let app = note.userInfo?[NSWorkspace.applicationUserInfoKey]
+                      as? NSRunningApplication else { return }
+            self.forgetProcess(app.processIdentifier)
+        }
+
         if createTap() {
             fputs("[keyboard] NORMAL mode (Ctrl+Option+M to disable, i for INSERT)\n", stderr)
             sweepPrewatchWindows()
@@ -673,6 +694,10 @@ final class KeyboardMonitor {
             let lag = Double(DispatchTime.now().uptimeNanoseconds
                              &- self.lastMainBeat) / 1_000_000_000
             let tripped = self.failOpenReasons.contains("main-thread congestion")
+            // The worst lag since the last health reading: a main thread
+            // that stalls for 2s never trips the 4s fail-open, yet every
+            // key waits on it — the health line reports it
+            if lag > self.maxMainLag { self.maxMainLag = lag }
             self.failOpenLock.unlock()
             if lag > 4, !tripped {
                 fputs("[keyboard] main thread lagging \(String(format: "%.1f", lag))s\n",
@@ -684,6 +709,15 @@ final class KeyboardMonitor {
         }
         sentinel.resume()
         latencySentinel = sentinel
+    }
+
+    /// Worst main-queue lag observed by the sentinel since the last call,
+    /// then reset. Any thread (the health monitor reads it off its own queue).
+    func drainMaxMainLag() -> TimeInterval {
+        failOpenLock.lock(); defer { failOpenLock.unlock() }
+        let worst = maxMainLag
+        maxMainLag = 0
+        return worst
     }
 
     private func scheduleTapRetry() {
@@ -717,6 +751,12 @@ final class KeyboardMonitor {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
             workspaceObserver = nil
         }
+        if let observer = terminationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            terminationObserver = nil
+        }
+        // Synchronous: a dispatched restore would die with the process
+        AXNudge.shared.restoreAllNow(reason: "shutdown")
         tapWatchdog?.cancel()
         tapWatchdog = nil
         latencySentinel?.cancel()
@@ -2449,9 +2489,15 @@ final class KeyboardMonitor {
             // Hundreds of AXUIElement refs into a browser process must die
             // with the read, not linger until the next one
             clearWebReadAnchors()
+            // ...and so must the accessibility flags the harvest set on the
+            // app: anchors need them alive for scroll-follow, nothing does
+            // afterwards, and an app left in full-accessibility mode for
+            // days is a slow machine (AXNudge)
+            AXNudge.shared.restoreAll(reason: "read ended")
             fputs("[keyboard] read ended → \(mode)\n", stderr)
         } else {
             clearWebReadAnchors()  // reads without capture (motions off) too
+            AXNudge.shared.restoreAll(reason: "read ended")
         }
     }
 
@@ -3105,6 +3151,16 @@ final class KeyboardMonitor {
         }
     }
 
+    /// Drop everything keyed by a process that has quit. Main-thread only
+    /// (the ledgers are tap state).
+    private func forgetProcess(_ pid: pid_t) {
+        typedApps.remove(pid)
+        typedWindows.removeValue(forKey: pid)
+        lastWindowMark.removeValue(forKey: pid)
+        prewatchWindows.removeValue(forKey: pid)
+        AXNudge.shared.forget(pid: pid)
+    }
+
     /// One AXWindows fetch per already-running GUI app, off-main. Runs
     /// when the tap comes up (evidence collection begins with the tap —
     /// clicks and keystrokes before it were invisible, so windows from
@@ -3717,6 +3773,9 @@ final class KeyboardMonitor {
     /// caret or pointer to honor and reads from the top.
     private func failReadDocument(_ fallback: DocumentHarvest?) {
         guard let fallback else {
+            // The walks may have nudged the app's AX flags on the way to
+            // nothing; no read will end to take them back, so do it here
+            AXNudge.shared.restoreAll(reason: "no document")
             Earcon.error()
             onAnnounce?("No readable document here.")
             return
@@ -3850,10 +3909,10 @@ final class KeyboardMonitor {
         guard AXUIElementGetPid(element, &pid) == .success, pid != 0 else {
             return false
         }
-        let app = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(app, 0.25)
-        let err = AXUIElementSetAttributeValue(
-            app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        // Recorded in the AXNudge ledger so the flag is taken back when
+        // the read ends — a per-process flag left on for the app's whole
+        // lifetime is a slow-machine bug, not a harmless hint.
+        let err = AXNudge.shared.enhance(pid: pid, flags: [.enhanced])
         fputs("[keyboard] R: enhanced-UI nudge sent (\(err.rawValue))\n", stderr)
         return true
     }
@@ -4190,11 +4249,11 @@ final class KeyboardMonitor {
         // The screen-reader nudges: browsers keep web AX trees minimal
         // until an assistive client announces itself. EnhancedUserInterface
         // is the WebKit/Gecko signal; ManualAccessibility is the
-        // Chromium/Electron one — setting both is harmless.
-        AXUIElementSetAttributeValue(
-            axApp, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
-        AXUIElementSetAttributeValue(
-            axApp, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        // Chromium/Electron one. Setting both is harmless FOR THE READ —
+        // leaving them on is not (Chromium runs in full accessibility mode
+        // until told otherwise), so both go through the AXNudge ledger and
+        // are restored when the read ends.
+        AXNudge.shared.enhance(pid: pid, flags: [.enhanced, .manual])
         Thread.sleep(forTimeInterval: 0.3) // let the tree populate
 
         guard let window = documentWindow(of: axApp) else { return nil }

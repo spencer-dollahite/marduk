@@ -43,7 +43,9 @@ final class DialogSentinel {
     var level: Level = .all
 
     private var workspaceObserver: NSObjectProtocol?
+    private var terminationObserver: NSObjectProtocol?
     private var axObserver: AXObserver?
+    private var observedElement: AXUIElement?
     private var observedPID: pid_t = -1
     private var lastAnnouncement = ""
     private var lastAnnouncedAt = Date.distantPast
@@ -58,6 +60,10 @@ final class DialogSentinel {
     ]
 
     func start() {
+        // Idempotent: a second start without a stop must not stack a
+        // second workspace observer (two observers = two AX registrations
+        // per app switch, forever)
+        stop()
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil, queue: .main
@@ -73,6 +79,18 @@ final class DialogSentinel {
             }
             self.observeFrontmost(app)
         }
+        // The observed app quitting ends the observation cleanly instead
+        // of leaving a registration aimed at a dead (and recyclable) PID
+        terminationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self,
+                  let app = note.userInfo?[NSWorkspace.applicationUserInfoKey]
+                      as? NSRunningApplication,
+                  app.processIdentifier == self.observedPID else { return }
+            self.teardownAXObserver()
+        }
         if let app = NSWorkspace.shared.frontmostApplication {
             observeFrontmost(app)
         }
@@ -83,6 +101,10 @@ final class DialogSentinel {
         if let observer = workspaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
             workspaceObserver = nil
+        }
+        if let observer = terminationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            terminationObserver = nil
         }
         teardownAXObserver()
     }
@@ -113,14 +135,36 @@ final class DialogSentinel {
         CFRunLoopAddSource(CFRunLoopGetMain(),
                            AXObserverGetRunLoopSource(observer), .defaultMode)
         axObserver = observer
+        observedElement = appElement
+        registrations += 1
     }
+
+    /// Registrations made and taken back since start — the health line's
+    /// evidence that the two stay equal, since a registration left behind
+    /// in another process is invisible from inside this one.
+    private(set) var registrations = 0
+    private(set) var deregistrations = 0
 
     private func teardownAXObserver() {
         if let observer = axObserver {
+            // The registration lives in the OBSERVED process, keyed by our
+            // port. Dropping the run loop source and the observer only
+            // tells OUR side; every app switch used to leave the far side
+            // holding one more dead registration for the life of the app —
+            // thousands, in a browser that runs for days. Remove them
+            // explicitly, as the API contract says.
+            if let element = observedElement {
+                AXObserverRemoveNotification(observer, element,
+                                             kAXSheetCreatedNotification as CFString)
+                AXObserverRemoveNotification(observer, element,
+                                             kAXWindowCreatedNotification as CFString)
+                deregistrations += 1
+            }
             CFRunLoopRemoveSource(CFRunLoopGetMain(),
                                   AXObserverGetRunLoopSource(observer), .defaultMode)
         }
         axObserver = nil
+        observedElement = nil
         observedPID = -1
     }
 

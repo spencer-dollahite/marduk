@@ -121,6 +121,7 @@ final class DisplayInverter: @unchecked Sendable {
     private var terminationObserver: NSObjectProtocol?
     private var themeObserver: NSObjectProtocol?
     private var previewObserver: AXObserver?
+    private var previewObserverElement: AXUIElement?
     private var previewObserverPID: pid_t = -1
 
     // THE MECHANISM, settled by a night of field forensics: fire the
@@ -200,6 +201,10 @@ final class DisplayInverter: @unchecked Sendable {
     }
 
     func start() {
+        // Idempotent: a start on top of a running instance must not stack
+        // a second heartbeat or a second activation observer — every extra
+        // timer is one more per-second wake-up for the life of the daemon
+        if pollTimer != nil || observer != nil { retireObservers() }
         // Seed the OBSERVED state so transition math is right — but claim
         // no ownership. An inversion that predates this process is the
         // user's (or a stranded pref), never ours to undo.
@@ -342,7 +347,9 @@ final class DisplayInverter: @unchecked Sendable {
         }
     }
 
-    func stop() {
+    /// Every observer and timer `start()` installs, taken down. Shared by
+    /// stop() and by a re-entrant start().
+    private func retireObservers() {
         if let observer = observer {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
             self.observer = nil
@@ -358,6 +365,12 @@ final class DisplayInverter: @unchecked Sendable {
         teardownPreviewObserver()
         pollTimer?.invalidate()
         pollTimer = nil
+        pendingActivation?.cancel()
+        pendingActivation = nil
+    }
+
+    func stop() {
+        retireObservers()
         // Hand back ONLY an inversion we put there, and only after
         // confirming the display is REALLY inverted. The toggle is blind:
         // firing it on a believed-but-false inversion turns a dark screen
@@ -693,6 +706,7 @@ final class DisplayInverter: @unchecked Sendable {
     // heartbeat, which re-ensures every beat.
     private var lastToggleAt = Date.distantPast
     private static let toggleLockout: TimeInterval = 1.5
+    private var lastNoChangeKey = ""
 
     private func ensureInverted(_ wanted: Bool, holder: String?, reason: String) {
         // THE TOGGLE IS BLIND: it flips whatever the display is ACTUALLY
@@ -750,9 +764,17 @@ final class DisplayInverter: @unchecked Sendable {
                 if !effective { weOwnInversion = false }
             }
             if case .noChange = decision {
-                fputs("[display] \(reason): already "
-                    + "\(isInverted ? "inverted" : "normal"), nothing to do\n",
-                    stderr)
+                // The heartbeat lands here once a SECOND for as long as a
+                // listed app stays front — thousands of identical lines an
+                // hour in a log meant to be pasted into issues. Say it
+                // once per (reason, state); the next beat is silent
+                let key = "\(reason)|\(isInverted)"
+                if key != lastNoChangeKey {
+                    lastNoChangeKey = key
+                    fputs("[display] \(reason): already "
+                        + "\(isInverted ? "inverted" : "normal"), nothing to do\n",
+                        stderr)
+                }
                 return
             }
         }
@@ -1103,15 +1125,23 @@ final class DisplayInverter: @unchecked Sendable {
         CFRunLoopAddSource(CFRunLoopGetMain(),
                            AXObserverGetRunLoopSource(observer), .defaultMode)
         previewObserver = observer
+        previewObserverElement = appElement
         previewObserverPID = pid
     }
 
     private func teardownPreviewObserver() {
         if let observer = previewObserver {
+            // Deregister in PREVIEW, not just here — see DialogSentinel:
+            // a registration is state in the observed process
+            if let element = previewObserverElement {
+                AXObserverRemoveNotification(observer, element,
+                                             kAXWindowCreatedNotification as CFString)
+            }
             CFRunLoopRemoveSource(CFRunLoopGetMain(),
                                   AXObserverGetRunLoopSource(observer), .defaultMode)
         }
         previewObserver = nil
+        previewObserverElement = nil
         previewObserverPID = -1
     }
 

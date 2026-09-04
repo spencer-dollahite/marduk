@@ -412,6 +412,7 @@ final class ColonCommandTests: XCTestCase {
         "brief — speak the daily brief now",
         "segments — choose what the daily brief includes",
         "describe — describe the image under the pointer",
+        "ask — ask about the last described image",
         "pronunciation — open the system pronunciation editor",
         "typing — open the system typing feedback settings",
          "karabiner — apply your own Karabiner rules",

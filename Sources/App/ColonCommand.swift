@@ -14,6 +14,7 @@ enum ColonCommand: Equatable {
     case brief
     case segments
     case describe
+    case ask(question: String)
     case pronunciation
     case typing
     case karabiner
@@ -31,7 +32,7 @@ enum ColonCommand: Equatable {
     // No name may be a prefix of another — auto-accept relies on it
     static let commandNames = ["help", "commands", "tutorial", "tip", "config",
                                "voices", "invertappslist", "news", "stock",
-                               "brief", "segments", "describe",
+                               "brief", "segments", "describe", "ask",
                                "pronunciation", "typing", "karabiner",
                                "quit", "restart",
                                "update", "uninstall", "log", "feedback", "bug",
@@ -63,7 +64,7 @@ enum ColonCommand: Equatable {
     /// pause after ":stock" mid-way through "stock add …" must never
     /// execute-and-close under the typist).
     static let expandingCommands: Set<String> =
-        pickerCommands.union(["config", "stock"])
+        pickerCommands.union(["config", "stock", "ask"])
 
     /// A picker buffer normalized to its BARE form (`"invertappslist …"`),
     /// recognizing both the bare spelling and the `:config`-namespaced one
@@ -153,6 +154,11 @@ enum ColonCommand: Equatable {
             return .segments
         case "describe":
             return .describe
+        case "ask":
+            // A question is CONTENT: the whole tail, the user's own
+            // capitalization (the text-setting rule)
+            let original = raw.split(separator: " ").map(String.init)
+            return .ask(question: original.dropFirst().joined(separator: " "))
         case "pronunciation":
             return .pronunciation
         case "typing":
@@ -263,6 +269,11 @@ enum ColonCommand: Equatable {
         case 2 where tokens[0] == "log":
             guard expand(tokens[1], in: ["copy"]) == "copy" else { return .none }
             return .execute("log copy")
+
+        case _ where tokens[0] == "ask":
+            // A question never auto-resolves — nothing can know it is
+            // finished. Return sends it.
+            return .none
 
         case 2 where tokens[0] == "stock":
             // Subcommand expands and waits for its symbol; symbols and
@@ -442,6 +453,7 @@ enum CommandCompleter {
         "brief": "speak the daily brief now",
         "segments": "choose what the daily brief includes",
         "describe": "describe the image under the pointer",
+        "ask": "ask about the last described image",
         "pronunciation": "open the system pronunciation editor",
         "typing": "open the system typing feedback settings",
         "karabiner": "apply your own Karabiner rules",
@@ -597,6 +609,13 @@ enum CommandCompleter {
             guard tokens.count <= 2, "copy".hasPrefix(partial) else { return [] }
             return [Candidate(display: "copy — copy recent log lines to the clipboard",
                               completion: "log copy")]
+        }
+
+        // "ask" stage: a spoken prompt for the question; stays up until Return
+        if tokens[0] == "ask" {
+            return [Candidate(display: "your question about the last described picture"
+                                  + " — Return sends it",
+                              completion: nil)]
         }
 
         // "stock" stages: subcommand rows, then free-typed symbol/price

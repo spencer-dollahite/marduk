@@ -531,6 +531,7 @@ final class DaemonServer {
                     hoverSpeech.deactivate()
                     briefReader.abort()
                     imageDescriber.abort()
+                    imageDescriber.forget(reason: "disengaged")
                     // "Systems disengaged" must mean ALL systems: the
                     // sentinel's toggle gating was lost in the level
                     // migration and the inverter was never wired (field:
@@ -814,6 +815,18 @@ final class DaemonServer {
         // IMAGE DESCRIPTION (`D`): an announcement, so rr replays it and
         // the reading capture never engages over it
         imageDescriber.announce = { [self] text in speech.announce(text) }
+        imageDescriber.announceThen = { [self] text, done in
+            speech.announce(text) { DispatchQueue.main.async(execute: done) }
+        }
+        imageDescriber.armQuestion = { [self] keys, onAnswer in
+            keyboardMonitor?.armQuestion(keys: keys, onAnswer: onAnswer)
+        }
+        imageDescriber.extendQuestionWindow = { [self] in
+            keyboardMonitor?.extendQuestionWindow()
+        }
+        imageDescriber.openCommandLine = { [self] prefill in
+            keyboardMonitor?.openCommandLine(prefill: prefill)
+        }
         imageDescriber.settings = { [self] in config }
         imageDescriber.isEngaged = { [self] in keyboardMonitor?.isEnabled ?? false }
         imageDescriber.isReadActive = { [self] in speech.readActive }
@@ -1491,6 +1504,14 @@ final class DaemonServer {
                 return
             }
             imageDescriber.describe()
+        case .ask(let question):
+            guard config.extensions?.describe ?? true else {
+                Earcon.error()
+                speech.announce("Image description is off. "
+                    + "Say colon config describe on.")
+                return
+            }
+            imageDescriber.ask(question)
         case .news:
             guard config.extensions?.news ?? true else {
                 Earcon.error()
@@ -3149,7 +3170,10 @@ final class DaemonServer {
             config.extensions = ext
             ConfigLoader.save(config)
             keyboardMonitor?.describeExtensionEnabled = on
-            if !on { imageDescriber.abort() }
+            if !on {
+                imageDescriber.abort()
+                imageDescriber.forget(reason: "extension off")
+            }
             speech.announce(on
                 ? "Image description on. Point at a picture and press capital D."
                 : "Image description off.")

@@ -68,6 +68,13 @@ enum DescribePrompt {
         Do not use markdown or lists.
         """
 
+    /// A follow-up about the same picture: short, grounded, no markdown.
+    static func question(_ question: String) -> String {
+        question.trimmingCharacters(in: .whitespacesAndNewlines)
+            + " Answer in one or two plain sentences, from the image only. "
+            + "If the image doesn't show it, say so. No markdown."
+    }
+
     /// The OCR pass's text, when there is some, rides in as context.
     static func text(ocr: String) -> String {
         let trimmed = ocr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -173,6 +180,71 @@ enum OllamaVision {
         ]
     }
 
+    /// `/api/chat` messages for a follow-up: the ORIGINAL prompt with the
+    /// image attached once, the description the model gave, every earlier
+    /// exchange in order, then the new question — so "and the one on the
+    /// left?" refers to something. Pure, tested.
+    static func chatMessages(description: String, ocr: String, jpegBase64: String,
+                             history: [(question: String, answer: String)],
+                             question: String) -> [[String: Any]] {
+        var messages: [[String: Any]] = [
+            ["role": "user", "content": DescribePrompt.text(ocr: ocr),
+             "images": [jpegBase64]],
+            ["role": "assistant", "content": description],
+        ]
+        for exchange in history {
+            messages.append(["role": "user", "content": exchange.question])
+            messages.append(["role": "assistant", "content": exchange.answer])
+        }
+        messages.append(["role": "user", "content": DescribePrompt.question(question)])
+        return messages
+    }
+
+    static func chatPayload(model: String, messages: [[String: Any]]) -> [String: Any] {
+        [
+            "model": model,
+            "messages": messages,
+            "stream": false,
+            "options": ["temperature": 0.2],
+        ]
+    }
+
+    /// The answer text out of a `/api/chat` reply.
+    static func chatAnswer(_ data: Data) -> String? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let message = root["message"] as? [String: Any],
+              let content = message["content"] as? String else { return nil }
+        return clean(response: content)
+    }
+
+    /// A follow-up question about a retained picture, off-main. The
+    /// server is already held by the describer while a picture is
+    /// retained, so no acquire here — but a server that has since died
+    /// still answers honestly.
+    static func ask(question: String, retained: ImageDescriber.Retained)
+        -> Result<String, Failure> {
+        guard OllamaServer.isLocal(base: retained.base) else { return .failure(.notLocal) }
+        let messages = chatMessages(description: retained.description, ocr: retained.ocr,
+                                    jpegBase64: retained.jpegBase64,
+                                    history: retained.history, question: question)
+        let payload = chatPayload(model: retained.model, messages: messages)
+        let started = Date()
+        guard let body = try? JSONSerialization.data(withJSONObject: payload),
+              let data = OllamaServer.curl(url: "\(retained.base)/api/chat", body: body,
+                                           timeout: generateTimeout)
+        else { return .failure(.timeout) }
+        if let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let error = root["error"] as? String, !error.isEmpty {
+            fputs("[describe] ollama chat error (\(error.count) chars)\n", stderr)
+            return .failure(.refused)
+        }
+        guard let answer = chatAnswer(data) else { return .failure(.empty) }
+        fputs("[describe] ollama answered the question in "
+            + String(format: "%.1f", Date().timeIntervalSince(started))
+            + "s (\(answer.count) chars)\n", stderr)
+        return .success(answer)
+    }
+
     /// The response text, tidied for speech: markdown emphasis and list
     /// markers dropped, whitespace collapsed, capped. nil when empty.
     static let responseLimit = 1200
@@ -191,10 +263,16 @@ enum OllamaVision {
         return ImageFacts.clamp(text, responseLimit)
     }
 
+    struct Answer {
+        let text: String
+        let model: String
+    }
+
     /// The whole round trip, off-main. Ownership per OllamaServer: a
-    /// server we start is stopped when this finishes.
+    /// server we start is stopped when this finishes (the describer
+    /// takes its own hold afterwards while the picture is retained).
     static func describe(image: CGImage, ocr: String, base: String,
-                         configuredModel: String?) -> Result<String, Failure> {
+                         configuredModel: String?) -> Result<Answer, Failure> {
         guard OllamaServer.isLocal(base: base) else { return .failure(.notLocal) }
         let server = OllamaServer.shared
         defer { server.release() }
@@ -244,7 +322,7 @@ enum OllamaVision {
         fputs("[describe] ollama answered in "
             + String(format: "%.1f", Date().timeIntervalSince(started))
             + "s (\(text.count) chars)\n", stderr)
-        return .success(text)
+        return .success(Answer(text: text, model: model))
     }
 
     enum Failure: Error {
@@ -283,6 +361,12 @@ enum OllamaVision {
 /// macOS 27. Only `SystemLanguageModel.default` — the on-device model —
 /// is ever used; a test forbids any other model reference in this file.
 enum AppleImageModel {
+    static let modelName = "apple"
+    /// The session that described the last picture, kept so questions
+    /// ride its transcript. Stored untyped so the property compiles
+    /// without the flag; only flagged code touches it.
+    private static var sessionBox: Any?
+
     static var isReady: Bool {
         #if MARDUK_APPLE_IMAGE && canImport(FoundationModels)
         if #available(macOS 27, *) {
@@ -298,6 +382,7 @@ enum AppleImageModel {
         #if MARDUK_APPLE_IMAGE && canImport(FoundationModels)
         guard #available(macOS 27, *), isReady else { return nil }
         let session = LanguageModelSession(model: SystemLanguageModel.default)
+        sessionBox = session
         let small = ImageJPEG.downscale(image)
         let started = Date()
         do {
@@ -312,6 +397,24 @@ enum AppleImageModel {
             return text
         } catch {
             fputs("[describe] apple model failed: \(error.localizedDescription)\n",
+                  stderr)
+            return nil
+        }
+        #else
+        return nil
+        #endif
+    }
+
+    /// A follow-up on the retained session's transcript.
+    static func ask(question: String) async -> String? {
+        #if MARDUK_APPLE_IMAGE && canImport(FoundationModels)
+        guard #available(macOS 27, *), isReady,
+              let session = sessionBox as? LanguageModelSession else { return nil }
+        do {
+            let response = try await session.respond(to: DescribePrompt.question(question))
+            return OllamaVision.clean(response: response.content)
+        } catch {
+            fputs("[describe] apple question failed: \(error.localizedDescription)\n",
                   stderr)
             return nil
         }

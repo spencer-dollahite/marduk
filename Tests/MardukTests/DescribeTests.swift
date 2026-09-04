@@ -277,6 +277,61 @@ final class DescribeTests: XCTestCase {
         }
     }
 
+    // MARK: - Questions
+
+    func testAskKeepsTheQuestionsCapitalizationAndSpaces() {
+        XCTAssertEqual(ColonCommand.parse("ask What color is the Car?"),
+                       .ask(question: "What color is the Car?"))
+        XCTAssertEqual(ColonCommand.parse("as how many people"),
+                       .ask(question: "how many people"))
+        XCTAssertEqual(ColonCommand.parse("ask"), .ask(question: ""))
+    }
+
+    func testAskExpandsButAQuestionNeverAutoResolves() {
+        XCTAssertEqual(ColonCommand.autoResolve("ask"), .expand("ask "))
+        XCTAssertEqual(ColonCommand.autoResolve("ask what"), .none)
+        XCTAssertEqual(ColonCommand.autoResolve("ask what is"), .none)
+        XCTAssertTrue(ColonCommand.expandingCommands.contains("ask"))
+    }
+
+    func testChatMessagesAttachTheImageOnceAndKeepTheOrder() {
+        let messages = OllamaVision.chatMessages(
+            description: "A dog.", ocr: "", jpegBase64: "AAAA",
+            history: [("what breed", "A beagle."), ("how many", "One.")],
+            question: "is it sitting")
+        XCTAssertEqual(messages.count, 7)
+        XCTAssertEqual(messages[0]["role"] as? String, "user")
+        XCTAssertEqual(messages[0]["images"] as? [String], ["AAAA"])
+        XCTAssertEqual(messages[1]["content"] as? String, "A dog.")
+        XCTAssertEqual(messages[2]["content"] as? String, "what breed")
+        XCTAssertEqual(messages[5]["content"] as? String, "One.")
+        XCTAssertTrue((messages[6]["content"] as? String ?? "").hasPrefix("is it sitting"))
+        XCTAssertEqual(messages.filter { $0["images"] != nil }.count, 1)
+        XCTAssertTrue(JSONSerialization.isValidJSONObject(
+            OllamaVision.chatPayload(model: "gemma3:4b", messages: messages)))
+    }
+
+    func testChatAnswerIsCleanedOrNil() {
+        let reply = #"{"message":{"role":"assistant","content":"**Yes**, it is sitting."}}"#
+        XCTAssertEqual(OllamaVision.chatAnswer(reply.data(using: .utf8)!),
+                       "Yes, it is sitting.")
+        XCTAssertNil(OllamaVision.chatAnswer(#"{"error":"boom"}"#.data(using: .utf8)!))
+    }
+
+    func testQuestionPromptGroundsTheAnswer() {
+        let prompt = DescribePrompt.question("  what is on the table ")
+        XCTAssertTrue(prompt.hasPrefix("what is on the table"))
+        XCTAssertTrue(prompt.contains("from the image only"))
+    }
+
+    func testTheQuestionPromptsNameTheirKeys() {
+        for prompt in [ImageDescriber.questionPrompt, ImageDescriber.morePrompt] {
+            XCTAssertTrue(prompt.contains("y for yes"))
+            XCTAssertTrue(prompt.contains("n for no"))
+        }
+        XCTAssertEqual(ImageDescriber.askPrefill, "ask ")
+    }
+
     // MARK: - Composition
 
     func testComposeOpensWithKindThenLabelThenBody() {

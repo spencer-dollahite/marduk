@@ -92,7 +92,13 @@ enum HelpText {
         any text in it. r r says it again. The first press asks for the \
         Screen Recording permission, which is how Marduk sees the picture. \
         Say colon config image model to choose the engine: Apple's own \
-        model, a local Ollama model, or Apple's instant labels. \
+        model, a local Ollama model, or Apple's instant labels. When a \
+        model described the picture, Marduk asks whether you have \
+        questions: y opens the command line with ask already typed — type \
+        your question and press Return — and n moves on. Colon ask, then \
+        a question, works any time while the picture is remembered, and \
+        the model remembers your earlier questions, so and the one on the \
+        left works. A new capital D, or ten quiet minutes, forgets it. \
         Escape, stop speech. Space, pause or resume a read. \
         With read motions on, a read takes the whole keyboard, from any \
         mode: b and w step back and forward a word, h and l do the same. \

@@ -411,6 +411,7 @@ final class ColonCommandTests: XCTestCase {
         "stock — manage the stock watchlist",
         "brief — speak the daily brief now",
         "segments — choose what the daily brief includes",
+        "describe — describe the image under the pointer",
         "pronunciation — open the system pronunciation editor",
         "typing — open the system typing feedback settings",
          "karabiner — apply your own Karabiner rules",

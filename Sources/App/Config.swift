@@ -232,6 +232,11 @@ struct MardukConfig: Codable {
         news = try c.decodeIfPresent(NewsConfig.self, forKey: .news)
         brief = try c.decodeIfPresent(BriefConfig.self, forKey: .brief)
         extensions = try c.decodeIfPresent(ExtensionsConfig.self, forKey: .extensions)
+        // EVERY new top-level block needs a line here — this init replaces
+        // the synthesized one, so a block it doesn't mention is never
+        // decoded and its settings silently reset on every restart
+        // (ConfigPermutationTests' round-trip catches the omission).
+        describe = try c.decodeIfPresent(DescribeConfig.self, forKey: .describe)
     }
 }
 

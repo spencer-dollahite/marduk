@@ -126,12 +126,20 @@ enum DescribePrompt {
     /// The normal-detail prompt (kept as a name for the tests and docs).
     static var base: String { base(.normal) }
 
+    /// Jokes are the thing a caption never carries (user ruling
+    /// 2026-09-04): the model must notice humor and explain it, at every
+    /// detail level.
+    static let humor = "If the image is meant to be funny — a meme, a joke, "
+        + "a caption, a visual gag, something absurd or ironic — say so, "
+        + "describe what is happening, and explain what the joke is."
+
     static func base(_ detail: DescribeDetail) -> String {
         "Describe this image for a person who cannot see it. "
             + detail.lengthInstruction
             + " Start with what kind of image it is: a photo, a screenshot, "
             + "a drawing, a meme, a diagram. "
             + detail.coverage
+            + " " + humor
             + " Do not guess who people are and do not name anyone. "
             + "Do not use markdown or lists."
     }

@@ -831,6 +831,12 @@ final class DaemonServer {
         imageDescriber.isEngaged = { [self] in keyboardMonitor?.isEnabled ?? false }
         imageDescriber.isReadActive = { [self] in speech.readActive }
         keyboardMonitor?.onDescribe = { [self] in imageDescriber.describe() }
+        keyboardMonitor?.onDescribeDetail = { [self] taps in
+            imageDescriber.redescribe(taps: taps)
+        }
+        imageDescriber.onActiveChange = { [self] active in
+            keyboardMonitor?.describeActive = active
+        }
 
         // Extension gates (:config news/stocks/brief) — the monitor's
         // `where` clauses read these flags live

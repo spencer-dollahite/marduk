@@ -49,6 +49,10 @@ final class ImageDescriber {
     var extendQuestionWindow: () -> Void = {}
     /// Enter COMMAND mode with a prefilled buffer — `y` lands in "ask ".
     var openCommandLine: (String) -> Void = { _ in }
+    /// True from the D press until the description has been spoken —
+    /// the window in which v / vv / vvv re-describe (KeyboardMonitor
+    /// reads it in the burst flush).
+    var onActiveChange: (Bool) -> Void = { _ in }
     var settings: () -> MardukConfig = { MardukConfig() }
     var isEngaged: () -> Bool = { true }
     /// A read the user started AFTER pressing D wins — the description
@@ -76,10 +80,39 @@ final class ImageDescriber {
         var holdsServer: Bool
     }
 
+    /// What a re-describe at another detail needs; kept only while
+    /// `active` (one image plus its facts — dropped when the description
+    /// has been spoken, so memory never holds a picture nobody can act on).
+    struct LastRun {
+        let image: CGImage
+        let facts: ImageFacts
+        let label: String?
+        let source: ImageSource
+        let setting: ImageEngine
+        let base: String
+        let configuredModel: String?
+    }
+
+    /// Browsers keep their web AX tree minimal until an assistive client
+    /// announces itself, so the element under the pointer over a web image
+    /// can come back as the whole web area. When the first look finds no
+    /// picture and no file, Marduk announces itself (the read rung's
+    /// AXNudge, ledgered and restored right after the capture), waits for
+    /// the tree, and looks once more.
+    static let nudgeSettle: TimeInterval = 0.4
+
     private(set) var running = false
     private var runGeneration = 0
     private(set) var retained: Retained?
     private var idleTimer: DispatchWorkItem?
+    private var lastRun: LastRun?
+    private var active = false {
+        didSet {
+            guard active != oldValue else { return }
+            if !active { lastRun = nil }
+            onActiveChange(active)
+        }
+    }
 
     // MARK: - Entry (main thread)
 
@@ -114,53 +147,124 @@ final class ImageDescriber {
             opening += " " + Self.helpLine
         }
         announce(opening)
+        active = true
 
         let setting = ImageEngine(rawValue: config.describe?.imageModel ?? "auto") ?? .auto
         let configuredModel = config.describe?.ollamaModel ?? config.news?.ollamaModel
         let detail = DescribeDetail.from(config.describe?.detail)
 
+        if let pid = located.pid, Self.wantsNudge(located) {
+            AXNudge.shared.enhance(pid: pid, flags: [.enhanced, .manual])
+            fputs("[describe] no picture on first look — nudged the app, looking again\n",
+                  stderr)
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.nudgeSettle) { [weak self] in
+                guard let self, generation == self.runGeneration else { return }
+                let again = ImageAcquire.locate(pointer: pointer)
+                fputs("[describe] after the nudge: capture "
+                    + (again.imageShaped ? "element" : "whole window") + "\n", stderr)
+                self.acquireAndSpeak(again, pointer: pointer, generation: generation,
+                                     setting: setting, base: base,
+                                     configuredModel: configuredModel, detail: detail,
+                                     nudged: true)
+            }
+            return
+        }
+        acquireAndSpeak(located, pointer: pointer, generation: generation, setting: setting,
+                        base: base, configuredModel: configuredModel, detail: detail,
+                        nudged: false)
+    }
+
+    /// The first look found neither a picture nor a file, and AX did
+    /// answer — the shape of a browser that hasn't published its tree.
+    static func wantsNudge(_ located: LocatedElement) -> Bool {
+        !located.axFailed && located.pid != nil && !located.imageShaped
+            && located.fileURL == nil && located.documentURL == nil
+    }
+
+    private func acquireAndSpeak(_ located: LocatedElement, pointer: CGPoint,
+                                 generation: Int, setting: ImageEngine, base: String,
+                                 configuredModel: String?, detail: DescribeDetail,
+                                 nudged: Bool) {
         Task.detached(priority: .userInitiated) { [weak self] in
             let outcome = await ImageAcquire.acquire(located, pointer: pointer)
+            // The flags were for the look and the capture; the app gets
+            // them back now, whatever happened
+            if nudged { AXNudge.shared.restoreAll(reason: "describe captured") }
             guard let self else { return }
             guard case .image(let acquired) = outcome else {
-                await self.finish(generation) { self.speakAcquireFailure(outcome) }
+                await self.finish(generation) {
+                    self.active = false
+                    self.speakAcquireFailure(outcome)
+                }
                 return
             }
             fputs("[describe] \(acquired.source.rawValue): "
                 + "\(acquired.image.width)x\(acquired.image.height)\n", stderr)
             let facts = await ImageFacts.gather(acquired.image)
-            let described = await self.run(setting: setting, image: acquired.image,
-                                           facts: facts, base: base,
-                                           configuredModel: configuredModel,
-                                           detail: detail)
-            let spoken = Self.compose(kind: facts.kindWord, label: located.label,
-                                      source: acquired.source, body: described.text)
-            // A model answered: keep the picture answerable, and keep a
-            // server we started warm for the questions
-            var keep: Retained?
-            if described.engine != .labels, let model = described.model,
-               let jpeg = ImageJPEG.data(acquired.image) {
-                var holds = false
-                if described.engine == .ollama {
-                    switch OllamaServer.shared.acquire(base: base) {
-                    case .alreadyRunning, .started: holds = true
-                    default: OllamaServer.shared.release()
-                    }
+            let run = LastRun(image: acquired.image, facts: facts, label: located.label,
+                              source: acquired.source, setting: setting, base: base,
+                              configuredModel: configuredModel)
+            await self.describeAndSpeak(run, detail: detail, generation: generation)
+        }
+    }
+
+    /// v / vv / vvv while a description is in flight or speaking: the
+    /// same picture again at brief / normal / full, the setting untouched.
+    func redescribe(taps: Int) {
+        guard active, let run = lastRun else {
+            Earcon.error()
+            return
+        }
+        let detail: DescribeDetail = taps <= 1 ? .brief : (taps == 2 ? .normal : .full)
+        runGeneration += 1
+        let generation = runGeneration
+        running = true
+        fputs("[describe] re-describing at \(detail.rawValue)\n", stderr)
+        announce(detail.rawValue.prefix(1).uppercased() + detail.rawValue.dropFirst() + ".")
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            await self.describeAndSpeak(run, detail: detail, generation: generation)
+        }
+    }
+
+    /// Off-main: the engine chain, then back to main to speak. Shared by
+    /// D and by the v-taps.
+    private func describeAndSpeak(_ run: LastRun, detail: DescribeDetail,
+                                  generation: Int) async {
+        let described = await self.run(setting: run.setting, image: run.image,
+                                       facts: run.facts, base: run.base,
+                                       configuredModel: run.configuredModel,
+                                       detail: detail)
+        let spoken = Self.compose(kind: run.facts.kindWord, label: run.label,
+                                  source: run.source, body: described.text)
+        // A model answered: keep the picture answerable, and keep a
+        // server we started warm for the questions
+        var keep: Retained?
+        if described.engine != .labels, let model = described.model,
+           let jpeg = ImageJPEG.data(run.image) {
+            var holds = false
+            if described.engine == .ollama {
+                switch OllamaServer.shared.acquire(base: run.base) {
+                case .alreadyRunning, .started: holds = true
+                default: OllamaServer.shared.release()
                 }
-                keep = Retained(jpegBase64: jpeg.base64EncodedString(), ocr: facts.text,
-                                description: described.text, engine: described.engine,
-                                model: model, base: base, detail: detail,
-                                holdsServer: holds)
             }
-            await self.finish(generation) {
-                self.retained = keep
-                if let keep {
-                    fputs("[describe] retained for questions (\(keep.engine.rawValue)"
-                        + (keep.holdsServer ? ", server held" : "") + ")\n", stderr)
-                    self.speakWithQuestion(spoken, prompt: Self.questionPrompt)
-                } else {
-                    self.announce(spoken)
-                }
+            keep = Retained(jpegBase64: jpeg.base64EncodedString(), ocr: run.facts.text,
+                            description: described.text, engine: described.engine,
+                            model: model, base: run.base, detail: detail,
+                            holdsServer: holds)
+        }
+        await finish(generation) {
+            // A re-describe replaces the retained picture (and its hold)
+            self.forget(reason: "re-described")
+            self.lastRun = run
+            self.retained = keep
+            if let keep {
+                fputs("[describe] retained for questions (\(keep.engine.rawValue)"
+                    + (keep.holdsServer ? ", server held" : "") + ")\n", stderr)
+                self.speakWithQuestion(spoken, prompt: Self.questionPrompt)
+            } else {
+                self.announceThen(spoken) { [weak self] in self?.active = false }
             }
         }
     }
@@ -173,6 +277,7 @@ final class ImageDescriber {
         guard running else { return }
         running = false
         runGeneration += 1
+        active = false
         fputs("[describe] abandoned\n", stderr)
     }
 
@@ -247,6 +352,8 @@ final class ImageDescriber {
         armIdleTimer()
         announceThen(text + " " + prompt) { [weak self] in
             self?.extendQuestionWindow()
+            // The description has been heard: v is VISUAL again
+            self?.active = false
         }
         armQuestion(["y", "n"]) { [weak self] answer in
             guard let self else { return }

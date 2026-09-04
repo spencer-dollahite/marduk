@@ -304,6 +304,10 @@ final class KeyboardMonitor {
     var stocksExtensionEnabled = true
     var briefExtensionEnabled = true
     var describeExtensionEnabled = true
+    /// True from a D press until its description has been spoken (set by
+    /// the describer on main). While true, a burst of v's is a detail
+    /// re-describe, not VISUAL — see `BurstPolicy.detailTaps`.
+    var describeActive = false
 
     /// DAILY BRIEF (`d`): a lone d, resolved on burst expiry exactly like
     /// s/t/u/n. `d` is deliberately NOT one of BurstPolicy's command
@@ -312,6 +316,7 @@ final class KeyboardMonitor {
     /// before a lone d can ever reach here.
     var onBriefOpen: (() -> Void)?
     var onDescribe: (() -> Void)?
+    var onDescribeDetail: ((Int) -> Void)?   // 1 brief, 2 normal, 3 full
 
     // STOCKS mode (`S` — Marduk-native watchlist, no external app, no
     // key posting). Same shape as NEWS: daemon arms via setStocksActive,
@@ -2809,7 +2814,19 @@ final class KeyboardMonitor {
     /// the event turned out to be app-bound and was never really delivered —
     /// queue it for ordered posting.
     private func flushBurstAsCommands() {
-        for ev in takeBurst() {
+        let events = takeBurst()
+        // v / vv / vvv while a picture is being described: the whole
+        // buffer is the gesture (pure `BurstPolicy.detailTaps`)
+        if mode == .normal, !readingCapture,
+           let taps = BurstPolicy.detailTaps(
+               keycodes: events.map { $0.getIntegerValueField(.keyboardEventKeycode) },
+               shifted: events.map { $0.flags.contains(.maskShift) },
+               describeActive: describeActive) {
+            fputs("[keyboard] v times \(taps) → describe detail\n", stderr)
+            DispatchQueue.main.async { [self] in onDescribeDetail?(taps) }
+            return
+        }
+        for ev in events {
             if redispatch(ev) != nil { enqueueReplay(ev) }
         }
     }

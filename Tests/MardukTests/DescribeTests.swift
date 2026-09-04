@@ -241,6 +241,61 @@ final class DescribeTests: XCTestCase {
         XCTAssertEqual(facts.spoken, facts.spoken(detail: .normal))
     }
 
+    func testEveryDetailLevelAsksAboutHumor() {
+        for detail in DescribeDetail.allCases {
+            XCTAssertTrue(DescribePrompt.base(detail).contains("meant to be funny"),
+                          detail.rawValue)
+            XCTAssertTrue(DescribePrompt.base(detail).contains("explain what the joke is"),
+                          detail.rawValue)
+        }
+    }
+
+    func testVTapsReDescribeOnlyWhileActiveAndOnlyUnshiftedRuns() {
+        let v: Int64 = 9, j: Int64 = 38
+        XCTAssertEqual(BurstPolicy.detailTaps(keycodes: [v], shifted: [false],
+                                              describeActive: true), 1)
+        XCTAssertEqual(BurstPolicy.detailTaps(keycodes: [v, v], shifted: [false, false],
+                                              describeActive: true), 2)
+        XCTAssertEqual(BurstPolicy.detailTaps(keycodes: [v, v, v],
+                                              shifted: [false, false, false],
+                                              describeActive: true), 3)
+        XCTAssertNil(BurstPolicy.detailTaps(keycodes: [v, v, v, v],
+                                            shifted: [false, false, false, false],
+                                            describeActive: true))
+        XCTAssertNil(BurstPolicy.detailTaps(keycodes: [v], shifted: [false],
+                                            describeActive: false))
+        XCTAssertNil(BurstPolicy.detailTaps(keycodes: [v, j], shifted: [false, false],
+                                            describeActive: true))
+        XCTAssertNil(BurstPolicy.detailTaps(keycodes: [v], shifted: [true],
+                                            describeActive: true))
+        XCTAssertNil(BurstPolicy.detailTaps(keycodes: [], shifted: [],
+                                            describeActive: true))
+    }
+
+    func testBurstFlushConsultsTheDetailTaps() throws {
+        let monitor = try source("Sources/Input/KeyboardMonitor.swift")
+        guard let flush = monitor.range(of: "private func flushBurstAsCommands()") else {
+            return XCTFail("flushBurstAsCommands moved")
+        }
+        let body = String(monitor[flush.lowerBound...].prefix(900))
+        XCTAssertTrue(body.contains("BurstPolicy.detailTaps("))
+    }
+
+    func testNudgeOnlyWhenNothingWasFoundAndAXAnswered() {
+        var located = LocatedElement()
+        XCTAssertFalse(ImageDescriber.wantsNudge(located), "no pid")
+        located.pid = 42
+        XCTAssertTrue(ImageDescriber.wantsNudge(located))
+        located.imageShaped = true
+        XCTAssertFalse(ImageDescriber.wantsNudge(located))
+        located.imageShaped = false
+        located.fileURL = URL(fileURLWithPath: "/tmp/a.png")
+        XCTAssertFalse(ImageDescriber.wantsNudge(located))
+        located.fileURL = nil
+        located.axFailed = true
+        XCTAssertFalse(ImageDescriber.wantsNudge(located))
+    }
+
     func testPromptCarriesTheOCRTextOnlyWhenThereIsSome() {
         XCTAssertEqual(DescribePrompt.text(ocr: "  "), DescribePrompt.base)
         let withText = DescribePrompt.text(ocr: "SALE 50% OFF")

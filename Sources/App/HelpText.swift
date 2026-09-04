@@ -99,6 +99,10 @@ enum HelpText {
         a question, works any time while the picture is remembered, and \
         the model remembers your earlier questions, so and the one on the \
         left works. A new capital D, or ten quiet minutes, forgets it. \
+        While a description is being made or spoken, v, v v, or v v v \
+        say that same picture again brief, normal, or full, without \
+        changing your setting; once it has finished, v is visual mode \
+        again. \
         Escape, stop speech. Space, pause or resume a read. \
         With read motions on, a read takes the whole keyboard, from any \
         mode: b and w step back and forward a word, h and l do the same. \

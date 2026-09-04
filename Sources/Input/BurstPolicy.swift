@@ -71,6 +71,21 @@ enum BurstPolicy {
     static let vKey: Int64 = 9
     static let rKey: Int64 = 15
 
+    /// `v`, `vv`, `vvv` WHILE A PICTURE IS BEING DESCRIBED (user design
+    /// 2026-09-04): re-describe that picture brief / normal / full without
+    /// touching the setting. Decided at burst EXPIRY over the whole
+    /// withheld buffer — a run of one to three unshifted v's and nothing
+    /// else — so the count is known before anything fires (a `vv` that
+    /// resolved on the second tap could never become `vvv`). Outside a
+    /// description `v` is VISUAL exactly as before; `V` never counts.
+    static func detailTaps(keycodes: [Int64], shifted: [Bool],
+                           describeActive: Bool) -> Int? {
+        guard describeActive, !keycodes.isEmpty, keycodes.count <= 3,
+              keycodes.allSatisfy({ $0 == vKey }),
+              !shifted.contains(true) else { return nil }
+        return keycodes.count
+    }
+
     /// `n` (45) is a command ONLY while Firefox is frontmost (Reader
     /// narration handoff). Everywhere else it stays a plain letter, which
     /// is what keeps all-command-plus-n words ("sun", "runs") rescuing as

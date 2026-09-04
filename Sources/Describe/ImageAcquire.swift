@@ -193,27 +193,40 @@ enum ImageAcquire {
         // vocabulary, sizes, and verdicts — no title, description, value
         // or path ever; labels by length, URLs by scheme and extension.
         let ancestors = ancestorRoles(of: element, limit: ancestorLimit)
-        fputs("[describe] probe: element \(roleSummary(element))"
-            + ", ancestors " + (ancestors.isEmpty ? "none" : ancestors.joined(separator: " > "))
-            + "; picture node: \(pictureVia)"
-            + (picture == nil ? "" : " \(roleSummary(node))") + "\n", stderr)
-        fputs("[describe] probe: node attrs \(attributeSummary(node))"
-            + "; label " + (located.label.map {
-                "\($0.count) chars" + (ImageRegion.isGenericLabel($0) ? " (generic)" : "")
-              } ?? "none")
+        let ancestorText: String = ancestors.isEmpty ? "none" : ancestors.joined(separator: " > ")
+        let pictureText: String = picture == nil ? "" : " " + roleSummary(node)
+        let line1: String = "[describe] probe: element " + roleSummary(element)
+            + ", ancestors " + ancestorText
+            + "; picture node: " + pictureVia + pictureText
+        fputs(line1 + "\n", stderr)
+
+        var labelText = "none"
+        if let label = located.label {
+            labelText = "\(label.count) chars"
+            if ImageRegion.isGenericLabel(label) { labelText += " (generic)" }
+        }
+        let line2: String = "[describe] probe: node attrs " + attributeSummary(node)
+            + "; label " + labelText
             + "; AXURL " + urlSummary(node, "AXURL")
-            + "; AXDocument " + urlSummary(node, kAXDocumentAttribute as String) + "\n",
-            stderr)
-        fputs("[describe] probe: element "
-            + (located.frame.map { "\(Int($0.width))x\(Int($0.height))" } ?? "no frame")
-            + " in window "
-            + (windowFrame.map { "\(Int($0.width))x\(Int($0.height))" } ?? "no frame")
-            + " → " + (located.imageShaped ? "image-shaped" : "not image-shaped")
-            + "; window document \(windowDocument)\n", stderr)
+            + "; AXDocument " + urlSummary(node, kAXDocumentAttribute as String)
+        fputs(line2 + "\n", stderr)
+
+        let elementSize: String = sizeText(located.frame)
+        let windowSize: String = sizeText(windowFrame)
+        let shaped: String = located.imageShaped ? "image-shaped" : "not image-shaped"
+        let line3: String = "[describe] probe: element " + elementSize
+            + " in window " + windowSize + " → " + shaped
+            + "; window document " + windowDocument
+        fputs(line3 + "\n", stderr)
         return located
     }
 
     // MARK: - Probe summaries (AX vocabulary only — safe for the log)
+
+    private static func sizeText(_ rect: CGRect?) -> String {
+        guard let rect else { return "no frame" }
+        return "\(Int(rect.width))x\(Int(rect.height))"
+    }
 
     private static func roleSummary(_ element: AXUIElement) -> String {
         let role = self.role(of: element)

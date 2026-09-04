@@ -303,6 +303,7 @@ final class KeyboardMonitor {
     var newsExtensionEnabled = true
     var stocksExtensionEnabled = true
     var briefExtensionEnabled = true
+    var describeExtensionEnabled = true
 
     /// DAILY BRIEF (`d`): a lone d, resolved on burst expiry exactly like
     /// s/t/u/n. `d` is deliberately NOT one of BurstPolicy's command
@@ -310,6 +311,7 @@ final class KeyboardMonitor {
     /// the `dd` release gesture still resolves inside the burst layer,
     /// before a lone d can ever reach here.
     var onBriefOpen: (() -> Void)?
+    var onDescribe: (() -> Void)?
 
     // STOCKS mode (`S` — Marduk-native watchlist, no external app, no
     // key posting). Same shape as NEWS: daemon arms via setStocksActive,
@@ -2277,6 +2279,16 @@ final class KeyboardMonitor {
                 // the reading voice, rate, and pitch — the macOS hover
                 // feature and its shortcut setup are no longer involved)
             DispatchQueue.main.async { [self] in onHoverToggle?() }
+            return nil
+
+        case 2 where flags.contains(.maskShift) && describeExtensionEnabled:
+                 // D — describe the image under the pointer. Rides the
+                 // same burst path as d (alpha keycodes enter the buffer
+                 // shifted or not; 2 isn't a command letter, so a lone D
+                 // lands here on burst expiry and D inside a word still
+                 // rescues to typing). Extension off → D falls to the
+                 // brief case below, as it did before the extension.
+            DispatchQueue.main.async { [self] in onDescribe?() }
             return nil
 
         case 2 where briefExtensionEnabled: // d — speak the daily brief

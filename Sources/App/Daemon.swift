@@ -154,6 +154,7 @@ final class DaemonServer {
     // then spoken as ONE READ (so Space, Escape, `}`, `/` and `rr` all
     // work on it)
     private let briefReader = BriefReader()
+    private let imageDescriber = ImageDescriber()
     // Its TUI panel — title bar, ticker rows, newsboat-style key bar
     private let stocksPanel = StocksPanel()
     // NEWS mode's floating key bar (newsboat's own hints are hidden by
@@ -481,6 +482,7 @@ final class DaemonServer {
                 // Escape during those seconds must not be answered by the
                 // brief starting to talk a moment later.
                 briefReader.abort()
+                imageDescriber.abort()
                 speech.stop(reason: reason)
             },
             onAnnounce: { [self] text in
@@ -528,6 +530,7 @@ final class DaemonServer {
                     palette.hide()
                     hoverSpeech.deactivate()
                     briefReader.abort()
+                    imageDescriber.abort()
                     // "Systems disengaged" must mean ALL systems: the
                     // sentinel's toggle gating was lost in the level
                     // migration and the inverter was never wired (field:
@@ -808,6 +811,13 @@ final class DaemonServer {
         briefReader.settings = { [self] in config }
         briefReader.isEngaged = { [self] in keyboardMonitor?.isEnabled ?? false }
         keyboardMonitor?.onBriefOpen = { [self] in briefReader.run() }
+        // IMAGE DESCRIPTION (`D`): an announcement, so rr replays it and
+        // the reading capture never engages over it
+        imageDescriber.announce = { [self] text in speech.announce(text) }
+        imageDescriber.settings = { [self] in config }
+        imageDescriber.isEngaged = { [self] in keyboardMonitor?.isEnabled ?? false }
+        imageDescriber.isReadActive = { [self] in speech.readActive }
+        keyboardMonitor?.onDescribe = { [self] in imageDescriber.describe() }
 
         // Extension gates (:config news/stocks/brief) — the monitor's
         // `where` clauses read these flags live
@@ -816,6 +826,8 @@ final class DaemonServer {
             config.extensions?.stocks ?? true
         keyboardMonitor?.briefExtensionEnabled =
             config.extensions?.brief ?? true
+        keyboardMonitor?.describeExtensionEnabled =
+            config.extensions?.describe ?? true
 
         // Clicking a palette row acts like Tab on that row (mouseDown arrives
         // on the main thread already)
@@ -1471,6 +1483,14 @@ final class DaemonServer {
                 return
             }
             briefReader.run()
+        case .describe:
+            guard config.extensions?.describe ?? true else {
+                Earcon.error()
+                speech.announce("Image description is off. "
+                    + "Say colon config describe on.")
+                return
+            }
+            imageDescriber.describe()
         case .news:
             guard config.extensions?.news ?? true else {
                 Earcon.error()
@@ -3122,6 +3142,43 @@ final class DaemonServer {
                 ? "Daily brief on. Press d for your rundown."
                 : "Daily brief off. d is a plain letter again.")
 
+        case "describe":
+            guard let on = toggle() else { return fail("Say on or off.") }
+            var ext = config.extensions ?? .init()
+            ext.describe = on
+            config.extensions = ext
+            ConfigLoader.save(config)
+            keyboardMonitor?.describeExtensionEnabled = on
+            if !on { imageDescriber.abort() }
+            speech.announce(on
+                ? "Image description on. Point at a picture and press capital D."
+                : "Image description off.")
+
+        case "imagemodel":
+            guard let engine = ImageEngine(rawValue: value.lowercased()) else {
+                return fail("Say auto, apple, ollama, or labels.")
+            }
+            var describe = config.describe ?? .init()
+            describe.imageModel = engine == .auto ? nil : engine.rawValue
+            config.describe = describe
+            ConfigLoader.save(config)
+            switch engine {
+            case .auto:
+                speech.announce("Image model auto: Apple's model when it can "
+                    + "see images, else a local Ollama model, else Apple's "
+                    + "Vision labels.")
+            case .apple:
+                speech.announce("Image model Apple: the on-device model. "
+                    + "It needs macOS 27 with Apple Intelligence on.")
+            case .ollama:
+                speech.announce("Image model Ollama: a local vision model "
+                    + "such as gemma 3.")
+            case .labels:
+                speech.announce("Image model labels: Apple's Vision "
+                    + "framework only — labels, faces, and text. Instant, "
+                    + "no model.")
+            }
+
         // MARK: Daily-brief setup — free-text settings
         //
         // These are the reason `.text` exists as a setting kind: a note
@@ -3367,6 +3424,8 @@ final class DaemonServer {
             "news": (config.extensions?.news ?? true) ? "on" : "off",
             "stocks": (config.extensions?.stocks ?? true) ? "on" : "off",
             "brief": (config.extensions?.brief ?? true) ? "on" : "off",
+            "describe": (config.extensions?.describe ?? true) ? "on" : "off",
+            "imagemodel": config.describe?.imageModel ?? "auto",
             "note": config.brief?.noteTitle ?? "not set",
             "place": config.brief?.place ?? "not set",
             "horoscope": config.brief?.horoscopeFeed ?? "not set",

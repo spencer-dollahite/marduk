@@ -1228,32 +1228,11 @@ final class NewsReader {
         return .result(result)
     }
 
-    /// curl with the body over STDIN — headline text never touches a
-    /// shell argument. Returns nil on any failure.
+    /// curl with the body over STDIN (shared with the image describer —
+    /// `OllamaServer.curl`); headline text never touches a shell argument.
     private static func curl(url: String, body: Data?,
                              timeout: Int) -> Data? {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        var arguments = ["-s", "-m", String(timeout), url]
-        if body != nil {
-            arguments += ["-X", "POST", "-H", "Content-Type: application/json",
-                          "--data-binary", "@-"]
-        }
-        task.arguments = arguments
-        let out = Pipe()
-        task.standardOutput = out
-        task.standardError = FileHandle.nullDevice
-        let stdin = Pipe()
-        if body != nil { task.standardInput = stdin }
-        do { try task.run() } catch { return nil }
-        if let body {
-            stdin.fileHandleForWriting.write(body)
-            stdin.fileHandleForWriting.closeFile()
-        }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
-        guard task.terminationStatus == 0, !data.isEmpty else { return nil }
-        return data
+        OllamaServer.curl(url: url, body: body, timeout: timeout)
     }
 
     private func triageArrived(_ outcome: TriageOutcome) {

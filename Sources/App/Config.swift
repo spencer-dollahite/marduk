@@ -18,6 +18,8 @@ struct MardukConfig: Codable {
 
     var extensions: ExtensionsConfig? = ExtensionsConfig()
 
+    var describe: DescribeConfig? = DescribeConfig()
+
     /// Extension switches (`:config news off`, `:config stocks off`):
     /// each extension's key reverts to its pre-extension meaning when
     /// off (n → plain buzz, S → hover toggle). Default on — an extension
@@ -26,6 +28,19 @@ struct MardukConfig: Codable {
         var news: Bool? = true    // n — the newsboat reader
         var stocks: Bool? = true  // S — the stock watchlist
         var brief: Bool? = true   // d — the daily brief
+        var describe: Bool? = true // D — describe the image under the pointer
+    }
+
+    /// IMAGE DESCRIPTION (`D`). `imageModel` is the engine —
+    /// `auto` (Apple's on-device model when it can see images, else a
+    /// local Ollama vision model, else Vision's facts), `apple`,
+    /// `ollama`, or `labels` — set by `:config imagemodel`. The Ollama
+    /// keys fall back to the news block's, so one pinned model serves
+    /// both; the base must be loopback — an image never leaves the Mac.
+    struct DescribeConfig: Codable {
+        var imageModel: String?  // "auto" | "apple" | "ollama" | "labels"
+        var ollamaModel: String? // vision model tag; nil = news.ollamaModel, else gemma3
+        var ollamaURL: String?   // nil = news.ollamaURL, else http://127.0.0.1:11434
     }
 
     /// DAILY BRIEF (`d`): the spoken morning rundown. `segments` carries

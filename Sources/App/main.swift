@@ -32,6 +32,7 @@ func printUsage() {
       marduk duck                  Duck external audio (manual trigger)
       marduk unduck                Restore external audio (manual trigger)
       marduk audio-debug           Dump audio-producing PIDs + Firefox AX tab tree
+      marduk ax-probe              Dump the AX element under the pointer (image describe diagnostics)
       marduk voices [--test]       List available TTS voices (--test: interactive tester)
       marduk version               Show version
 
@@ -547,6 +548,9 @@ case "duck":
 
 case "audio-debug":
     AudioDiagnostics.dump()
+
+case "ax-probe":
+    AXProbe.run()
 
 case "unduck":
     if DaemonClient.isRunning {

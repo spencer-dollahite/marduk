@@ -13,6 +13,7 @@ enum ColonCommand: Equatable {
     case stock(args: [String])
     case brief
     case segments
+    case describe
     case pronunciation
     case typing
     case karabiner
@@ -30,7 +31,7 @@ enum ColonCommand: Equatable {
     // No name may be a prefix of another — auto-accept relies on it
     static let commandNames = ["help", "commands", "tutorial", "tip", "config",
                                "voices", "invertappslist", "news", "stock",
-                               "brief", "segments",
+                               "brief", "segments", "describe",
                                "pronunciation", "typing", "karabiner",
                                "quit", "restart",
                                "update", "uninstall", "log", "feedback", "bug",
@@ -150,6 +151,8 @@ enum ColonCommand: Equatable {
             // Picker — the daemon intercepts the buffer before parse; this
             // is the bare fallback (and compiler exhaustiveness).
             return .segments
+        case "describe":
+            return .describe
         case "pronunciation":
             return .pronunciation
         case "typing":
@@ -365,6 +368,10 @@ enum ColonCommand: Equatable {
         ("news", .toggle),
         ("stocks", .toggle),
         ("brief", .toggle),
+        ("describe", .toggle),
+        // IMAGE DESCRIPTION engine. Not "describer"/"describeengine":
+        // "describe" (the switch above) would be their prefix.
+        ("imagemodel", .choice(["auto", "apple", "ollama", "labels"])),
         // DAILY BRIEF setup. Every one of these is reachable from `:config`
         // on purpose — the brief is the one feature whose usefulness
         // depends entirely on setup, and a blind user must never be sent
@@ -395,6 +402,7 @@ enum ColonCommand: Equatable {
         "preferdarkinpreview": "prefer dark in preview",
         "smartinvert": "smart invert",
         "invertapps": "invert apps",
+        "imagemodel": "image model",
     ]
 
     /// Every setting, spoken — GENERATED from the table, never written out
@@ -433,6 +441,7 @@ enum CommandCompleter {
         "stock": "manage the stock watchlist",
         "brief": "speak the daily brief now",
         "segments": "choose what the daily brief includes",
+        "describe": "describe the image under the pointer",
         "pronunciation": "open the system pronunciation editor",
         "typing": "open the system typing feedback settings",
         "karabiner": "apply your own Karabiner rules",

@@ -86,6 +86,13 @@ enum HelpText {
         again. Escape stops it. Say colon segments to choose which parts \
         it includes and colon config note to name the note it reads. On \
         a source install, d d still cuts a release. \
+        Capital D: describe the image under the pointer. Point at a \
+        picture — in Messages, a web page, Preview, anywhere — and press \
+        capital D; Marduk says Describing, then what the picture shows and \
+        any text in it. r r says it again. The first press asks for the \
+        Screen Recording permission, which is how Marduk sees the picture. \
+        Say colon config image model to choose the engine: Apple's own \
+        model, a local Ollama model, or Apple's instant labels. \
         Escape, stop speech. Space, pause or resume a read. \
         With read motions on, a read takes the whole keyboard, from any \
         mode: b and w step back and forward a word, h and l do the same. \
@@ -186,9 +193,15 @@ enum HelpText {
         actually bright — needs the Screen Recording permission. It judges \
         the apps invert apps does not cover. dock, on \
         or off: show Marduk in the Dock, the app switcher, and the Force \
-        Quit window. news, on or off, stocks, on or off, and brief, on or \
-        off: the extension switches — off returns each key to its old \
-        meaning, n and d to a plain letter and capital S to hover speech. \
+        Quit window. news, on or off, stocks, on or off, brief, on or \
+        off, and describe, on or off: the extension switches — off \
+        returns each key to its old meaning, n and d to a plain letter, \
+        capital S to hover speech, and capital D to the brief. image model, two \
+        words, auto, apple, ollama, or labels: what describes a picture. \
+        Auto takes Apple's on-device model when it can see images, on \
+        macOS 27 with Apple Intelligence, else a local Ollama vision \
+        model such as gemma 3 if you have one, else Apple's instant \
+        Vision labels, faces, and text. \
         The daily brief's own setup: place, then your city, sets the \
         weather location — say colon config place, then the name, and \
         Marduk looks up the coordinates for you. units, imperial or \
@@ -257,6 +270,7 @@ enum HelpText {
         "The daily brief can read one of your own notes aloud. Say colon config note, then the title — or just part of it — and every brief reads the first note in Notes that matches. Keep one note called something like Today and the brief becomes your morning agenda.",
         "Set the brief's weather with colon config place, then your city: Marduk looks up the coordinates itself, no account and no location permission. Colon config units metric if you would rather hear Celsius.",
         "The daily brief has two extras that are off until you ask for them: the moon phase, which is pure arithmetic and needs nothing, and a horoscope read from any horoscope feed you add to newsboat. Colon segments turns them on.",
+        "Point at a picture and press capital D to hear what it shows. With Ollama and a gemma 3 model installed you get a real description; without one, Apple's Vision framework names what it sees and reads any text in it. r r repeats the description.",
                 "When Marduk announces a dialog, it can also bring it to the front for you: press a for always, o for just this one, n for not now, or s to stop asking. And in Settings, Accessibility, Zoom, Advanced, follow keyboard focus makes your zoom pan straight to whatever Marduk focuses.",
     ]
 

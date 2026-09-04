@@ -131,8 +131,36 @@ final class OllamaServer {
         p.terminate()
     }
 
+    /// curl with the body over STDIN — request content (headlines, an
+    /// image) never touches a shell argument. Returns nil on any failure.
+    /// Shared by the news triage and the image describer.
+    static func curl(url: String, body: Data?, timeout: Int) -> Data? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+        var arguments = ["-s", "-m", String(timeout), url]
+        if body != nil {
+            arguments += ["-X", "POST", "-H", "Content-Type: application/json",
+                          "--data-binary", "@-"]
+        }
+        task.arguments = arguments
+        let out = Pipe()
+        task.standardOutput = out
+        task.standardError = FileHandle.nullDevice
+        let stdin = Pipe()
+        if body != nil { task.standardInput = stdin }
+        do { try task.run() } catch { return nil }
+        if let body {
+            stdin.fileHandleForWriting.write(body)
+            stdin.fileHandleForWriting.closeFile()
+        }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        guard task.terminationStatus == 0, !data.isEmpty else { return nil }
+        return data
+    }
+
     /// GET /api/tags as a liveness probe — no body, no user content.
-    private func answering(_ base: String) -> Bool {
+    func answering(_ base: String) -> Bool {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
         task.arguments = ["-s", "-m", "2", "-o", "/dev/null", "\(base)/api/tags"]

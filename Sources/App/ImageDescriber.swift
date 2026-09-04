@@ -45,11 +45,21 @@ final class ImageDescriber {
         running = true
         let config = settings()
         let pointer = NSEvent.mouseLocation
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        // The environment line — what the engines and the capture rung
+        // need — so a pasted log answers "why labels and not a model"
+        fputs("[describe] D: macOS \(os.majorVersion).\(os.minorVersion)"
+            + ", screen recording " + (CGPreflightScreenCaptureAccess() ? "granted" : "NOT granted")
+            + ", apple image model " + (AppleImageModel.isReady ? "ready" : "unavailable")
+            + ", ollama " + (Self.ollamaAvailable(base: config.describe?.ollamaURL
+                ?? config.news?.ollamaURL ?? Self.defaultOllamaBase) ? "available" : "absent")
+            + ", setting \(config.describe?.imageModel ?? "auto")\n", stderr)
         let located = ImageAcquire.locate(pointer: pointer)
-        fputs("[describe] D: app \(located.bundleID ?? "?"), "
-            + (located.axFailed ? "AX failed, " : "")
-            + "image-shaped \(located.imageShaped), "
-            + "file \(located.fileURL != nil), document \(located.documentURL != nil)\n",
+        fputs("[describe] D: app \(located.bundleID ?? "?")"
+            + (located.axFailed ? ", AX failed" : "")
+            + ", rungs: file \(located.fileURL != nil ? "yes" : "no")"
+            + ", window document \(located.documentURL != nil ? "yes" : "no")"
+            + ", capture " + (located.imageShaped ? "element" : "whole window") + "\n",
             stderr)
 
         var opening = "Describing."

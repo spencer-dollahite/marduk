@@ -162,7 +162,7 @@ enum ImageAcquire {
 
         // The picture itself: the element, an image-shaped descendant
         // under the pointer, or an image ancestor — in that order.
-        let picture = imageNode(from: element, at: axPoint)
+        let (picture, pictureVia) = imageNode(from: element, at: axPoint)
         let node = picture ?? element
         located.frame = frame(of: node)
         located.label = label(of: node)
@@ -171,19 +171,100 @@ enum ImageAcquire {
 
         // Rung 2: the window's document, when that document is an image
         // (Preview, and whatever else publishes AXDocument for one).
+        var windowFrame: CGRect?
+        var windowDocument = "none"
         let axApp = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(axApp, 0.25)
         if let window = frontWindow(of: axApp) {
             AXUIElementSetMessagingTimeout(window, 0.25)
-            if let doc = documentURL(of: window), ImageRegion.looksLikeImageFile(doc) {
-                located.documentURL = doc
+            if let doc = documentURL(of: window) {
+                windowDocument = describeURL(doc)
+                if ImageRegion.looksLikeImageFile(doc) { located.documentURL = doc }
             }
-            if let windowFrame = frame(of: window), let elementFrame = located.frame {
+            windowFrame = frame(of: window)
+            if let windowFrame, let elementFrame = located.frame {
                 located.imageShaped = ImageRegion.isImageShaped(
                     element: elementFrame, window: windowFrame)
             }
         }
+
+        // THE PROBE, IN THE LOG (user request 2026-09-04: "copy the usual
+        // log" must be enough to debug this). Everything below is AX
+        // vocabulary, sizes, and verdicts — no title, description, value
+        // or path ever; labels by length, URLs by scheme and extension.
+        let ancestors = ancestorRoles(of: element, limit: ancestorLimit)
+        fputs("[describe] probe: element \(roleSummary(element))"
+            + ", ancestors " + (ancestors.isEmpty ? "none" : ancestors.joined(separator: " > "))
+            + "; picture node: \(pictureVia)"
+            + (picture == nil ? "" : " \(roleSummary(node))") + "\n", stderr)
+        fputs("[describe] probe: node attrs \(attributeSummary(node))"
+            + "; label " + (located.label.map {
+                "\($0.count) chars" + (ImageRegion.isGenericLabel($0) ? " (generic)" : "")
+              } ?? "none")
+            + "; AXURL " + urlSummary(node, "AXURL")
+            + "; AXDocument " + urlSummary(node, kAXDocumentAttribute as String) + "\n",
+            stderr)
+        fputs("[describe] probe: element "
+            + (located.frame.map { "\(Int($0.width))x\(Int($0.height))" } ?? "no frame")
+            + " in window "
+            + (windowFrame.map { "\(Int($0.width))x\(Int($0.height))" } ?? "no frame")
+            + " → " + (located.imageShaped ? "image-shaped" : "not image-shaped")
+            + "; window document \(windowDocument)\n", stderr)
         return located
+    }
+
+    // MARK: - Probe summaries (AX vocabulary only — safe for the log)
+
+    private static func roleSummary(_ element: AXUIElement) -> String {
+        let role = self.role(of: element)
+        let subrole = (attribute(element, kAXSubroleAttribute as String) as? String) ?? ""
+        return subrole.isEmpty ? (role.isEmpty ? "?" : role) : "\(role)/\(subrole)"
+    }
+
+    /// Which of the attributes that matter here the node actually has.
+    static let probeAttributes: [String] = [
+        kAXTitleAttribute as String, "AXDescription", kAXValueAttribute as String,
+        "AXURL", kAXDocumentAttribute as String, "AXFilename",
+        kAXHelpAttribute as String, kAXIdentifierAttribute as String,
+    ]
+
+    private static func attributeSummary(_ element: AXUIElement) -> String {
+        var namesRef: CFArray?
+        guard AXUIElementCopyAttributeNames(element, &namesRef) == .success,
+              let names = namesRef as? [String] else { return "unreadable" }
+        let present = probeAttributes.filter { names.contains($0) }
+        return present.isEmpty ? "none of interest (\(names.count) total)"
+            : present.joined(separator: " ") + " (\(names.count) total)"
+    }
+
+    /// "file .jpeg" / "https" / "none" — never the URL itself.
+    private static func describeURL(_ url: URL) -> String {
+        url.isFileURL
+            ? "file ." + (url.pathExtension.isEmpty ? "(no extension)" : url.pathExtension.lowercased())
+            : (url.scheme ?? "unknown scheme")
+    }
+
+    private static func urlSummary(_ element: AXUIElement, _ name: String) -> String {
+        guard let raw = attribute(element, name) else { return "none" }
+        if let url = raw as? URL { return describeURL(url) }
+        if let path = raw as? String {
+            if path.hasPrefix("/") { return describeURL(URL(fileURLWithPath: path)) }
+            if let url = URL(string: path) { return describeURL(url) }
+            return "string, \(path.count) chars"
+        }
+        return "\(type(of: raw))"
+    }
+
+    private static func ancestorRoles(of element: AXUIElement, limit: Int) -> [String] {
+        var roles: [String] = []
+        var current = element
+        for _ in 0..<limit {
+            guard let up = parent(of: current) else { break }
+            AXUIElementSetMessagingTimeout(up, 0.25)
+            roles.append(roleSummary(up))
+            current = up
+        }
+        return roles
     }
 
     /// Off-main. Runs the rungs in fidelity order.
@@ -373,17 +454,20 @@ enum ImageAcquire {
     /// one; else a budgeted descent for an AXImage whose frame contains
     /// the point; else a short climb (a hit-test can land on a caption or
     /// overlay sitting inside the image).
-    private static func imageNode(from element: AXUIElement, at point: CGPoint) -> AXUIElement? {
-        if ImageRegion.imageRoles.contains(role(of: element)) { return element }
+    private static func imageNode(from element: AXUIElement,
+                                  at point: CGPoint) -> (AXUIElement?, String) {
+        if ImageRegion.imageRoles.contains(role(of: element)) { return (element, "the element") }
         var visited = 0
-        if let hit = descend(element, at: point, depth: 0, visited: &visited) { return hit }
+        if let hit = descend(element, at: point, depth: 0, visited: &visited) {
+            return (hit, "descendant (\(visited) visited)")
+        }
         var current = element
-        for _ in 0..<ancestorLimit {
+        for step in 1...ancestorLimit {
             guard let up = parent(of: current) else { break }
-            if ImageRegion.imageRoles.contains(role(of: up)) { return up }
+            if ImageRegion.imageRoles.contains(role(of: up)) { return (up, "ancestor \(step)") }
             current = up
         }
-        return nil
+        return (nil, "none (\(visited) descendants visited)")
     }
 
     private static func descend(_ element: AXUIElement, at point: CGPoint,

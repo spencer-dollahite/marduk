@@ -203,6 +203,44 @@ final class DescribeTests: XCTestCase {
         XCTAssertTrue(DescribePrompt.base.contains("Do not use markdown"))
     }
 
+    func testDetailLevelsChangeLengthAndBudgetsMonotonically() {
+        XCTAssertTrue(DescribePrompt.base(.brief).contains("one plain sentence"))
+        XCTAssertTrue(DescribePrompt.base(.normal).contains("two or three plain sentences"))
+        XCTAssertTrue(DescribePrompt.base(.full).contains("paragraph"))
+        XCTAssertEqual(DescribePrompt.base, DescribePrompt.base(.normal))
+        for detail in DescribeDetail.allCases {
+            XCTAssertTrue(DescribePrompt.base(detail).contains("Do not guess who people are"),
+                          detail.rawValue)
+        }
+        XCTAssertLessThan(DescribeDetail.brief.tokenCap, DescribeDetail.normal.tokenCap)
+        XCTAssertLessThan(DescribeDetail.normal.tokenCap, DescribeDetail.full.tokenCap)
+        XCTAssertLessThan(DescribeDetail.brief.labelLimit, DescribeDetail.full.labelLimit)
+        XCTAssertLessThan(DescribeDetail.brief.textLimit, DescribeDetail.full.textLimit)
+        XCTAssertEqual(DescribeDetail.from(nil), .normal)
+        XCTAssertEqual(DescribeDetail.from("FULL"), .full)
+        XCTAssertEqual(DescribeDetail.from("garbage"), .normal)
+    }
+
+    func testDetailSettingOffersEveryLevelAndCapsTheModel() {
+        let setting = ColonCommand.settings.first { $0.key == "detail" }
+        guard case .choice(let values)? = setting?.kind else {
+            return XCTFail("detail is not a choice setting")
+        }
+        XCTAssertEqual(Set(values), Set(DescribeDetail.allCases.map(\.rawValue)))
+        let payload = OllamaVision.payload(model: "m", prompt: "p", jpegBase64: "A",
+                                           detail: .brief)
+        let options = payload["options"] as? [String: Any]
+        XCTAssertEqual(options?["num_predict"] as? Int, DescribeDetail.brief.tokenCap)
+    }
+
+    func testLabelsEngineHonoursTheDetailBudgets() {
+        var facts = ImageFacts()
+        facts.labels = ["a", "b", "c", "d", "e", "f"]
+        XCTAssertTrue(facts.spoken(detail: .brief).hasPrefix("Looks like: a, b."))
+        XCTAssertTrue(facts.spoken(detail: .full).hasPrefix("Looks like: a, b, c, d, e, f."))
+        XCTAssertEqual(facts.spoken, facts.spoken(detail: .normal))
+    }
+
     func testPromptCarriesTheOCRTextOnlyWhenThereIsSome() {
         XCTAssertEqual(DescribePrompt.text(ocr: "  "), DescribePrompt.base)
         let withText = DescribePrompt.text(ocr: "SALE 50% OFF")

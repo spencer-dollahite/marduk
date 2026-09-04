@@ -44,11 +44,13 @@ struct ImageFacts: Equatable {
 
     /// Everything but the kind, as sentences — the caller opens with
     /// `kindWord` (it prefixes the LLM engines' output too, so it lives
-    /// apart).
-    var spoken: String {
+    /// apart). Normal detail.
+    var spoken: String { spoken(detail: .normal) }
+
+    func spoken(detail: DescribeDetail) -> String {
         var parts: [String] = []
         if !labels.isEmpty {
-            parts.append("Looks like: " + labels.prefix(Self.labelLimit)
+            parts.append("Looks like: " + labels.prefix(detail.labelLimit)
                 .map(Self.spokenLabel).joined(separator: ", ") + ".")
         }
         if !animals.isEmpty {
@@ -64,7 +66,7 @@ struct ImageFacts: Equatable {
         }
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedText.isEmpty {
-            parts.append("Text reads: " + Self.clamp(trimmedText, Self.textLimit))
+            parts.append("Text reads: " + Self.clamp(trimmedText, detail.textLimit))
         }
         if parts.isEmpty { parts.append("Nothing recognizable.") }
         return parts.joined(separator: " ")
@@ -159,7 +161,7 @@ struct ImageFacts: Equatable {
         facts.labels = (classify.results ?? [])
             .filter { $0.hasMinimumRecall(minRecall, forPrecision: minPrecision) }
             .sorted { $0.confidence > $1.confidence }
-            .prefix(labelLimit)
+            .prefix(DescribeDetail.full.labelLimit)
             .map(\.identifier)
         facts.text = joinedText((ocr.results ?? [])
             .compactMap { $0.topCandidates(1).first?.string })

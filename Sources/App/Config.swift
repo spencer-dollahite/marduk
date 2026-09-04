@@ -39,6 +39,7 @@ struct MardukConfig: Codable {
     /// both; the base must be loopback — an image never leaves the Mac.
     struct DescribeConfig: Codable {
         var imageModel: String?  // "auto" | "apple" | "ollama" | "labels"
+        var detail: String?      // "brief" | "normal" | "full" — ":config detail"
         var ollamaModel: String? // vision model tag; nil = news.ollamaModel, else gemma3
         var ollamaURL: String?   // nil = news.ollamaURL, else http://127.0.0.1:11434
     }

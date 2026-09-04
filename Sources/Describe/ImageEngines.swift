@@ -54,19 +54,87 @@ enum ImageEngine: String, CaseIterable {
     }
 }
 
+/// How much a description says — `:config detail brief|normal|full`
+/// (`describe.detail`). A prompt variant plus a token cap for the model
+/// engines (the cap also bounds latency: brief is the fast one), and a
+/// label/text budget for the labels engine. The models have no
+/// verbosity dial of their own; this IS the dial.
+enum DescribeDetail: String, CaseIterable {
+    case brief, normal, full
+
+    /// The length instruction in the prompt.
+    var lengthInstruction: String {
+        switch self {
+        case .brief: return "Use one plain sentence."
+        case .normal: return "Use two or three plain sentences."
+        case .full:
+            return "Use a full paragraph of five to eight plain sentences."
+        }
+    }
+
+    /// What to cover, beyond the kind and subject every level names.
+    var coverage: String {
+        switch self {
+        case .brief:
+            return "Give the main subject and, if there is text, what it says."
+        case .normal:
+            return "Then the main subject, the setting, and anything the person "
+                + "would want to know. Quote any visible text exactly."
+        case .full:
+            return "Then the main subject and the setting in detail: the people "
+                + "by count, expression, clothing and what they are doing, the "
+                + "colors, the time of day, the mood, and for a screenshot the "
+                + "layout and every control. Quote every piece of visible text exactly."
+        }
+    }
+
+    /// Ollama's `num_predict` — enough for the level, never a runaway.
+    var tokenCap: Int {
+        switch self {
+        case .brief: return 120
+        case .normal: return 320
+        case .full: return 800
+        }
+    }
+
+    /// Labels-engine budgets: how many labels, how much OCR text.
+    var labelLimit: Int {
+        switch self {
+        case .brief: return 2
+        case .normal: return ImageFacts.labelLimit
+        case .full: return 6
+        }
+    }
+
+    var textLimit: Int {
+        switch self {
+        case .brief: return 120
+        case .normal: return ImageFacts.textLimit
+        case .full: return 900
+        }
+    }
+
+    static func from(_ raw: String?) -> DescribeDetail {
+        raw.flatMap { DescribeDetail(rawValue: $0.lowercased()) } ?? .normal
+    }
+}
+
 /// One prompt for both language-model engines, pinned by a test: the
 /// output shape, the things a blind user needs first, and the rule that
 /// the model never guesses who someone is.
 enum DescribePrompt {
-    static let base = """
-        Describe this image for a person who cannot see it. \
-        Use two or three plain sentences. Start with what kind of image \
-        it is: a photo, a screenshot, a drawing, a meme, a diagram. \
-        Then the main subject, the setting, and anything the person \
-        would want to know. Quote any visible text exactly. \
-        Do not guess who people are and do not name anyone. \
-        Do not use markdown or lists.
-        """
+    /// The normal-detail prompt (kept as a name for the tests and docs).
+    static var base: String { base(.normal) }
+
+    static func base(_ detail: DescribeDetail) -> String {
+        "Describe this image for a person who cannot see it. "
+            + detail.lengthInstruction
+            + " Start with what kind of image it is: a photo, a screenshot, "
+            + "a drawing, a meme, a diagram. "
+            + detail.coverage
+            + " Do not guess who people are and do not name anyone. "
+            + "Do not use markdown or lists."
+    }
 
     /// A follow-up about the same picture: short, grounded, no markdown.
     static func question(_ question: String) -> String {
@@ -76,10 +144,10 @@ enum DescribePrompt {
     }
 
     /// The OCR pass's text, when there is some, rides in as context.
-    static func text(ocr: String) -> String {
+    static func text(ocr: String, detail: DescribeDetail = .normal) -> String {
         let trimmed = ocr.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return base }
-        return base + "\nA text-recognition pass found this text in the image, "
+        guard !trimmed.isEmpty else { return base(detail) }
+        return base(detail) + "\nA text-recognition pass found this text in the image, "
             + "which may help you read fine print: " + trimmed
     }
 }
@@ -169,14 +237,14 @@ enum OllamaVision {
         return capabilities.contains { $0.lowercased() == "vision" }
     }
 
-    static func payload(model: String, prompt: String,
-                        jpegBase64: String) -> [String: Any] {
+    static func payload(model: String, prompt: String, jpegBase64: String,
+                        detail: DescribeDetail = .normal) -> [String: Any] {
         [
             "model": model,
             "prompt": prompt,
             "images": [jpegBase64],
             "stream": false,
-            "options": ["temperature": 0.2],
+            "options": ["temperature": 0.2, "num_predict": detail.tokenCap] as [String: Any],
         ]
     }
 
@@ -186,9 +254,10 @@ enum OllamaVision {
     /// left?" refers to something. Pure, tested.
     static func chatMessages(description: String, ocr: String, jpegBase64: String,
                              history: [(question: String, answer: String)],
-                             question: String) -> [[String: Any]] {
+                             question: String,
+                             detail: DescribeDetail = .normal) -> [[String: Any]] {
         var messages: [[String: Any]] = [
-            ["role": "user", "content": DescribePrompt.text(ocr: ocr),
+            ["role": "user", "content": DescribePrompt.text(ocr: ocr, detail: detail),
              "images": [jpegBase64]],
             ["role": "assistant", "content": description],
         ]
@@ -205,7 +274,8 @@ enum OllamaVision {
             "model": model,
             "messages": messages,
             "stream": false,
-            "options": ["temperature": 0.2],
+            // Answers are short by prompt; the cap is a runaway guard
+            "options": ["temperature": 0.2, "num_predict": 200] as [String: Any],
         ]
     }
 
@@ -226,7 +296,8 @@ enum OllamaVision {
         guard OllamaServer.isLocal(base: retained.base) else { return .failure(.notLocal) }
         let messages = chatMessages(description: retained.description, ocr: retained.ocr,
                                     jpegBase64: retained.jpegBase64,
-                                    history: retained.history, question: question)
+                                    history: retained.history, question: question,
+                                    detail: retained.detail)
         let payload = chatPayload(model: retained.model, messages: messages)
         let started = Date()
         guard let body = try? JSONSerialization.data(withJSONObject: payload),
@@ -272,7 +343,8 @@ enum OllamaVision {
     /// server we start is stopped when this finishes (the describer
     /// takes its own hold afterwards while the picture is retained).
     static func describe(image: CGImage, ocr: String, base: String,
-                         configuredModel: String?) -> Result<Answer, Failure> {
+                         configuredModel: String?,
+                         detail: DescribeDetail = .normal) -> Result<Answer, Failure> {
         guard OllamaServer.isLocal(base: base) else { return .failure(.notLocal) }
         let server = OllamaServer.shared
         defer { server.release() }
@@ -305,8 +377,9 @@ enum OllamaVision {
         }
         guard let jpeg = ImageJPEG.data(image) else { return .failure(.encode) }
         fputs("[describe] ollama \(model): \(jpeg.count) bytes of JPEG\n", stderr)
-        let payload = payload(model: model, prompt: DescribePrompt.text(ocr: ocr),
-                              jpegBase64: jpeg.base64EncodedString())
+        let payload = payload(model: model,
+                              prompt: DescribePrompt.text(ocr: ocr, detail: detail),
+                              jpegBase64: jpeg.base64EncodedString(), detail: detail)
         let started = Date()
         guard let body = try? JSONSerialization.data(withJSONObject: payload),
               let data = OllamaServer.curl(url: "\(base)/api/generate", body: body,
@@ -378,7 +451,8 @@ enum AppleImageModel {
         return false
     }
 
-    static func describe(image: CGImage, ocr: String) async -> String? {
+    static func describe(image: CGImage, ocr: String,
+                         detail: DescribeDetail = .normal) async -> String? {
         #if MARDUK_APPLE_IMAGE && canImport(FoundationModels)
         guard #available(macOS 27, *), isReady else { return nil }
         let session = LanguageModelSession(model: SystemLanguageModel.default)
@@ -387,7 +461,7 @@ enum AppleImageModel {
         let started = Date()
         do {
             let response = try await session.respond {
-                DescribePrompt.text(ocr: ocr)
+                DescribePrompt.text(ocr: ocr, detail: detail)
                 Attachment(cgImage: small)
             }
             let text = OllamaVision.clean(response: response.content)

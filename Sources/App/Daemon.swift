@@ -3178,6 +3178,24 @@ final class DaemonServer {
                 ? "Image description on. Point at a picture and press capital D."
                 : "Image description off.")
 
+        case "detail":
+            guard let detail = DescribeDetail(rawValue: value.lowercased()) else {
+                return fail("Say brief, normal, or full.")
+            }
+            var describe = config.describe ?? .init()
+            describe.detail = detail == .normal ? nil : detail.rawValue
+            config.describe = describe
+            ConfigLoader.save(config)
+            switch detail {
+            case .brief:
+                speech.announce("Detail brief: one sentence per picture, and the fastest.")
+            case .normal:
+                speech.announce("Detail normal: two or three sentences.")
+            case .full:
+                speech.announce("Detail full: a whole paragraph — people, colors, "
+                    + "layout, and every bit of text.")
+            }
+
         case "imagemodel":
             guard let engine = ImageEngine(rawValue: value.lowercased()) else {
                 return fail("Say auto, apple, ollama, or labels.")
@@ -3450,6 +3468,7 @@ final class DaemonServer {
             "brief": (config.extensions?.brief ?? true) ? "on" : "off",
             "describe": (config.extensions?.describe ?? true) ? "on" : "off",
             "imagemodel": config.describe?.imageModel ?? "auto",
+            "detail": config.describe?.detail ?? "normal",
             "note": config.brief?.noteTitle ?? "not set",
             "place": config.brief?.place ?? "not set",
             "horoscope": config.brief?.horoscopeFeed ?? "not set",

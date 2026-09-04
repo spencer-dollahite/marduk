@@ -383,6 +383,10 @@ enum ColonCommand: Equatable {
         // IMAGE DESCRIPTION engine. Not "describer"/"describeengine":
         // "describe" (the switch above) would be their prefix.
         ("imagemodel", .choice(["auto", "apple", "ollama", "labels"])),
+        // How much a description says (prompt length, token cap, label
+        // and text budgets). "detail" shares "d" with describe/dialogs/
+        // dock; none is a prefix of another.
+        ("detail", .choice(["brief", "normal", "full"])),
         // DAILY BRIEF setup. Every one of these is reachable from `:config`
         // on purpose — the brief is the one feature whose usefulness
         // depends entirely on setup, and a blind user must never be sent

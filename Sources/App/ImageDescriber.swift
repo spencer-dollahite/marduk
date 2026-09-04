@@ -71,6 +71,7 @@ final class ImageDescriber {
         let engine: ImageEngine
         let model: String
         let base: String
+        let detail: DescribeDetail
         var history: [(question: String, answer: String)] = []
         var holdsServer: Bool
     }
@@ -116,6 +117,7 @@ final class ImageDescriber {
 
         let setting = ImageEngine(rawValue: config.describe?.imageModel ?? "auto") ?? .auto
         let configuredModel = config.describe?.ollamaModel ?? config.news?.ollamaModel
+        let detail = DescribeDetail.from(config.describe?.detail)
 
         Task.detached(priority: .userInitiated) { [weak self] in
             let outcome = await ImageAcquire.acquire(located, pointer: pointer)
@@ -129,7 +131,8 @@ final class ImageDescriber {
             let facts = await ImageFacts.gather(acquired.image)
             let described = await self.run(setting: setting, image: acquired.image,
                                            facts: facts, base: base,
-                                           configuredModel: configuredModel)
+                                           configuredModel: configuredModel,
+                                           detail: detail)
             let spoken = Self.compose(kind: facts.kindWord, label: located.label,
                                       source: acquired.source, body: described.text)
             // A model answered: keep the picture answerable, and keep a
@@ -146,7 +149,8 @@ final class ImageDescriber {
                 }
                 keep = Retained(jpegBase64: jpeg.base64EncodedString(), ocr: facts.text,
                                 description: described.text, engine: described.engine,
-                                model: model, base: base, holdsServer: holds)
+                                model: model, base: base, detail: detail,
+                                holdsServer: holds)
             }
             await self.finish(generation) {
                 self.retained = keep
@@ -274,22 +278,24 @@ final class ImageDescriber {
     /// Walks the engine chain; the labels engine is the floor and always
     /// answers. An explicit engine that can't run says why first.
     private func run(setting: ImageEngine, image: CGImage, facts: ImageFacts,
-                     base: String, configuredModel: String?) async -> Described {
+                     base: String, configuredModel: String?,
+                     detail: DescribeDetail) async -> Described {
         let appleReady = AppleImageModel.isReady
         let ollamaAvailable = Self.ollamaAvailable(base: base)
         var preface = ImageEngine.unavailableReason(
             setting: setting, appleReady: appleReady, ollamaAvailable: ollamaAvailable)
         let chain = ImageEngine.chain(setting: setting, appleReady: appleReady,
                                       ollamaAvailable: ollamaAvailable)
-        fputs("[describe] engines: \(chain.map(\.rawValue).joined(separator: " → "))\n",
-              stderr)
+        fputs("[describe] engines: \(chain.map(\.rawValue).joined(separator: " → "))"
+            + ", detail \(detail.rawValue)\n", stderr)
         func prefaced(_ text: String) -> String {
             (preface.map { $0 + " " } ?? "") + text
         }
         for engine in chain {
             switch engine {
             case .apple:
-                if let text = await AppleImageModel.describe(image: image, ocr: facts.text) {
+                if let text = await AppleImageModel.describe(image: image, ocr: facts.text,
+                                                             detail: detail) {
                     return Described(text: prefaced(text), engine: .apple,
                                      model: AppleImageModel.modelName)
                 }
@@ -301,7 +307,7 @@ final class ImageDescriber {
                     DispatchQueue.global(qos: .userInitiated).async {
                         continuation.resume(returning: OllamaVision.describe(
                             image: image, ocr: facts.text, base: base,
-                            configuredModel: configuredModel))
+                            configuredModel: configuredModel, detail: detail))
                     }
                 }
                 switch result {
@@ -315,12 +321,13 @@ final class ImageDescriber {
                     if setting == .ollama { preface = failure.spoken }
                 }
             case .labels:
-                return Described(text: prefaced(facts.spoken), engine: .labels, model: nil)
+                return Described(text: prefaced(facts.spoken(detail: detail)),
+                                 engine: .labels, model: nil)
             case .auto:
                 break
             }
         }
-        return Described(text: facts.spoken, engine: .labels, model: nil)
+        return Described(text: facts.spoken(detail: detail), engine: .labels, model: nil)
     }
 
     /// Installed binary or an answering local server — either can serve.

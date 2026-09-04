@@ -207,7 +207,10 @@ enum HelpText {
         Auto takes Apple's on-device model when it can see images, on \
         macOS 27 with Apple Intelligence, else a local Ollama vision \
         model such as gemma 3 if you have one, else Apple's instant \
-        Vision labels, faces, and text. \
+        Vision labels, faces, and text. detail, brief, normal, or full: \
+        how much a description says — brief is one sentence and the \
+        quickest, normal two or three, full a whole paragraph with the \
+        people, colors, layout, and every bit of text. \
         The daily brief's own setup: place, then your city, sets the \
         weather location — say colon config place, then the name, and \
         Marduk looks up the coordinates for you. units, imperial or \

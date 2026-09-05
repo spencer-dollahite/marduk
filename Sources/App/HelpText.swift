@@ -14,7 +14,9 @@ enum HelpText {
         reads, vim keys move through the text — b back a word, open paren \
         back a sentence, slash to search. It is all vim on purpose: if you \
         know vim, everything carries over. \
-        v starts a visual selection. t speaks the time. Escape stops speech. \
+        v starts a visual selection. t speaks the time. Capital D describes \
+        the picture under the pointer and asks if you have questions; capital \
+        D twice describes your whole screen. Escape stops speech. \
         If you miss something, r r says the last thing again — an \
         announcement, or the whole read. \
         Space pauses and resumes a read. When you press colon, a panel lists \
@@ -291,6 +293,8 @@ enum HelpText {
         "Set the brief's weather with colon config place, then your city: Marduk looks up the coordinates itself, no account and no location permission. Colon config units metric if you would rather hear Celsius.",
         "The daily brief has two extras that are off until you ask for them: the moon phase, which is pure arithmetic and needs nothing, and a horoscope read from any horoscope feed you add to newsboat. Colon segments turns them on.",
         "Point at a picture and press capital D to hear what it shows. With Ollama and a gemma 3 model installed you get a real description; without one, Apple's Vision framework names what it sees and reads any text in it. r r repeats the description.",
+        "After capital D describes a picture, press y and type a question about it — what does the sign say, how many people, what color is the car. The answer is about that same picture, and it remembers your earlier questions. Press capital D twice for your whole screen: every window, and any dialog you may not know is there.",
+        "Too much or too little from a picture description? Press v, v v, or v v v while it is being described for brief, normal, or full, just for that picture. Colon config detail sets the level for good, and colon config prompt lets you write the whole prompt yourself.",
                 "When Marduk announces a dialog, it can also bring it to the front for you: press a for always, o for just this one, n for not now, or s to stop asking. And in Settings, Accessibility, Zoom, Advanced, follow keyboard focus makes your zoom pan straight to whatever Marduk focuses.",
     ]
 

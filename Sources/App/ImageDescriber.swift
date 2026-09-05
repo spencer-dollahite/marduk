@@ -66,6 +66,12 @@ final class ImageDescriber {
     static let askPrefill = "ask "
     /// How long a described picture stays answerable with nothing asked.
     static let retainFor: TimeInterval = 10 * 60
+    /// How long a Marduk-started Ollama stays warm with nothing asked
+    /// (user ruling 2026-09-05: warm while questions are coming, cleaned
+    /// up after two idle minutes — never parked in RAM all day). The
+    /// picture stays answerable past this; a later question just pays
+    /// the start-up again.
+    static let serverWarmFor: TimeInterval = 2 * 60
 
     /// The last described picture, answerable by `:ask`.
     struct Retained {
@@ -114,6 +120,7 @@ final class ImageDescriber {
     private var runGeneration = 0
     private(set) var retained: Retained?
     private var idleTimer: DispatchWorkItem?
+    private var warmTimer: DispatchWorkItem?
     private var lastRun: LastRun?
     /// v-taps that arrived while the model was still thinking — applied
     /// the moment the picture is ready, so nothing typed is lost.
@@ -349,11 +356,28 @@ final class ImageDescriber {
             if let keep {
                 fputs("[describe] retained for questions (\(keep.engine.rawValue)"
                     + (keep.holdsServer ? ", server held" : "") + ")\n", stderr)
+                self.armWarmTimer()
                 self.speakWithQuestion(spoken, prompt: Self.questionPrompt)
             } else {
                 self.announceThen(spoken) { [weak self] in self?.active = false }
             }
         }
+    }
+
+    /// Two idle minutes and a Marduk-started server is handed back; the
+    /// picture stays. Re-armed by every description and every answer.
+    private func armWarmTimer() {
+        warmTimer?.cancel()
+        guard retained?.holdsServer == true else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.retained?.holdsServer == true else { return }
+            self.retained?.holdsServer = false
+            OllamaServer.shared.release()
+            fputs("[describe] ollama hold released after "
+                + "\(Int(Self.serverWarmFor))s idle — picture kept\n", stderr)
+        }
+        warmTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.serverWarmFor, execute: work)
     }
 
     /// Any stop that isn't ours — Escape, Ctrl+Option+M — orphans a
@@ -381,6 +405,8 @@ final class ImageDescriber {
     func forget(reason: String = "forgotten") {
         idleTimer?.cancel()
         idleTimer = nil
+        warmTimer?.cancel()
+        warmTimer = nil
         guard let old = retained else { return }
         retained = nil
         if old.holdsServer { OllamaServer.shared.release() }
@@ -421,8 +447,28 @@ final class ImageDescriber {
             default:
                 result = await withCheckedContinuation { continuation in
                     DispatchQueue.global(qos: .userInitiated).async {
-                        continuation.resume(returning: OllamaVision.ask(
-                            question: trimmed, retained: kept))
+                        // The warm hold may have lapsed (two idle minutes):
+                        // take it again for this question and the next
+                        var tookHold = false
+                        if !kept.holdsServer {
+                            switch OllamaServer.shared.acquire(base: kept.base) {
+                            case .alreadyRunning, .started: tookHold = true
+                            default: OllamaServer.shared.release()
+                            }
+                        }
+                        let answer = OllamaVision.ask(question: trimmed, retained: kept)
+                        if tookHold {
+                            DispatchQueue.main.async { [weak self] in
+                                guard let self, self.retained != nil,
+                                      self.retained?.holdsServer == false else {
+                                    OllamaServer.shared.release()
+                                    return
+                                }
+                                self.retained?.holdsServer = true
+                                fputs("[describe] ollama held warm again\n", stderr)
+                            }
+                        }
+                        continuation.resume(returning: answer)
                     }
                 }
             }
@@ -430,6 +476,7 @@ final class ImageDescriber {
                 switch result {
                 case .success(let answer):
                     self.retained?.history.append((trimmed, answer))
+                    self.armWarmTimer()
                     self.speakWithQuestion(answer, prompt: Self.morePrompt)
                 case .failure(let failure):
                     fputs("[describe] ask failed: \(failure)\n", stderr)

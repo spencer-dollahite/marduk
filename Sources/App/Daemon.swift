@@ -815,8 +815,13 @@ final class DaemonServer {
         // IMAGE DESCRIPTION (`D`): an announcement, so rr replays it and
         // the reading capture never engages over it
         imageDescriber.announce = { [self] text in speech.announce(text) }
+        // Descriptions and answers are content: the reading voice at the
+        // reading rate, like R (user ruling 2026-09-05). Status lines
+        // ("Describing.") stay on the announcement voice.
         imageDescriber.announceThen = { [self] text, done in
-            speech.announce(text) { DispatchQueue.main.async(execute: done) }
+            speech.announce(text, inReadingVoice: true) {
+                DispatchQueue.main.async(execute: done)
+            }
         }
         imageDescriber.armQuestion = { [self] keys, onAnswer in
             keyboardMonitor?.armQuestion(keys: keys, onAnswer: onAnswer)

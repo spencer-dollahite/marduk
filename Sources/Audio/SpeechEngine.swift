@@ -294,8 +294,16 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
 
     /// Speak with distinct announcement voice — status updates only.
     /// `voice:` overrides for a one-off utterance (the ":voices" picker
-    /// previews each candidate in its own voice).
+    /// previews each candidate in its own voice). `inReadingVoice` speaks
+    /// CONTENT-shaped announcements — an image description, an answer
+    /// about it — in the reading voice at the reading rate and pitch,
+    /// exactly like R (user ruling 2026-09-05): the announcement channel's
+    /// fixed moderate pace is for status lines, and a paragraph about a
+    /// picture is not a status line. Everything else about an
+    /// announcement is unchanged: it stops what was playing, ducks, is
+    /// filed for rr, and never engages the reading capture.
     func announce(_ text: String, voice previewVoice: AVSpeechSynthesisVoice? = nil,
+                  inReadingVoice: Bool = false,
                   completion: (() -> Void)? = nil) {
         stop(reason: "announcement")
 
@@ -307,9 +315,15 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
 
         // Fixed internal strings: sanitize only, no symbol verbalization
         let utterance = AVSpeechUtterance(string: SpeechPreprocessor.sanitize(text))
-        utterance.rate = 0.50                          // moderate pace
-        utterance.voice = previewVoice ?? announcementVoice ?? voice
-        utterance.pitchMultiplier = 0.9                // just a touch lower, natural
+        if inReadingVoice, previewVoice == nil {
+            utterance.rate = rate
+            utterance.voice = voice
+            utterance.pitchMultiplier = pitch
+        } else {
+            utterance.rate = 0.50                          // moderate pace
+            utterance.voice = previewVoice ?? announcementVoice ?? voice
+            utterance.pitchMultiplier = 0.9                // just a touch lower, natural
+        }
         utterance.volume = 1.0
         utterance.preUtteranceDelay = 0.0
         utterance.postUtteranceDelay = 0.0

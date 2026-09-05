@@ -99,6 +99,10 @@ enum HelpText {
         a question, works any time while the picture is remembered, and \
         the model remembers your earlier questions, so and the one on the \
         left works. A new capital D, or ten quiet minutes, forgets it. \
+        Capital D twice describes your whole screen: every window from \
+        front to back and what each shows, any dialog or alert you may \
+        not know is there, the menu bar and the Dock — the entire display, \
+        not just the part zoom is showing. Questions and v work the same. \
         While a description is being made or spoken, v, v v, or v v v \
         say that same picture again brief, normal, or full, without \
         changing your setting; once it has finished, v is visual mode \

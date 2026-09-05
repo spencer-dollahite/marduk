@@ -834,6 +834,7 @@ final class DaemonServer {
         keyboardMonitor?.onDescribeDetail = { [self] taps in
             imageDescriber.redescribe(taps: taps)
         }
+        keyboardMonitor?.onDescribeScreen = { [self] in imageDescriber.describeScreen() }
         imageDescriber.onActiveChange = { [self] active in
             keyboardMonitor?.describeActive = active
         }

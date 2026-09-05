@@ -23,6 +23,7 @@ enum BurstPolicy {
         case time     // tt → speak time + date
         case update   // uu → express update
         case release  // dd → cut a patch release (source installs only)
+        case describeScreen  // DD (shifted pair) → describe the whole display
         case replay   // rr → say the last utterance again
     }
 
@@ -102,7 +103,8 @@ enum BurstPolicy {
     /// in because that definition is used elsewhere in the tap too.
     static func classify(buffer: [Int64], keycode: Int64, isLetter: Bool,
                          isAutorepeat: Bool, firefoxFrontmost: Bool,
-                         releaseAvailable: Bool) -> Verdict {
+                         releaseAvailable: Bool,
+                         shifted: Bool = false, lastShifted: Bool = false) -> Verdict {
         guard isLetter else {
             // Space, digit, arrow, Escape… resolve any pending burst first
             return buffer.isEmpty ? .passThrough : .flushThenRoute
@@ -125,11 +127,17 @@ enum BurstPolicy {
         // for the timer, and they can only match against a buffered twin.
         if keycode == tKey, buffer.last == tKey { return .doubleTap(.time) }
         if keycode == uKey, buffer.last == uKey { return .doubleTap(.update) }
-        // On release/Homebrew machines the gesture DOES NOT EXIST, so
+        // The d pair is TWO gestures told apart by Shift (2026-09-05): DD
+        // describes the whole display, dd cuts a release — and the release
+        // needs BOTH taps unshifted, which it never checked before, so a
+        // shifted DD used to raise the release question. A mixed pair
+        // (dD, Dd) is neither and falls through to append. On
+        // release/Homebrew machines the release gesture DOES NOT EXIST, so
         // double-d words keep their typing rescue and a stranger's install
-        // has zero surface for it.
-        if releaseAvailable, keycode == dKey, buffer.last == dKey {
-            return .doubleTap(.release)
+        // has zero surface for it; DD exists everywhere.
+        if keycode == dKey, buffer.last == dKey {
+            if shifted, lastShifted { return .doubleTap(.describeScreen) }
+            if releaseAvailable, !shifted, !lastShifted { return .doubleTap(.release) }
         }
         // `rr` — say the last utterance again. It claims a pair that had no
         // sensible meaning before: `r` is a command letter, so a doubled r

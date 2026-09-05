@@ -102,6 +102,24 @@ enum ImageSource: String {
     case windowDocument = "window document" // the front window's document is an image
     case elementCapture = "element capture" // screenshot of the image element
     case windowCapture = "window capture"   // no image-shaped element: the whole window
+    case screen = "whole screen"            // DD: every window on the display, composited
+}
+
+/// Where a captured window lands on the display canvas. CGContext draws
+/// bottom-left-up in pixels; window bounds and display bounds are
+/// top-left-origin global points. Pure, tested — a flipped y here would
+/// describe a screen with its windows upside down and nobody could tell.
+enum ScreenComposite {
+    /// At most this many windows are captured, front-most first — the
+    /// ones behind that are hidden anyway.
+    static let windowCap = 24
+
+    static func placement(window: CGRect, display: CGRect, scale: CGFloat) -> CGRect {
+        CGRect(x: (window.minX - display.minX) * scale,
+               y: (display.maxY - window.maxY) * scale,
+               width: window.width * scale,
+               height: window.height * scale)
+    }
 }
 
 struct AcquiredImage {
@@ -315,6 +333,90 @@ enum ImageAcquire {
             kCGImageSourceThumbnailMaxPixelSize: ImageRegion.maxSide,
         ]
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
+    // MARK: - DD: the whole display
+
+    /// Every on-screen window on the display under the pointer, captured
+    /// one by one and composited back to front onto a canvas the size of
+    /// the display. NOT a display capture on purpose: window captures come
+    /// from the backing store — un-zoomed and pre-inversion — so the
+    /// composite is the logical screen whatever zoom is showing, which is
+    /// the whole point for a zoomed-in user asking "what is on my screen".
+    /// Marduk's own windows (overlay, palette, key bar) are left out.
+    static func captureScreen(pointer: CGPoint) async -> Outcome {
+        guard CGPreflightScreenCaptureAccess() else { return .needsScreenRecording }
+        guard let screen = NSScreen.screens.first(where: {
+                  NSMouseInRect(pointer, $0.frame, false) }) ?? NSScreen.main,
+              let number = screen.deviceDescription[
+                  NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        else { return .noWindow }
+        let display = CGDisplayBounds(CGDirectDisplayID(number.uint32Value))
+        let scale = screen.backingScaleFactor
+        let stack = windowStack(on: display)
+        guard !stack.isEmpty else { return .noWindow }
+        do {
+            let content = try await SCShareableContent
+                .excludingDesktopWindows(true, onScreenWindowsOnly: true)
+            var byID: [CGWindowID: SCWindow] = [:]
+            for window in content.windows { byID[window.windowID] = window }
+            let pixels = ImageRegion.pixelSize(points: display.size, scale: scale)
+            guard let canvas = CGContext(
+                data: nil, width: pixels.width, height: pixels.height,
+                bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return .failed("canvas") }
+            canvas.setFillColor(CGColor(gray: 0.12, alpha: 1))
+            canvas.fill(CGRect(x: 0, y: 0, width: pixels.width, height: pixels.height))
+            var drawn = 0
+            // Front-most `windowCap` windows, drawn back to front
+            for entry in stack.prefix(ScreenComposite.windowCap).reversed() {
+                guard let window = byID[entry.id] else { continue }
+                let filter = SCContentFilter(desktopIndependentWindow: window)
+                let config = SCStreamConfiguration()
+                config.showsCursor = false
+                config.captureResolution = .best
+                let size = ImageRegion.pixelSize(points: entry.bounds.size, scale: scale)
+                config.width = size.width
+                config.height = size.height
+                guard let image = try? await SCScreenshotManager.captureImage(
+                    contentFilter: filter, configuration: config) else { continue }
+                canvas.draw(image, in: ScreenComposite.placement(
+                    window: entry.bounds, display: display, scale: scale))
+                drawn += 1
+            }
+            guard drawn > 0, let image = canvas.makeImage() else { return .noWindow }
+            fputs("[describe] screen: \(drawn) of \(stack.count) windows composited, "
+                + "\(pixels.width)x\(pixels.height)\n", stderr)
+            return .image(AcquiredImage(image: image, source: .screen))
+        } catch {
+            fputs("[describe] screen capture failed: \(error.localizedDescription)\n",
+                  stderr)
+            return .failed("capture")
+        }
+    }
+
+    /// On-screen windows touching the display, front to back, minus our
+    /// own and the invisible. Every layer: the menu bar and the Dock are
+    /// part of "what is on my screen".
+    static func windowStack(on display: CGRect) -> [(id: CGWindowID, bounds: CGRect)] {
+        guard let list = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] else { return [] }
+        var stack: [(CGWindowID, CGRect)] = []
+        for info in list {
+            guard let number = info[kCGWindowNumber as String] as? UInt32,
+                  let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+                  bounds.width >= 2, bounds.height >= 2,
+                  bounds.intersects(display) else { continue }
+            if let owner = info[kCGWindowOwnerPID as String] as? Int32,
+               owner == getpid() { continue }
+            if let alpha = info[kCGWindowAlpha as String] as? Double, alpha < 0.1 { continue }
+            stack.append((number, bounds))
+        }
+        return stack
     }
 
     // MARK: - Rung 3: capture

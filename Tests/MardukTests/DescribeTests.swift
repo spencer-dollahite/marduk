@@ -296,6 +296,61 @@ final class DescribeTests: XCTestCase {
                                             describeActive: true))
     }
 
+    func testShiftedDPairDescribesTheScreenAndUnshiftedStillReleases() {
+        let d: Int64 = 2
+        func classify(shifted: Bool, lastShifted: Bool, release: Bool) -> BurstPolicy.Verdict {
+            BurstPolicy.classify(buffer: [d], keycode: d, isLetter: true,
+                                 isAutorepeat: false, firefoxFrontmost: false,
+                                 releaseAvailable: release,
+                                 shifted: shifted, lastShifted: lastShifted)
+        }
+        XCTAssertEqual(classify(shifted: true, lastShifted: true, release: true),
+                       .doubleTap(.describeScreen))
+        XCTAssertEqual(classify(shifted: true, lastShifted: true, release: false),
+                       .doubleTap(.describeScreen), "DD exists on every install")
+        XCTAssertEqual(classify(shifted: false, lastShifted: false, release: true),
+                       .doubleTap(.release))
+        XCTAssertNotEqual(classify(shifted: false, lastShifted: false, release: false),
+                          .doubleTap(.release), "no release gesture off source")
+        // A shifted DD used to raise the release question; a mixed pair
+        // is neither gesture
+        XCTAssertNotEqual(classify(shifted: true, lastShifted: false, release: true),
+                          .doubleTap(.release))
+        XCTAssertNotEqual(classify(shifted: true, lastShifted: false, release: true),
+                          .doubleTap(.describeScreen))
+        XCTAssertNotEqual(classify(shifted: false, lastShifted: true, release: true),
+                          .doubleTap(.describeScreen))
+    }
+
+    func testScreenPlacementFlipsIntoTheCanvas() {
+        let display = CGRect(x: 0, y: 0, width: 1000, height: 600)
+        // A window 100pt from the left, 50pt from the top, 300x200
+        let window = CGRect(x: 100, y: 50, width: 300, height: 200)
+        let placed = ScreenComposite.placement(window: window, display: display, scale: 2)
+        XCTAssertEqual(placed, CGRect(x: 200, y: 700, width: 600, height: 400))
+        // A second display to the right of the first
+        let second = CGRect(x: 1000, y: -200, width: 800, height: 800)
+        let placed2 = ScreenComposite.placement(
+            window: CGRect(x: 1000, y: -200, width: 800, height: 800),
+            display: second, scale: 1)
+        XCTAssertEqual(placed2, CGRect(x: 0, y: 0, width: 800, height: 800))
+    }
+
+    func testScreenPromptAndComposition() {
+        for detail in DescribeDetail.allCases {
+            let prompt = DescribePrompt.screen(detail)
+            XCTAssertTrue(prompt.contains("front to back"), detail.rawValue)
+            XCTAssertTrue(prompt.contains("dialog, alert"), detail.rawValue)
+            XCTAssertTrue(prompt.contains("never guess who they are"), detail.rawValue)
+        }
+        XCTAssertEqual(ImageDescriber.compose(kind: "Screenshot.", label: "x",
+                                              source: .screen, body: "Two windows."),
+                       "Your screen. Two windows.")
+        let long = String(repeating: "t ", count: 3000)
+        XCTAssertLessThan(DescribePrompt.text(ocr: long).count,
+                          DescribePrompt.base.count + DescribePrompt.ocrContextLimit + 120)
+    }
+
     func testBurstFlushConsultsTheDetailTaps() throws {
         let monitor = try source("Sources/Input/KeyboardMonitor.swift")
         guard let flush = monitor.range(of: "private func flushBurstAsCommands()") else {
@@ -497,7 +552,8 @@ final class DescribeTests: XCTestCase {
         }
     }
 
-    /// Captures are of a WINDOW, never a display.
+    /// Captures are of a WINDOW, never a display — DD composites windows
+    /// for exactly this reason (a display capture would be zoomed).
     func testCaptureNeverTargetsTheDisplay() throws {
         let acquire = try source("Sources/Describe/ImageAcquire.swift")
         XCTAssertTrue(acquire.contains("SCContentFilter(desktopIndependentWindow:"))

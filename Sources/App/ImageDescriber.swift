@@ -93,6 +93,13 @@ final class ImageDescriber {
         let base: String
         let configuredModel: String?
         let customPrompt: String?
+        /// DD: the screen prompt is used, at whatever detail the
+        /// re-describe asks for — the user's own prompt is for pictures.
+        var screen = false
+
+        func prompt(for detail: DescribeDetail) -> String? {
+            screen ? DescribePrompt.screen(detail) : customPrompt
+        }
     }
 
     /// Browsers keep their web AX tree minimal until an assistive client
@@ -168,16 +175,47 @@ final class ImageDescriber {
                 let again = ImageAcquire.locate(pointer: pointer)
                 fputs("[describe] after the nudge: capture "
                     + (again.imageShaped ? "element" : "whole window") + "\n", stderr)
-                self.acquireAndSpeak(again, pointer: pointer, generation: generation,
-                                     setting: setting, base: base,
-                                     configuredModel: configuredModel, detail: detail,
-                                     customPrompt: customPrompt, nudged: true)
+                self.acquireAndSpeak(
+                    { await ImageAcquire.acquire(again, pointer: pointer) },
+                    label: again.label, screen: false, generation: generation,
+                    setting: setting, base: base, configuredModel: configuredModel,
+                    detail: detail, customPrompt: customPrompt, nudged: true)
             }
             return
         }
-        acquireAndSpeak(located, pointer: pointer, generation: generation, setting: setting,
-                        base: base, configuredModel: configuredModel, detail: detail,
-                        customPrompt: customPrompt, nudged: false)
+        acquireAndSpeak(
+            { await ImageAcquire.acquire(located, pointer: pointer) },
+            label: located.label, screen: false, generation: generation,
+            setting: setting, base: base, configuredModel: configuredModel,
+            detail: detail, customPrompt: customPrompt, nudged: false)
+    }
+
+    /// DD: the whole display under the pointer, every window front to
+    /// back, composited un-zoomed. Same engines, questions and v-taps as
+    /// a picture; a screen-specific prompt.
+    func describeScreen() {
+        runGeneration += 1
+        let generation = runGeneration
+        running = true
+        forget(reason: "new picture")
+        let config = settings()
+        let pointer = NSEvent.mouseLocation
+        let base = config.describe?.ollamaURL ?? config.news?.ollamaURL
+            ?? Self.defaultOllamaBase
+        fputs("[describe] DD: screen recording "
+            + (CGPreflightScreenCaptureAccess() ? "granted" : "NOT granted")
+            + ", ollama " + (Self.ollamaAvailable(base: base) ? "available" : "absent")
+            + ", setting \(config.describe?.imageModel ?? "auto")\n", stderr)
+        announce("Describing the screen.")
+        active = true
+        let setting = ImageEngine(rawValue: config.describe?.imageModel ?? "auto") ?? .auto
+        let configuredModel = config.describe?.ollamaModel ?? config.news?.ollamaModel
+        let detail = DescribeDetail.from(config.describe?.detail)
+        acquireAndSpeak(
+            { await ImageAcquire.captureScreen(pointer: pointer) },
+            label: nil, screen: true, generation: generation, setting: setting,
+            base: base, configuredModel: configuredModel, detail: detail,
+            customPrompt: nil, nudged: false)
     }
 
     /// The first look found neither a picture nor a file, and AX did
@@ -187,12 +225,13 @@ final class ImageDescriber {
             && located.fileURL == nil && located.documentURL == nil
     }
 
-    private func acquireAndSpeak(_ located: LocatedElement, pointer: CGPoint,
+    private func acquireAndSpeak(_ acquire: @escaping () async -> ImageAcquire.Outcome,
+                                 label: String?, screen: Bool,
                                  generation: Int, setting: ImageEngine, base: String,
                                  configuredModel: String?, detail: DescribeDetail,
                                  customPrompt: String?, nudged: Bool) {
         Task.detached(priority: .userInitiated) { [weak self] in
-            let outcome = await ImageAcquire.acquire(located, pointer: pointer)
+            let outcome = await acquire()
             // The flags were for the look and the capture; the app gets
             // them back now, whatever happened
             if nudged { AXNudge.shared.restoreAll(reason: "describe captured") }
@@ -207,9 +246,10 @@ final class ImageDescriber {
             fputs("[describe] \(acquired.source.rawValue): "
                 + "\(acquired.image.width)x\(acquired.image.height)\n", stderr)
             let facts = await ImageFacts.gather(acquired.image)
-            let run = LastRun(image: acquired.image, facts: facts, label: located.label,
+            let run = LastRun(image: acquired.image, facts: facts, label: label,
                               source: acquired.source, setting: setting, base: base,
-                              configuredModel: configuredModel, customPrompt: customPrompt)
+                              configuredModel: configuredModel, customPrompt: customPrompt,
+                              screen: screen)
             await self.describeAndSpeak(run, detail: detail, generation: generation)
         }
     }
@@ -237,10 +277,11 @@ final class ImageDescriber {
     /// D and by the v-taps.
     private func describeAndSpeak(_ run: LastRun, detail: DescribeDetail,
                                   generation: Int) async {
+        let prompt = run.prompt(for: detail)
         let described = await self.run(setting: run.setting, image: run.image,
                                        facts: run.facts, base: run.base,
                                        configuredModel: run.configuredModel,
-                                       detail: detail, custom: run.customPrompt)
+                                       detail: detail, custom: prompt)
         let spoken = Self.compose(kind: run.facts.kindWord, label: run.label,
                                   source: run.source, body: described.text)
         // A model answered: keep the picture answerable, and keep a
@@ -258,7 +299,7 @@ final class ImageDescriber {
             keep = Retained(jpegBase64: jpeg.base64EncodedString(), ocr: run.facts.text,
                             description: described.text, engine: described.engine,
                             model: model, base: run.base, detail: detail,
-                            customPrompt: run.customPrompt, holdsServer: holds)
+                            customPrompt: prompt, holdsServer: holds)
         }
         await finish(generation) {
             // A re-describe replaces the retained picture (and its hold)
@@ -458,6 +499,7 @@ final class ImageDescriber {
     /// "image", the whole-window caveat, then the engine's sentences.
     static func compose(kind: String, label: String?, source: ImageSource,
                         body: String) -> String {
+        if source == .screen { return "Your screen. " + body }
         var parts = [kind]
         if let label, !ImageRegion.isGenericLabel(label) {
             parts.append("Labeled \(label).")

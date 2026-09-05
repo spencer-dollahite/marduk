@@ -175,6 +175,25 @@ enum DescribePrompt {
             + " Plain sentences only: no markdown, no lists, no headings."
     }
 
+    /// DD — the whole display. Windows front to back, then anything
+    /// modal the person may not know is there, then the chrome.
+    static func screen(_ detail: DescribeDetail) -> String {
+        "This is a screenshot of a person's entire computer screen; they are "
+            + "blind or see only a small zoomed part of it. "
+            + detail.lengthInstruction
+            + " Say which app windows are open, from front to back, and what "
+            + "each one shows. Then any dialog, alert, notification, sheet or "
+            + "menu that is open — they may not know it is there. Then the "
+            + "menu bar and the Dock. Place things with left, right, top, "
+            + "bottom. Include the text that matters exactly as written: "
+            + "titles, buttons, messages, prices, dates. "
+            + people
+            + " Plain sentences only: no markdown, no lists, no headings."
+    }
+
+    /// OCR context is capped — a whole screen can carry pages.
+    static let ocrContextLimit = 2500
+
     /// The user's own prompt (`:config prompt`) stands in for `base` —
     /// their words, whole; only the OCR context is still appended.
     static func custom(_ text: String?) -> String? {
@@ -194,7 +213,8 @@ enum DescribePrompt {
     static func text(ocr: String, detail: DescribeDetail = .normal,
                      custom: String? = nil) -> String {
         let prompt = Self.custom(custom) ?? base(detail)
-        let trimmed = ocr.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = String(ocr.trimmingCharacters(in: .whitespacesAndNewlines)
+            .prefix(ocrContextLimit))
         guard !trimmed.isEmpty else { return prompt }
         return prompt + "\nA text-recognition pass found this text in the image, "
             + "which may help you read fine print: " + trimmed

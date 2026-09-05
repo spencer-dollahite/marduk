@@ -317,6 +317,7 @@ final class KeyboardMonitor {
     var onBriefOpen: (() -> Void)?
     var onDescribe: (() -> Void)?
     var onDescribeDetail: ((Int) -> Void)?   // 1 brief, 2 normal, 3 full
+    var onDescribeScreen: (() -> Void)?      // DD — the whole display
 
     // STOCKS mode (`S` — Marduk-native watchlist, no external app, no
     // key posting). Same shape as NEWS: daemon arms via setStocksActive,
@@ -2692,7 +2693,9 @@ final class KeyboardMonitor {
             buffer: burstBuffer.map { $0.getIntegerValueField(.keyboardEventKeycode) },
             keycode: keycode, isLetter: isLetter, isAutorepeat: isAutorepeat,
             firefoxFrontmost: isFirefoxFrontmost,
-            releaseAvailable: releaseAvailable)
+            releaseAvailable: releaseAvailable,
+            shifted: event.flags.contains(.maskShift),
+            lastShifted: burstBuffer.last?.flags.contains(.maskShift) ?? false)
 
         switch verdict {
         case .passThrough:
@@ -2739,6 +2742,15 @@ final class KeyboardMonitor {
                     // (the field incident) can never install anything.
                     fputs("[keyboard] uu → express update\n", stderr)
                     onUpdate?()
+                case .describeScreen:
+                    // Extension off → the pair means nothing (the plain
+                    // buzz two lone D's would have made)
+                    if describeExtensionEnabled {
+                        fputs("[keyboard] DD → describe the screen\n", stderr)
+                        onDescribeScreen?()
+                    } else {
+                        Earcon.error()
+                    }
                 case .release:
                     // The daemon asks a spoken y/n before anything
                     // irreversible happens.

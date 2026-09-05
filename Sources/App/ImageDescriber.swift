@@ -507,9 +507,18 @@ final class ImageDescriber {
                 guard let self else { return }
                 if answer == "y" {
                     fputs("[describe] y — opening the ask line\n", stderr)
+                    // One short cue, then free typing: the letters are
+                    // not echoed (ColonCommand.isFreeTextBuffer)
+                    self.announce("Your question, then Return.")
                     self.openCommandLine(Self.askPrefill)
+                } else {
+                    // n: the rising sweep says "back to NORMAL", the way
+                    // Escape's bail does — silence read as the key being
+                    // ignored, and a second n opened the news (field
+                    // 2026-09-05). The picture stays answerable by :ask.
+                    fputs("[describe] n — done with questions\n", stderr)
+                    Earcon.riseToNormal()
                 }
-                // n: nothing to say — the description was the answer
             }
         }
         arm()

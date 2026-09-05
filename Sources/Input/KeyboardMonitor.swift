@@ -2005,9 +2005,12 @@ final class KeyboardMonitor {
                     commandBuffer.append(ch)
                     let buffer = commandBuffer
                     scheduleCommandIdle()
+                    // Free text (a question, a note title) is TYPED: no
+                    // letter-by-letter echo — see ColonCommand.isFreeTextBuffer
+                    let echo = commandEchoEnabled && !ColonCommand.isFreeTextBuffer(buffer)
                     let spoken = ch == " " ? "space" : String(ch)
                     DispatchQueue.main.async { [self] in
-                        if commandEchoEnabled { onAnnounce?(spoken) }
+                        if echo { onAnnounce?(spoken) }
                         onCommandChange?(buffer, true)
                     }
                     return nil
@@ -2545,6 +2548,8 @@ final class KeyboardMonitor {
     /// triggers when the user genuinely stops to think.
     private func scheduleCommandIdle() {
         commandIdleTimer?.cancel()
+        // A pause mid-sentence is thinking, not "what are my options"
+        if ColonCommand.isFreeTextBuffer(commandBuffer) { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.mode == .command else { return }
             self.onCommandIdle?()

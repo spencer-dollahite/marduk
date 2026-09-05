@@ -66,6 +66,28 @@ enum ColonCommand: Equatable {
     static let expandingCommands: Set<String> =
         pickerCommands.union(["config", "stock", "ask"])
 
+    /// A buffer whose tail is FREE TEXT — a question after `ask`, or the
+    /// value of a text setting (`config prompt …`, `config note …`). Free
+    /// text is typed, not dictated: no per-letter echo and no
+    /// speak-the-options pause, because a sentence typed at speed under a
+    /// letter-by-letter echo is sixty utterances and a synthesizer rebuild
+    /// per key (field 2026-09-05). Pure, tested.
+    static func isFreeTextBuffer(_ buffer: String) -> Bool {
+        let tokens = buffer.lowercased().split(separator: " ").map(String.init)
+        guard let first = tokens.first else { return false }
+        let trailingSpace = buffer.hasSuffix(" ")
+        let name = expand(first, in: commandNames + ["set"])
+        if name == "ask" {
+            return tokens.count >= 2 || trailingSpace
+        }
+        if name == "config" || name == "set", tokens.count >= 2,
+           let key = expand(tokens[1], in: settings.map(\.key)),
+           kind(for: key)?.isText == true {
+            return tokens.count >= 3 || trailingSpace
+        }
+        return false
+    }
+
     /// A picker buffer normalized to its BARE form (`"invertappslist …"`),
     /// recognizing both the bare spelling and the `:config`-namespaced one
     /// (`"config invertappslist …"` / `"set inv…"`, `config` itself

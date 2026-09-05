@@ -2144,6 +2144,10 @@ final class DaemonServer {
     /// "?" or a typing pause in COMMAND mode: speak what can come next.
     /// The idle path stays silent when there's nothing to offer.
     private func speakCommandOptions(explicit: Bool) {
+        // Free text has one "option" — the prompt row — and it was spoken
+        // when the stage opened; reciting it at every pause interrupts
+        // the typist (field 2026-09-05)
+        if !explicit, ColonCommand.isFreeTextBuffer(commandBufferSnapshot) { return }
         var displays = commandCandidates.map(\.display)
         if displays.isEmpty {
             if explicit { speech.announce("No options here. Press Return to run it.") }

@@ -461,6 +461,21 @@ final class DescribeTests: XCTestCase {
         XCTAssertEqual(ColonCommand.parse("ask"), .ask(question: ""))
     }
 
+    func testFreeTextBuffersAreTypedNotEchoed() {
+        XCTAssertTrue(ColonCommand.isFreeTextBuffer("ask "))
+        XCTAssertTrue(ColonCommand.isFreeTextBuffer("ask what"))
+        XCTAssertTrue(ColonCommand.isFreeTextBuffer("as what is"))
+        XCTAssertTrue(ColonCommand.isFreeTextBuffer("config prompt "))
+        XCTAssertTrue(ColonCommand.isFreeTextBuffer("config note Today"))
+        XCTAssertTrue(ColonCommand.isFreeTextBuffer("set pl Salt Lake"))
+        XCTAssertFalse(ColonCommand.isFreeTextBuffer("ask"), "still choosing the command")
+        XCTAssertFalse(ColonCommand.isFreeTextBuffer("config prompt"), "still choosing the key")
+        XCTAssertFalse(ColonCommand.isFreeTextBuffer("config rate 200"))
+        XCTAssertFalse(ColonCommand.isFreeTextBuffer("config detail full"))
+        XCTAssertFalse(ColonCommand.isFreeTextBuffer("stock add AAPL"))
+        XCTAssertFalse(ColonCommand.isFreeTextBuffer(""))
+    }
+
     func testAskExpandsButAQuestionNeverAutoResolves() {
         XCTAssertEqual(ColonCommand.autoResolve("ask"), .expand("ask "))
         XCTAssertEqual(ColonCommand.autoResolve("ask what"), .none)

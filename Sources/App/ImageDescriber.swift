@@ -115,6 +115,12 @@ final class ImageDescriber {
     private(set) var retained: Retained?
     private var idleTimer: DispatchWorkItem?
     private var lastRun: LastRun?
+    /// v-taps that arrived while the model was still thinking — applied
+    /// the moment the picture is ready, so nothing typed is lost.
+    private var pendingDetail: DescribeDetail?
+    /// Set by the daemon's central stop (Escape, the read button): a
+    /// description the user cut short must not re-arm its question.
+    private var stoppedByUser = false
     private var active = false {
         didSet {
             guard active != oldValue else { return }
@@ -129,8 +135,9 @@ final class ImageDescriber {
         runGeneration += 1
         let generation = runGeneration
         running = true
-        // A new picture replaces the last one (and its server hold)
-        forget(reason: "new picture")
+        pendingDetail = nil
+        // The last picture (and its warm server) is replaced only once
+        // the new one is ready — see describeAndSpeak
         let config = settings()
         let pointer = NSEvent.mouseLocation
         let os = ProcessInfo.processInfo.operatingSystemVersion
@@ -197,7 +204,7 @@ final class ImageDescriber {
         runGeneration += 1
         let generation = runGeneration
         running = true
-        forget(reason: "new picture")
+        pendingDetail = nil
         let config = settings()
         let pointer = NSEvent.mouseLocation
         let base = config.describe?.ollamaURL ?? config.news?.ollamaURL
@@ -257,11 +264,21 @@ final class ImageDescriber {
     /// v / vv / vvv while a description is in flight or speaking: the
     /// same picture again at brief / normal / full, the setting untouched.
     func redescribe(taps: Int) {
-        guard active, let run = lastRun else {
+        let detail: DescribeDetail = taps <= 1 ? .brief : (taps == 2 ? .normal : .full)
+        guard active else {
             Earcon.error()
             return
         }
-        let detail: DescribeDetail = taps <= 1 ? .brief : (taps == 2 ? .normal : .full)
+        guard let run = lastRun else {
+            // Still capturing or still thinking: remember the wish and
+            // say so, and the first description comes out at that level
+            pendingDetail = detail
+            fputs("[describe] \(detail.rawValue) requested before the picture was ready — queued\n",
+                  stderr)
+            announce(detail.rawValue.prefix(1).uppercased() + detail.rawValue.dropFirst()
+                + ", when it's ready.")
+            return
+        }
         runGeneration += 1
         let generation = runGeneration
         running = true
@@ -275,37 +292,60 @@ final class ImageDescriber {
 
     /// Off-main: the engine chain, then back to main to speak. Shared by
     /// D and by the v-taps.
-    private func describeAndSpeak(_ run: LastRun, detail: DescribeDetail,
+    private func describeAndSpeak(_ run: LastRun, detail requested: DescribeDetail,
                                   generation: Int) async {
+        // v-taps that landed while the picture was being captured win
+        let detail = await MainActor.run { () -> DescribeDetail in
+            defer { self.pendingDetail = nil }
+            return self.pendingDetail ?? requested
+        }
         let prompt = run.prompt(for: detail)
+        // Take the server hold BEFORE describing: the describe's own
+        // acquire/release pair would otherwise drop the refcount to zero
+        // in between and STOP a server Marduk started, so the hold that
+        // followed cold-started a second one (field 2026-09-05: "ollama
+        // stopped… ollama started" around every description, and the
+        // first question paid the whole start-up again).
+        var holds = false
+        if Self.ollamaAvailable(base: run.base) && run.setting != .labels
+            && run.setting != .apple {
+            switch OllamaServer.shared.acquire(base: run.base) {
+            case .alreadyRunning, .started: holds = true
+            default: OllamaServer.shared.release()
+            }
+        }
         let described = await self.run(setting: run.setting, image: run.image,
                                        facts: run.facts, base: run.base,
                                        configuredModel: run.configuredModel,
                                        detail: detail, custom: prompt)
         let spoken = Self.compose(kind: run.facts.kindWord, label: run.label,
                                   source: run.source, body: described.text)
-        // A model answered: keep the picture answerable, and keep a
-        // server we started warm for the questions
+        // A model answered: keep the picture answerable (and the server
+        // warm for the questions); otherwise hand the hold straight back
         var keep: Retained?
         if described.engine != .labels, let model = described.model,
            let jpeg = ImageJPEG.data(run.image) {
-            var holds = false
-            if described.engine == .ollama {
-                switch OllamaServer.shared.acquire(base: run.base) {
-                case .alreadyRunning, .started: holds = true
-                default: OllamaServer.shared.release()
-                }
-            }
             keep = Retained(jpegBase64: jpeg.base64EncodedString(), ocr: run.facts.text,
                             description: described.text, engine: described.engine,
                             model: model, base: run.base, detail: detail,
-                            customPrompt: prompt, holdsServer: holds)
+                            customPrompt: prompt,
+                            holdsServer: holds && described.engine == .ollama)
         }
+        if holds, keep?.holdsServer != true { OllamaServer.shared.release() }
         await finish(generation) {
-            // A re-describe replaces the retained picture (and its hold)
-            self.forget(reason: "re-described")
+            // The previous picture (and its hold) goes only now that the
+            // new one exists — a warm server stays warm across pictures
+            self.forget(reason: "replaced")
             self.lastRun = run
             self.retained = keep
+            // v-taps that landed while the model was thinking: say this
+            // one at that level instead, right away
+            if let wanted = self.pendingDetail, wanted != detail {
+                self.pendingDetail = nil
+                self.redescribe(taps: wanted == .brief ? 1 : (wanted == .normal ? 2 : 3))
+                return
+            }
+            self.pendingDetail = nil
             if let keep {
                 fputs("[describe] retained for questions (\(keep.engine.rawValue)"
                     + (keep.holdsServer ? ", server held" : "") + ")\n", stderr)
@@ -326,6 +366,14 @@ final class ImageDescriber {
         runGeneration += 1
         active = false
         fputs("[describe] abandoned\n", stderr)
+    }
+
+    /// The daemon's central stop (Escape, the read button). A description
+    /// cut short keeps its picture — Escape is not the end of the
+    /// conversation — but must not re-arm its y/n when the cut-off
+    /// utterance's completion fires.
+    func noteStop() {
+        stoppedByUser = true
     }
 
     /// Drop the retained picture and hand back the server hold. Main
@@ -392,23 +440,37 @@ final class ImageDescriber {
         }
     }
 
-    /// Speak, ending on the y/n prompt: the window is armed now (so an
-    /// early answer counts) and EXTENDED when the speech ends, so the
-    /// clock never ticks while the user is still listening.
+    /// Speak, ending on the y/n prompt. The window is armed now, so an
+    /// early answer counts, and ARMED AGAIN when the speech ends: the
+    /// armed window is ~20s from arming, and a description plus the
+    /// prompt routinely runs longer (23s and 61s in the field log
+    /// 2026-09-05), so by the time the question was asked the window had
+    /// already lapsed and `y` fell through to NORMAL and buzzed. A
+    /// description the user cut short re-arms nothing.
     private func speakWithQuestion(_ text: String, prompt: String) {
         armIdleTimer()
-        announceThen(text + " " + prompt) { [weak self] in
-            self?.extendQuestionWindow()
-            // The description has been heard: v is VISUAL again
-            self?.active = false
-        }
-        armQuestion(["y", "n"]) { [weak self] answer in
-            guard let self else { return }
-            if answer == "y" {
-                fputs("[describe] y — opening the ask line\n", stderr)
-                self.openCommandLine(Self.askPrefill)
+        stoppedByUser = false
+        let arm: () -> Void = { [weak self] in
+            self?.armQuestion(["y", "n"]) { [weak self] answer in
+                guard let self else { return }
+                if answer == "y" {
+                    fputs("[describe] y — opening the ask line\n", stderr)
+                    self.openCommandLine(Self.askPrefill)
+                }
+                // n: nothing to say — the description was the answer
             }
-            // n: nothing to say — the description was the answer
+        }
+        arm()
+        announceThen(text + " " + prompt) { [weak self] in
+            guard let self else { return }
+            // The description has been heard: v is VISUAL again
+            self.active = false
+            guard !self.stoppedByUser else {
+                fputs("[describe] cut short — no question\n", stderr)
+                return
+            }
+            arm()
+            self.extendQuestionWindow()
         }
     }
 

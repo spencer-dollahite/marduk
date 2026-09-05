@@ -483,6 +483,7 @@ final class DaemonServer {
                 // brief starting to talk a moment later.
                 briefReader.abort()
                 imageDescriber.abort()
+                imageDescriber.noteStop()
                 speech.stop(reason: reason)
             },
             onAnnounce: { [self] text in

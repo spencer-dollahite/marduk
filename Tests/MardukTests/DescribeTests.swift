@@ -275,25 +275,27 @@ final class DescribeTests: XCTestCase {
     }
 
     func testVTapsReDescribeOnlyWhileActiveAndOnlyUnshiftedRuns() {
-        let v: Int64 = 9, j: Int64 = 38
-        XCTAssertEqual(BurstPolicy.detailTaps(keycodes: [v], shifted: [false],
-                                              describeActive: true), 1)
-        XCTAssertEqual(BurstPolicy.detailTaps(keycodes: [v, v], shifted: [false, false],
-                                              describeActive: true), 2)
-        XCTAssertEqual(BurstPolicy.detailTaps(keycodes: [v, v, v],
-                                              shifted: [false, false, false],
-                                              describeActive: true), 3)
-        XCTAssertNil(BurstPolicy.detailTaps(keycodes: [v, v, v, v],
-                                            shifted: [false, false, false, false],
-                                            describeActive: true))
-        XCTAssertNil(BurstPolicy.detailTaps(keycodes: [v], shifted: [false],
-                                            describeActive: false))
-        XCTAssertNil(BurstPolicy.detailTaps(keycodes: [v, j], shifted: [false, false],
-                                            describeActive: true))
-        XCTAssertNil(BurstPolicy.detailTaps(keycodes: [v], shifted: [true],
-                                            describeActive: true))
-        XCTAssertNil(BurstPolicy.detailTaps(keycodes: [], shifted: [],
-                                            describeActive: true))
+        let v: Int64 = 9, j: Int64 = 38, d: Int64 = 2
+        func taps(_ keys: [Int64], _ shifts: [Bool], active: Bool = true) -> BurstPolicy.DetailTaps? {
+            BurstPolicy.detailTaps(keycodes: keys, shifted: shifts, describeActive: active)
+        }
+        XCTAssertEqual(taps([v], [false]), .init(taps: 1, leadingDescribe: false))
+        XCTAssertEqual(taps([v, v], [false, false]), .init(taps: 2, leadingDescribe: false))
+        XCTAssertEqual(taps([v, v, v], [false, false, false]),
+                       .init(taps: 3, leadingDescribe: false))
+        XCTAssertNil(taps([v, v, v, v], [false, false, false, false]))
+        XCTAssertNil(taps([v], [false], active: false))
+        XCTAssertNil(taps([v, j], [false, false]))
+        XCTAssertNil(taps([v], [true]))
+        XCTAssertNil(taps([], []))
+        // D and its v's inside one burst: one gesture, no need to be active yet
+        XCTAssertEqual(taps([d, v, v, v], [true, false, false, false], active: false),
+                       .init(taps: 3, leadingDescribe: true))
+        XCTAssertEqual(taps([d, v], [true, false], active: false),
+                       .init(taps: 1, leadingDescribe: true))
+        XCTAssertNil(taps([d], [true], active: false), "a lone D is the plain describe")
+        XCTAssertNil(taps([d, v], [false, false], active: true), "unshifted d is the brief")
+        XCTAssertNil(taps([d, j], [true, false], active: true))
     }
 
     func testShiftedDPairDescribesTheScreenAndUnshiftedStillReleases() {

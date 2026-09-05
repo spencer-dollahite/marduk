@@ -79,12 +79,31 @@ enum BurstPolicy {
     /// else — so the count is known before anything fires (a `vv` that
     /// resolved on the second tap could never become `vvv`). Outside a
     /// description `v` is VISUAL exactly as before; `V` never counts.
+    ///
+    /// `D` and the v's typed inside ONE burst (`Dvvv` in under 300ms) are
+    /// one gesture too: the buffer then starts with a shifted d, which
+    /// the caller dispatches first, and the v's count without waiting for
+    /// `describeActive` — the describe is queued on main ahead of them.
+    struct DetailTaps: Equatable {
+        let taps: Int
+        let leadingDescribe: Bool
+    }
+
     static func detailTaps(keycodes: [Int64], shifted: [Bool],
-                           describeActive: Bool) -> Int? {
-        guard describeActive, !keycodes.isEmpty, keycodes.count <= 3,
-              keycodes.allSatisfy({ $0 == vKey }),
-              !shifted.contains(true) else { return nil }
-        return keycodes.count
+                           describeActive: Bool) -> DetailTaps? {
+        guard !keycodes.isEmpty, keycodes.count == shifted.count else { return nil }
+        var vs = keycodes[...]
+        var vShifts = shifted[...]
+        let leading = keycodes[0] == dKey && shifted[0]
+        if leading {
+            vs = vs.dropFirst()
+            vShifts = vShifts.dropFirst()
+        } else if !describeActive {
+            return nil
+        }
+        guard !vs.isEmpty, vs.count <= 3, vs.allSatisfy({ $0 == vKey }),
+              !vShifts.contains(true) else { return nil }
+        return DetailTaps(taps: vs.count, leadingDescribe: leading)
     }
 
     /// `n` (45) is a command ONLY while Firefox is frontmost (Reader

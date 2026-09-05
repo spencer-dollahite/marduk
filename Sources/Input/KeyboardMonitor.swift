@@ -2830,12 +2830,18 @@ final class KeyboardMonitor {
         // v / vv / vvv while a picture is being described: the whole
         // buffer is the gesture (pure `BurstPolicy.detailTaps`)
         if mode == .normal, !readingCapture,
-           let taps = BurstPolicy.detailTaps(
+           let detail = BurstPolicy.detailTaps(
                keycodes: events.map { $0.getIntegerValueField(.keyboardEventKeycode) },
                shifted: events.map { $0.flags.contains(.maskShift) },
                describeActive: describeActive) {
-            fputs("[keyboard] v times \(taps) → describe detail\n", stderr)
-            DispatchQueue.main.async { [self] in onDescribeDetail?(taps) }
+            if detail.leadingDescribe, let first = events.first {
+                // D typed in the same burst as its v's: the describe goes
+                // first (its handler queues on main), the taps follow it
+                if redispatch(first) != nil { enqueueReplay(first) }
+            }
+            fputs("[keyboard] v times \(detail.taps) → describe detail"
+                + (detail.leadingDescribe ? " (with its D)" : "") + "\n", stderr)
+            DispatchQueue.main.async { [self] in onDescribeDetail?(detail.taps) }
             return
         }
         for ev in events {

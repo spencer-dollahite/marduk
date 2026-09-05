@@ -446,7 +446,10 @@ final class ImageDescriber {
                 }
             default:
                 result = await withCheckedContinuation { continuation in
-                    DispatchQueue.global(qos: .userInitiated).async {
+                    // Weak on the OUTER block too: an inner [weak self]
+                    // alone still makes this @Sendable block capture self
+                    // to form the weak reference (a zero-warning gate item)
+                    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                         // The warm hold may have lapsed (two idle minutes):
                         // take it again for this question and the next
                         var tookHold = false
@@ -458,7 +461,7 @@ final class ImageDescriber {
                         }
                         let answer = OllamaVision.ask(question: trimmed, retained: kept)
                         if tookHold {
-                            DispatchQueue.main.async { [weak self] in
+                            DispatchQueue.main.async {
                                 guard let self, self.retained != nil,
                                       self.retained?.holdsServer == false else {
                                     OllamaServer.shared.release()

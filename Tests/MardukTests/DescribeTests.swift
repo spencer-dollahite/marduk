@@ -197,10 +197,34 @@ final class DescribeTests: XCTestCase {
     // MARK: - Prompt
 
     func testPromptForbidsIdentifyingPeopleAndAsksForPlainProse() {
-        XCTAssertTrue(DescribePrompt.base.contains("Do not guess who people are"))
-        XCTAssertTrue(DescribePrompt.base.contains("cannot see it"))
-        XCTAssertTrue(DescribePrompt.base.contains("Quote any visible text"))
-        XCTAssertTrue(DescribePrompt.base.contains("Do not use markdown"))
+        XCTAssertTrue(DescribePrompt.base.contains("never guess who they are"))
+        XCTAssertTrue(DescribePrompt.base.contains("for a blind person"))
+        XCTAssertTrue(DescribePrompt.base.contains("exactly as written"))
+        XCTAssertTrue(DescribePrompt.base.contains("no markdown"))
+        // Borrowed from Be My AI and the DIAGRAM Center guidelines
+        XCTAssertTrue(DescribePrompt.base.contains("Begin with a noun phrase"))
+        XCTAssertTrue(DescribePrompt.base.contains("general to specific"))
+        XCTAssertTrue(DescribePrompt.base.contains("left, right, top, bottom"))
+        XCTAssertTrue(DescribePrompt.base.contains("most likely need"))
+    }
+
+    func testTheUsersOwnPromptReplacesMarduksButKeepsTheOCRContext() {
+        XCTAssertNil(DescribePrompt.custom(nil))
+        XCTAssertNil(DescribePrompt.custom("   "))
+        XCTAssertEqual(DescribePrompt.custom("  Tell me about the dog. "),
+                       "Tell me about the dog.")
+        let own = DescribePrompt.text(ocr: "SALE", detail: .full, custom: "Just the text.")
+        XCTAssertTrue(own.hasPrefix("Just the text."))
+        XCTAssertFalse(own.contains("Begin with a noun phrase"))
+        XCTAssertTrue(own.hasSuffix("SALE"))
+        XCTAssertEqual(DescribePrompt.text(ocr: "", detail: .brief, custom: nil),
+                       DescribePrompt.base(.brief))
+        XCTAssertEqual(ColonCommand.parse("config prompt Describe the Dog"),
+                       .config(key: "prompt", value: "Describe the Dog"))
+        let first = OllamaVision.chatMessages(description: "d", ocr: "", jpegBase64: "A",
+                                              history: [], question: "q",
+                                              custom: "Mine.")[0]
+        XCTAssertEqual(first["content"] as? String, "Mine.")
     }
 
     func testDetailLevelsChangeLengthAndBudgetsMonotonically() {
@@ -209,7 +233,7 @@ final class DescribeTests: XCTestCase {
         XCTAssertTrue(DescribePrompt.base(.full).contains("paragraph"))
         XCTAssertEqual(DescribePrompt.base, DescribePrompt.base(.normal))
         for detail in DescribeDetail.allCases {
-            XCTAssertTrue(DescribePrompt.base(detail).contains("Do not guess who people are"),
+            XCTAssertTrue(DescribePrompt.base(detail).contains("never guess who they are"),
                           detail.rawValue)
         }
         XCTAssertLessThan(DescribeDetail.brief.tokenCap, DescribeDetail.normal.tokenCap)

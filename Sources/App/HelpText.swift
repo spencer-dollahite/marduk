@@ -214,7 +214,10 @@ enum HelpText {
         Vision labels, faces, and text. detail, brief, normal, or full: \
         how much a description says — brief is one sentence and the \
         quickest, normal two or three, full a whole paragraph with the \
-        people, colors, layout, and every bit of text. \
+        people, colors, layout, and every bit of text. prompt, then your \
+        own words: replace Marduk's description prompt with yours for \
+        every picture — detail still sets the length; colon config prompt \
+        off goes back to Marduk's. \
         The daily brief's own setup: place, then your city, sets the \
         weather location — say colon config place, then the name, and \
         Marduk looks up the coordinates for you. units, imperial or \

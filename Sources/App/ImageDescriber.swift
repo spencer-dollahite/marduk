@@ -76,6 +76,7 @@ final class ImageDescriber {
         let model: String
         let base: String
         let detail: DescribeDetail
+        let customPrompt: String?
         var history: [(question: String, answer: String)] = []
         var holdsServer: Bool
     }
@@ -91,6 +92,7 @@ final class ImageDescriber {
         let setting: ImageEngine
         let base: String
         let configuredModel: String?
+        let customPrompt: String?
     }
 
     /// Browsers keep their web AX tree minimal until an assistive client
@@ -152,6 +154,10 @@ final class ImageDescriber {
         let setting = ImageEngine(rawValue: config.describe?.imageModel ?? "auto") ?? .auto
         let configuredModel = config.describe?.ollamaModel ?? config.news?.ollamaModel
         let detail = DescribeDetail.from(config.describe?.detail)
+        let customPrompt = DescribePrompt.custom(config.describe?.prompt)
+        if customPrompt != nil {
+            fputs("[describe] using the user's own prompt\n", stderr)
+        }
 
         if let pid = located.pid, Self.wantsNudge(located) {
             AXNudge.shared.enhance(pid: pid, flags: [.enhanced, .manual])
@@ -165,13 +171,13 @@ final class ImageDescriber {
                 self.acquireAndSpeak(again, pointer: pointer, generation: generation,
                                      setting: setting, base: base,
                                      configuredModel: configuredModel, detail: detail,
-                                     nudged: true)
+                                     customPrompt: customPrompt, nudged: true)
             }
             return
         }
         acquireAndSpeak(located, pointer: pointer, generation: generation, setting: setting,
                         base: base, configuredModel: configuredModel, detail: detail,
-                        nudged: false)
+                        customPrompt: customPrompt, nudged: false)
     }
 
     /// The first look found neither a picture nor a file, and AX did
@@ -184,7 +190,7 @@ final class ImageDescriber {
     private func acquireAndSpeak(_ located: LocatedElement, pointer: CGPoint,
                                  generation: Int, setting: ImageEngine, base: String,
                                  configuredModel: String?, detail: DescribeDetail,
-                                 nudged: Bool) {
+                                 customPrompt: String?, nudged: Bool) {
         Task.detached(priority: .userInitiated) { [weak self] in
             let outcome = await ImageAcquire.acquire(located, pointer: pointer)
             // The flags were for the look and the capture; the app gets
@@ -203,7 +209,7 @@ final class ImageDescriber {
             let facts = await ImageFacts.gather(acquired.image)
             let run = LastRun(image: acquired.image, facts: facts, label: located.label,
                               source: acquired.source, setting: setting, base: base,
-                              configuredModel: configuredModel)
+                              configuredModel: configuredModel, customPrompt: customPrompt)
             await self.describeAndSpeak(run, detail: detail, generation: generation)
         }
     }
@@ -234,7 +240,7 @@ final class ImageDescriber {
         let described = await self.run(setting: run.setting, image: run.image,
                                        facts: run.facts, base: run.base,
                                        configuredModel: run.configuredModel,
-                                       detail: detail)
+                                       detail: detail, custom: run.customPrompt)
         let spoken = Self.compose(kind: run.facts.kindWord, label: run.label,
                                   source: run.source, body: described.text)
         // A model answered: keep the picture answerable, and keep a
@@ -252,7 +258,7 @@ final class ImageDescriber {
             keep = Retained(jpegBase64: jpeg.base64EncodedString(), ocr: run.facts.text,
                             description: described.text, engine: described.engine,
                             model: model, base: run.base, detail: detail,
-                            holdsServer: holds)
+                            customPrompt: run.customPrompt, holdsServer: holds)
         }
         await finish(generation) {
             // A re-describe replaces the retained picture (and its hold)
@@ -386,7 +392,7 @@ final class ImageDescriber {
     /// answers. An explicit engine that can't run says why first.
     private func run(setting: ImageEngine, image: CGImage, facts: ImageFacts,
                      base: String, configuredModel: String?,
-                     detail: DescribeDetail) async -> Described {
+                     detail: DescribeDetail, custom: String?) async -> Described {
         let appleReady = AppleImageModel.isReady
         let ollamaAvailable = Self.ollamaAvailable(base: base)
         var preface = ImageEngine.unavailableReason(
@@ -402,7 +408,7 @@ final class ImageDescriber {
             switch engine {
             case .apple:
                 if let text = await AppleImageModel.describe(image: image, ocr: facts.text,
-                                                             detail: detail) {
+                                                             detail: detail, custom: custom) {
                     return Described(text: prefaced(text), engine: .apple,
                                      model: AppleImageModel.modelName)
                 }
@@ -414,7 +420,8 @@ final class ImageDescriber {
                     DispatchQueue.global(qos: .userInitiated).async {
                         continuation.resume(returning: OllamaVision.describe(
                             image: image, ocr: facts.text, base: base,
-                            configuredModel: configuredModel, detail: detail))
+                            configuredModel: configuredModel, detail: detail,
+                            custom: custom))
                     }
                 }
                 switch result {

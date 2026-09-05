@@ -3184,6 +3184,21 @@ final class DaemonServer {
                 ? "Image description on. Point at a picture and press capital D."
                 : "Image description off.")
 
+        case "prompt":
+            var describe = config.describe ?? .init()
+            let cleared = ["", "off", "none", "default"].contains(value.lowercased()
+                .trimmingCharacters(in: .whitespaces))
+            describe.prompt = cleared ? nil : value
+            config.describe = describe
+            ConfigLoader.save(config)
+            let words = value.split(separator: " ").count
+            fputs("[describe] prompt " + (cleared ? "cleared" : "set (\(words) words)") + "\n",
+                  stderr)
+            speech.announce(cleared
+                ? "Back to Marduk's own description prompt."
+                : "Your prompt is set: \(words) words. Marduk will use it for every "
+                    + "picture. Say colon config prompt off to go back.")
+
         case "detail":
             guard let detail = DescribeDetail(rawValue: value.lowercased()) else {
                 return fail("Say brief, normal, or full.")
@@ -3475,6 +3490,8 @@ final class DaemonServer {
             "describe": (config.extensions?.describe ?? true) ? "on" : "off",
             "imagemodel": config.describe?.imageModel ?? "auto",
             "detail": config.describe?.detail ?? "normal",
+            "prompt": DescribePrompt.custom(config.describe?.prompt).map {
+                "yours, \($0.split(separator: " ").count) words" } ?? "Marduk's own",
             "note": config.brief?.noteTitle ?? "not set",
             "place": config.brief?.place ?? "not set",
             "horoscope": config.brief?.horoscopeFeed ?? "not set",

@@ -387,6 +387,8 @@ enum ColonCommand: Equatable {
         // and text budgets). "detail" shares "d" with describe/dialogs/
         // dock; none is a prefix of another.
         ("detail", .choice(["brief", "normal", "full"])),
+        // The user's own words instead of Marduk's description prompt
+        ("prompt", .text(hint: "your own prompt for describing pictures, or off")),
         // DAILY BRIEF setup. Every one of these is reachable from `:config`
         // on purpose — the brief is the one feature whose usefulness
         // depends entirely on setup, and a blind user must never be sent

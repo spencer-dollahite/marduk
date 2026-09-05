@@ -445,11 +445,13 @@ final class ImageDescriber {
                     result = .failure(.empty)
                 }
             default:
-                result = await withCheckedContinuation { continuation in
-                    // Weak on the OUTER block too: an inner [weak self]
-                    // alone still makes this @Sendable block capture self
-                    // to form the weak reference (a zero-warning gate item)
-                    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                // The GCD block touches no self at all (a weak box captured
+                // in a nested @Sendable closure trips the zero-warning
+                // gate): it returns the answer and whether it took a hold,
+                // and the bookkeeping runs on main afterwards
+                let outcome: (answer: Result<String, OllamaVision.Failure>, tookHold: Bool)
+                    = await withCheckedContinuation { continuation in
+                    DispatchQueue.global(qos: .userInitiated).async {
                         // The warm hold may have lapsed (two idle minutes):
                         // take it again for this question and the next
                         var tookHold = false
@@ -460,18 +462,18 @@ final class ImageDescriber {
                             }
                         }
                         let answer = OllamaVision.ask(question: trimmed, retained: kept)
-                        if tookHold {
-                            DispatchQueue.main.async {
-                                guard let self, self.retained != nil,
-                                      self.retained?.holdsServer == false else {
-                                    OllamaServer.shared.release()
-                                    return
-                                }
-                                self.retained?.holdsServer = true
-                                fputs("[describe] ollama held warm again\n", stderr)
-                            }
+                        continuation.resume(returning: (answer, tookHold))
+                    }
+                }
+                result = outcome.answer
+                if outcome.tookHold {
+                    await MainActor.run {
+                        if self.retained != nil, self.retained?.holdsServer == false {
+                            self.retained?.holdsServer = true
+                            fputs("[describe] ollama held warm again\n", stderr)
+                        } else {
+                            OllamaServer.shared.release()
                         }
-                        continuation.resume(returning: answer)
                     }
                 }
             }

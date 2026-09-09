@@ -295,6 +295,35 @@ final class HealthSnapshotTests: XCTestCase {
         XCTAssertTrue(line.hasPrefix("[health] taps: marduk (us)"), line)
     }
 
+    /// A process holding hundreds of taps is a leak, and the line says so
+    /// up front — with the known upstream fix — rather than leaving the
+    /// reader to infer it from a count (the 2026-09-09 lesson).
+    func testTapLeakIsNamedUpFront() {
+        var entries = [TapReport.entry(owner: "Karabiner-Core-Service", isOurs: false,
+                                       mask: TapReport.pointerMask, enabled: true,
+                                       avgUsec: 0, maxUsec: 0)]
+        for _ in 0..<40 {
+            entries.append(TapReport.entry(owner: "Karabiner-Core-Service", isOurs: false,
+                                           mask: TapReport.pointerMask, enabled: false,
+                                           avgUsec: 0, maxUsec: 0))
+        }
+        let report = TapReport(entries: entries)
+        XCTAssertEqual(report.leak?.owner, "Karabiner-Core-Service")
+        XCTAssertEqual(report.leak?.count, 41)
+        XCTAssertEqual(report.leak?.dead, 40)
+        XCTAssertTrue(report.line.hasPrefix("[health] taps: TAP LEAK: Karabiner-Core-Service holds 41 taps (40 dead)"), report.line)
+        XCTAssertTrue(report.line.contains("16.2.0"), report.line)
+    }
+
+    func testAFewTapsPerOwnerIsNotALeak() {
+        let entries = (0..<3).map { _ in
+            TapReport.entry(owner: "AXVisualSupportAgent", isOurs: false,
+                            mask: TapReport.pointerMask, enabled: true, avgUsec: 0, maxUsec: 0)
+        }
+        XCTAssertNil(TapReport(entries: entries).leak)
+        XCTAssertFalse(TapReport(entries: entries).line.contains("TAP LEAK"))
+    }
+
     func testAllDeadTapsCollapseWithoutAnEnabledClause() {
         let dead = (0..<3).map { _ in
             TapReport.entry(owner: "X", isOurs: false, mask: TapReport.pointerMask,

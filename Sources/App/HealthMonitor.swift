@@ -286,8 +286,40 @@ struct TapReport: Equatable {
     /// entry with counts ("×62: 1 enabled …, 61 DISABLED") — one process
     /// leaving sixty dead taps behind is ONE finding, and spelled out one
     /// per tap it drowned the whole line (the 2026-09-09 log).
+    /// One process holding this many taps is a LEAK, never a design: a
+    /// session normally carries one or two per interested process.
+    /// Karabiner-Core-Service reached 789 (788 dead) on 2026-09-09 —
+    /// every reconnect of its user-session helper rebuilt its pointer tap
+    /// and older builds never invalidated the old one — and each dead tap
+    /// was a pointer stall when macOS timed it out. Fixed upstream in
+    /// Karabiner-Elements 16.2.0 ("Fixed CGEventTap leaks"); the warning
+    /// names that, because the next reader of this log should not need
+    /// three days to arrive at it.
+    static let leakThreshold = 24
+
+    /// The worst offender past the threshold, if any: owner, tap count,
+    /// dead count.
+    var leak: (owner: String, count: Int, dead: Int)? {
+        var perOwner: [String: (count: Int, dead: Int)] = [:]
+        for e in entries where !e.isOurs {
+            var v = perOwner[e.owner] ?? (0, 0)
+            v.count += 1
+            if !e.enabled { v.dead += 1 }
+            perOwner[e.owner] = v
+        }
+        guard let worst = perOwner.max(by: { $0.value.count < $1.value.count }),
+              worst.value.count > Self.leakThreshold else { return nil }
+        return (worst.key, worst.value.count, worst.value.dead)
+    }
+
     var line: String {
         guard !entries.isEmpty else { return "[health] taps: none listed" }
+        var prefix = ""
+        if let leak {
+            prefix = "TAP LEAK: \(leak.owner) holds \(leak.count) taps (\(leak.dead) dead) — "
+                + "a process re-creating its event tap without invalidating the old one; "
+                + "every dead tap was a pointer stall (Karabiner-Elements had this before 16.2.0). "
+        }
         struct Key: Hashable { let owner: String; let ours: Bool; let what: String }
         var groups: [Key: [Entry]] = [:]
         var order: [Key] = []
@@ -323,7 +355,7 @@ struct TapReport: Equatable {
             if dead > 0 { s += "\(live.isEmpty ? "" : ",") \(dead) DISABLED" }
             return s
         }
-        return "[health] taps: " + rendered.joined(separator: "; ")
+        return "[health] taps: " + prefix + rendered.joined(separator: "; ")
     }
 }
 

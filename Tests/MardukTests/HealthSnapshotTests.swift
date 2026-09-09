@@ -280,7 +280,7 @@ final class HealthSnapshotTests: XCTestCase {
         let pointer = TapReport.pointerMask
         var entries = [TapReport.entry(owner: "Karabiner-Core-Service", isOurs: false,
                                        mask: pointer, enabled: true, avgUsec: 12, maxUsec: 300)]
-        for _ in 0..<61 {
+        for _ in 0..<11 {  // under leakThreshold — this test is about collapsing
             entries.append(TapReport.entry(owner: "Karabiner-Core-Service", isOurs: false,
                                            mask: pointer, enabled: false, avgUsec: 0, maxUsec: 0))
         }
@@ -288,7 +288,8 @@ final class HealthSnapshotTests: XCTestCase {
                                        mask: 1 << CGEventType.keyDown.rawValue,
                                        enabled: true, avgUsec: 40, maxUsec: 900))
         let line = TapReport(entries: entries).line
-        XCTAssertTrue(line.contains("Karabiner-Core-Service pointer ×62: 1 enabled avg 12µs max 300µs, 61 DISABLED"), line)
+        XCTAssertTrue(line.contains("Karabiner-Core-Service pointer ×12: 1 enabled avg 12µs max 300µs, 11 DISABLED"), line)
+        XCTAssertFalse(line.contains("TAP LEAK"), line)
         XCTAssertTrue(line.contains("marduk (us) keys avg 40µs max 900µs"), line)
         XCTAssertEqual(line.components(separatedBy: "; ").count, 2, line)
         // Slowest group first: ours at 40µs outranks the live Karabiner tap at 12µs

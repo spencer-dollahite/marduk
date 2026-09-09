@@ -671,16 +671,17 @@ final class HealthMonitor {
         let fields = text.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
         guard fields.count >= 2, let kib = UInt64(fields[0]) else { return nil }
         var clock = String(fields[1])
-        var seconds = 0.0
+        var days = 0.0
         if let dash = clock.firstIndex(of: "-") {
-            guard let days = Double(clock[..<dash]) else { return nil }
-            seconds += days * 86400
+            guard let d = Double(clock[..<dash]) else { return nil }
+            days = d
             clock = String(clock[clock.index(after: dash)...])
         }
         let parts = clock.split(separator: ":").map { Double($0) }
         guard !parts.isEmpty, parts.allSatisfy({ $0 != nil }) else { return nil }
+        var seconds = 0.0
         for part in parts { seconds = seconds * 60 + part! }
-        return (kib * 1024, seconds)
+        return (kib * 1024, days * 86400 + seconds)
     }
 
     /// rusage_info and proc_taskinfo clocks are in mach absolute units —

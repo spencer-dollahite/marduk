@@ -62,6 +62,48 @@ final class KarabinerRewriteTests: XCTestCase {
         XCTAssertEqual(r[2]["description"] as? String, "my zoom keys")
     }
 
+    /// Which devices Karabiner GRABS is hardware policy and belongs to the
+    /// user's profile; the Marduk clone must never keep a grab the user
+    /// has since removed (field 2026-09-09: a pointing device grabbed in
+    /// the stale clone alone made the pointer slow only while engaged).
+    func testDeviceGrabPolicyMirrorsTheUserProfile() {
+        let naga: [String: Any] = [
+            "identifiers": ["vendor_id": 5426, "product_id": 128,
+                            "is_keyboard": true, "is_pointing_device": true],
+            "ignore": true]
+        var user = profile("Default", selected: true)
+        user["devices"] = [naga]
+        var stale = profile("Marduk", rules: [["description": "my zoom keys"]])
+        var grabbed = naga; grabbed["ignore"] = false
+        stale["devices"] = [grabbed, ["identifiers": ["vendor_id": 1], "ignore": false]]
+        let result = rewrite([user, stale])
+        let all = profiles(of: result!.root)
+        let marduk = all.first { ($0["name"] as? String) == "Marduk" }!
+        let devices = marduk["devices"] as? [[String: Any]]
+        XCTAssertEqual(devices?.count, 1)
+        XCTAssertEqual(devices?.first?["ignore"] as? Bool, true)
+        // The rules half of "adopt as-is" is untouched by the mirror
+        XCTAssertEqual(rules(of: marduk).last?["description"] as? String, "my zoom keys")
+        // And the user's own profile is byte-identical
+        let userOut = all.first { ($0["name"] as? String) == "Default" }!
+        XCTAssertTrue(((userOut["devices"] as? [[String: Any]])! as NSArray).isEqual(to: [naga]))
+    }
+
+    func testMissingUserDevicesRemovesTheCloneStaleOnes() {
+        var stale = profile("Marduk")
+        stale["devices"] = [["identifiers": ["vendor_id": 1], "ignore": false]]
+        let result = rewrite([profile("Default", selected: true), stale])
+        let marduk = profiles(of: result!.root).first { ($0["name"] as? String) == "Marduk" }!
+        XCTAssertNil(marduk["devices"])
+    }
+
+    func testIdenticalDevicePolicyIsNotRewritten() {
+        let dev: [[String: Any]] = [["identifiers": ["vendor_id": 1], "ignore": true]]
+        XCTAssertFalse(DaemonServer.deviceLists(dev, differFrom: dev))
+        XCTAssertFalse(DaemonServer.deviceLists(nil, differFrom: nil))
+        XCTAssertTrue(DaemonServer.deviceLists(dev, differFrom: nil))
+    }
+
     func testPanicChordKillsViaShellUpstreamOfMarduk() {
         let rule = DaemonServer.panicRule()
         let manipulators = rule["manipulators"] as! [[String: Any]]

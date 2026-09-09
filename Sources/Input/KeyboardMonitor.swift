@@ -692,20 +692,26 @@ final class KeyboardMonitor {
         sentinel.schedule(deadline: .now() + 2, repeating: 1.5)
         sentinel.setEventHandler { [weak self] in
             guard let self, !self.stopped else { return }
+            let sent = DispatchTime.now().uptimeNanoseconds
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                let ran = DispatchTime.now().uptimeNanoseconds
                 self.failOpenLock.lock()
-                self.lastMainBeat = DispatchTime.now().uptimeNanoseconds
+                self.lastMainBeat = ran
+                // The worst main-queue wait since the last health reading,
+                // as the ROUND TRIP of this marker: a main thread that
+                // stalls for 2s never trips the 4s fail-open, yet every key
+                // waits on it. (Measured on the sentinel side against the
+                // PREVIOUS marker it read as the 1.5s beat period at every
+                // reading of the 2026-09-09 log — a constant, not a lag.)
+                let wait = Double(ran &- sent) / 1_000_000_000
+                if wait > self.maxMainLag { self.maxMainLag = wait }
                 self.failOpenLock.unlock()
             }
             self.failOpenLock.lock()
             let lag = Double(DispatchTime.now().uptimeNanoseconds
                              &- self.lastMainBeat) / 1_000_000_000
             let tripped = self.failOpenReasons.contains("main-thread congestion")
-            // The worst lag since the last health reading: a main thread
-            // that stalls for 2s never trips the 4s fail-open, yet every
-            // key waits on it — the health line reports it
-            if lag > self.maxMainLag { self.maxMainLag = lag }
             self.failOpenLock.unlock()
             if lag > 4, !tripped {
                 fputs("[keyboard] main thread lagging \(String(format: "%.1f", lag))s\n",

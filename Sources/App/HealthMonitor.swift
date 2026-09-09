@@ -281,17 +281,46 @@ struct TapReport: Equatable {
     /// One line, slowest first, so the tap worth looking at is the first
     /// thing on it. Disabled taps are marked: a tap macOS switched off for
     /// being slow is a finding in itself.
+    ///
+    /// Taps with the same owner and the same interests collapse into one
+    /// entry with counts ("×62: 1 enabled …, 61 DISABLED") — one process
+    /// leaving sixty dead taps behind is ONE finding, and spelled out one
+    /// per tap it drowned the whole line (the 2026-09-09 log).
     var line: String {
         guard !entries.isEmpty else { return "[health] taps: none listed" }
-        let ordered = entries.sorted { $0.avgUsec > $1.avgUsec }
-        let rendered = ordered.map { e -> String in
+        struct Key: Hashable { let owner: String; let ours: Bool; let what: String }
+        var groups: [Key: [Entry]] = [:]
+        var order: [Key] = []
+        for e in entries {
             var what: [String] = []
             if e.listensToKeys { what.append("keys") }
             if e.listensToPointer { what.append("pointer") }
             if what.isEmpty { what.append("other") }
-            var s = "\(e.owner)\(e.isOurs ? " (us)" : "") \(what.joined(separator: "+"))"
-            s += " avg \(HealthSnapshot.micros(e.avgUsec)) max \(HealthSnapshot.micros(e.maxUsec))"
-            if !e.enabled { s += " DISABLED" }
+            let key = Key(owner: e.owner, ours: e.isOurs, what: what.joined(separator: "+"))
+            if groups[key] == nil { order.append(key) }
+            groups[key, default: []].append(e)
+        }
+        let ordered = order.sorted { a, b in
+            (groups[a]!.map(\.avgUsec).max() ?? 0) > (groups[b]!.map(\.avgUsec).max() ?? 0)
+        }
+        let rendered = ordered.map { key -> String in
+            let group = groups[key]!
+            var s = "\(key.owner)\(key.ours ? " (us)" : "") \(key.what)"
+            if group.count == 1 {
+                let e = group[0]
+                s += " avg \(HealthSnapshot.micros(e.avgUsec)) max \(HealthSnapshot.micros(e.maxUsec))"
+                if !e.enabled { s += " DISABLED" }
+                return s
+            }
+            let live = group.filter(\.enabled)
+            let dead = group.count - live.count
+            s += " ×\(group.count):"
+            if !live.isEmpty {
+                let avg = live.map(\.avgUsec).max() ?? 0
+                let mx = live.map(\.maxUsec).max() ?? 0
+                s += " \(live.count) enabled avg \(HealthSnapshot.micros(avg)) max \(HealthSnapshot.micros(mx))"
+            }
+            if dead > 0 { s += "\(live.isEmpty ? "" : ",") \(dead) DISABLED" }
             return s
         }
         return "[health] taps: " + rendered.joined(separator: "; ")
@@ -533,12 +562,23 @@ final class HealthMonitor {
     /// the min/avg/max callback latency IT measures for each. This is the
     /// authoritative answer to "is a tap slowing the pointer", and it names
     /// the process if one is.
+    ///
+    /// The buffer grows until the list fits: a 64-slot buffer was FULL at
+    /// every reading of the 2026-09-09 log — Karabiner-Core-Service parks
+    /// sixty-plus disabled pointer taps in the session — so the list was
+    /// truncated and Marduk's own tap read "ours not found" for days.
     static func eventTapList() -> [CGEventTapInformation] {
-        var taps = [CGEventTapInformation](repeating: CGEventTapInformation(), count: 64)
-        var count: UInt32 = 0
-        let err = CGGetEventTapList(UInt32(taps.count), &taps, &count)
-        guard err == .success else { return [] }
-        return Array(taps.prefix(Int(count)))
+        var capacity = 256
+        while capacity <= 4096 {
+            var taps = [CGEventTapInformation](repeating: CGEventTapInformation(),
+                                               count: capacity)
+            var count: UInt32 = 0
+            let err = CGGetEventTapList(UInt32(taps.count), &taps, &count)
+            guard err == .success else { return [] }
+            if Int(count) < capacity { return Array(taps.prefix(Int(count))) }
+            capacity *= 4
+        }
+        return []
     }
 
     static func tapReport(_ taps: [CGEventTapInformation]) -> TapReport {
@@ -601,9 +641,46 @@ final class HealthMonitor {
         let got = withUnsafeMutablePointer(to: &info) {
             proc_pidinfo(pid, PROC_PIDTASKINFO, 0, $0, size)
         }
-        guard got == size else { return nil }
+        guard got == size else { return psUsage(of: pid) }
         return (info.pti_resident_size,
                 machSeconds(info.pti_total_user &+ info.pti_total_system))
+    }
+
+    /// Last rung: `ps` reads any process's resident size and CPU time,
+    /// root-owned ones included — which is what "WindowServer unreadable"
+    /// at every reading of a three-day log meant: both info calls refuse
+    /// a process that isn't ours. Runs on the monitor's own queue, so the
+    /// spawn costs the event tap nothing.
+    static func psUsage(of pid: pid_t) -> (bytes: UInt64, cpuSeconds: Double)? {
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-o", "rss=,cputime=", "-p", String(pid)]
+        let out = Pipe()
+        ps.standardOutput = out
+        ps.standardError = FileHandle.nullDevice
+        do { try ps.run() } catch { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        ps.waitUntilExit()
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        return parsePS(text)
+    }
+
+    /// "rss cputime" as ps prints them: rss in KiB, cputime as
+    /// [[dd-]hh:]mm:ss.ss. Pure/tested.
+    static func parsePS(_ text: String) -> (bytes: UInt64, cpuSeconds: Double)? {
+        let fields = text.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" })
+        guard fields.count >= 2, let kib = UInt64(fields[0]) else { return nil }
+        var clock = String(fields[1])
+        var seconds = 0.0
+        if let dash = clock.firstIndex(of: "-") {
+            guard let days = Double(clock[..<dash]) else { return nil }
+            seconds += days * 86400
+            clock = String(clock[clock.index(after: dash)...])
+        }
+        let parts = clock.split(separator: ":").map { Double($0) }
+        guard !parts.isEmpty, parts.allSatisfy({ $0 != nil }) else { return nil }
+        for part in parts { seconds = seconds * 60 + part! }
+        return (kib * 1024, seconds)
     }
 
     /// rusage_info and proc_taskinfo clocks are in mach absolute units —

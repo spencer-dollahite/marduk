@@ -273,6 +273,48 @@ final class HealthSnapshotTests: XCTestCase {
         XCTAssertFalse(line.contains("marduk (us) keys avg 40µs max 900µs DISABLED"), line)
     }
 
+    /// One process leaving sixty dead taps behind is ONE finding: the
+    /// 2026-09-09 log spelled Karabiner-Core-Service's disabled pointer
+    /// taps out one per tap and drowned the whole line.
+    func testIdenticalTapsCollapseIntoCounts() {
+        let pointer = TapReport.pointerMask
+        var entries = [TapReport.entry(owner: "Karabiner-Core-Service", isOurs: false,
+                                       mask: pointer, enabled: true, avgUsec: 12, maxUsec: 300)]
+        for _ in 0..<61 {
+            entries.append(TapReport.entry(owner: "Karabiner-Core-Service", isOurs: false,
+                                           mask: pointer, enabled: false, avgUsec: 0, maxUsec: 0))
+        }
+        entries.append(TapReport.entry(owner: "marduk", isOurs: true,
+                                       mask: 1 << CGEventType.keyDown.rawValue,
+                                       enabled: true, avgUsec: 40, maxUsec: 900))
+        let line = TapReport(entries: entries).line
+        XCTAssertTrue(line.contains("Karabiner-Core-Service pointer ×62: 1 enabled avg 12µs max 300µs, 61 DISABLED"), line)
+        XCTAssertTrue(line.contains("marduk (us) keys avg 40µs max 900µs"), line)
+        XCTAssertEqual(line.components(separatedBy: "; ").count, 2, line)
+        // Slowest group first: ours at 40µs outranks the live Karabiner tap at 12µs
+        XCTAssertTrue(line.hasPrefix("[health] taps: marduk (us)"), line)
+    }
+
+    func testAllDeadTapsCollapseWithoutAnEnabledClause() {
+        let dead = (0..<3).map { _ in
+            TapReport.entry(owner: "X", isOurs: false, mask: TapReport.pointerMask,
+                            enabled: false, avgUsec: 0, maxUsec: 0)
+        }
+        XCTAssertEqual(TapReport(entries: dead).line, "[health] taps: X pointer ×3: 3 DISABLED")
+    }
+
+    // MARK: - ps fallback for processes the info calls refuse
+
+    func testParsePSReadsResidentAndCPUTime() {
+        let r = HealthMonitor.parsePS("  705224 12:34.56\n")
+        XCTAssertEqual(r?.bytes, 705224 * 1024)
+        XCTAssertEqual(r?.cpuSeconds ?? 0, 754.56, accuracy: 0.01)
+        let long = HealthMonitor.parsePS("1024 2-01:02:03.50\n")
+        XCTAssertEqual(long?.cpuSeconds ?? 0, 2 * 86400 + 3723.5, accuracy: 0.01)
+        XCTAssertNil(HealthMonitor.parsePS(""))
+        XCTAssertNil(HealthMonitor.parsePS("abc 1:00"))
+    }
+
     func testEmptyTapReportSaysNone() {
         XCTAssertEqual(TapReport(entries: []).line, "[health] taps: none listed")
     }

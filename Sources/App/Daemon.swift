@@ -2265,6 +2265,30 @@ final class DaemonServer {
             fputs("[marduk] no Marduk profile — bootstrapping from "
                 + "\"\(userProfile ?? "?")\"\n", stderr)
         }
+        // DEVICE GRAB POLICY IS MIRRORED, NEVER ADOPTED. A profile's
+        // `devices` array decides which HID devices Karabiner GRABS — and a
+        // grabbed pointing device has every pointer motion routed through
+        // karabiner_grabber and re-posted from its virtual HID device.
+        // The Marduk profile was a clone of the user's profile at bootstrap
+        // and then "adopted as-is" forever, so a device the user later
+        // un-grabbed in their own profile stayed grabbed in ours; and since
+        // Karabiner's own UI edits the SELECTED profile, edits made while
+        // Marduk was engaged landed in the clone, invisible from the user's.
+        // Field 2026-09-09: pointer slow with Marduk engaged, fast the
+        // instant Ctrl+Option+M handed the user's profile back, restart
+        // no help — exactly the shape of a grab that exists in one profile
+        // and not the other. The user's profile is the truth for hardware
+        // policy; "adopt as-is" now covers the rules alone.
+        let userDevices = profiles.first(where: { ($0["name"] as? String) == userProfile })?["devices"]
+            as? [[String: Any]]
+        let mardukDevices = marduk["devices"] as? [[String: Any]]
+        if Self.deviceLists(userDevices, differFrom: mardukDevices) {
+            fputs("[marduk] Marduk profile device policy re-synced from "
+                + "\"\(userProfile ?? "?")\" (\(userDevices?.count ?? 0) device "
+                + "entries, was \(mardukDevices?.count ?? 0))\n", stderr)
+            if let userDevices { marduk["devices"] = userDevices }
+            else { marduk.removeValue(forKey: "devices") }
+        }
         var cm = marduk["complex_modifications"] as? [String: Any] ?? [:]
         var rules = cm["rules"] as? [[String: Any]] ?? []
         rules.removeAll {
@@ -2325,6 +2349,17 @@ final class DaemonServer {
 
         root["profiles"] = profiles
         return (root, userProfile)
+    }
+
+    /// Two `devices` arrays differ when either is present and the other
+    /// isn't, or when their JSON contents differ (plist-value equality —
+    /// key order is irrelevant, values are what Karabiner reads).
+    static func deviceLists(_ a: [[String: Any]]?, differFrom b: [[String: Any]]?) -> Bool {
+        switch (a, b) {
+        case (nil, nil): return false
+        case (nil, _), (_, nil): return true
+        case let (x?, y?): return !(x as NSArray).isEqual(to: y)
+        }
     }
 
     /// The user's own rules, versioned OUTSIDE this repo. A clone of a

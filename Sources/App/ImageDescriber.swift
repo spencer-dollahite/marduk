@@ -359,7 +359,10 @@ final class ImageDescriber {
                 self.armWarmTimer()
                 self.speakWithQuestion(spoken, prompt: Self.questionPrompt)
             } else {
-                self.announceThen(spoken) { [weak self] in self?.active = false }
+                // Strong on purpose: this closure already holds self (Swift
+                // 6.4 flags a nested `weak` as meaningless for exactly that
+                // reason), and the describer lives as long as the daemon.
+                self.announceThen(spoken) { self.active = false }
             }
         }
     }

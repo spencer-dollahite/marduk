@@ -1273,8 +1273,12 @@ final class NewsReader {
         guard active else { return }
         triageGeneration += 1
         let generation = triageGeneration
-        let step: (TimeInterval, @escaping () -> Void) -> Void = { delay, work in
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        // `weak` on the OUTER closure: the nested one inherits it. A weak
+        // capture only on the inner closure was meaningless — the outer
+        // closure held self strongly for it (Swift 6.4 diagnoses exactly
+        // that) — and this local dies with the function regardless.
+        let step: (TimeInterval, @escaping () -> Void) -> Void = { [weak self] delay, work in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 guard let self, self.active,
                       generation == self.triageGeneration else { return }
                 work()

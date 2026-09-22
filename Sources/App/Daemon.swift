@@ -1766,8 +1766,12 @@ final class DaemonServer {
                 // The dialog-focus pattern: speak the question, extend the
                 // answer window when the speech finishes, one-key answer.
                 // Escape, any other key, or ~20s quietly cancels.
+                // Captured strongly on purpose: the enclosing closure already
+                // holds `self` (and so the monitor) for as long as it lives,
+                // which is what Swift 6.4 points out about a nested `weak` —
+                // and the daemon outlives every utterance anyway.
                 speech.announce("Cut release \(next)? Press y to release, "
-                    + "n to cancel.") { [weak keyboardMonitor] in
+                    + "n to cancel.") { [self] in
                     keyboardMonitor?.extendQuestionWindow()
                 }
                 keyboardMonitor?.armQuestion(keys: ["y", "n"]) { [self] answer in

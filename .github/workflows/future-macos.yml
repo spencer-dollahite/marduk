@@ -1,12 +1,17 @@
 name: Future macOS probe
 
-# Manual-only ON PURPOSE: a scheduled job against a not-yet-existing
-# runner image would sit queued for hours attached to HEAD, and the
+# Manual-only ON PURPOSE: a scheduled job against a preview runner
+# image can sit queued for a long time attached to HEAD, and the
 # daemon's silent auto-update gate holds on pending checks. Trigger with
-#   gh workflow run future-macos.yml
-# occasionally; when GitHub ships the macos-27 image the matrix leg
-# starts compiling for real. continue-on-error keeps the check run
-# green either way — this probe informs, never gates.
+#   gh workflow run future-macos.yml --ref <branch>
+# against a BRANCH so the check runs attach to that branch's commit, not
+# to main's head. continue-on-error keeps the run green either way —
+# this probe informs, never gates.
+#
+# The macOS 27 image is labelled `xcode-27` (actions/runner-images
+# #14404: the Xcode 27 preview image moved to a macOS 27 base on
+# 2026-09-16); there is no `macos-27` label yet, and a job asking for
+# one waits for a runner that never comes.
 
 on:
   workflow_dispatch:
@@ -16,15 +21,43 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [macos-26, macos-27]
+        image: [macos-26, xcode-27]
     runs-on: ${{ matrix.image }}
     continue-on-error: true
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+
       - name: Toolchain
-        run: sw_vers && swift --version
-      - name: Build
-        run: swift build
+        run: sw_vers && xcodebuild -version && swift --version
+
+      # The same bar as ci.yml: marduk's update gate refuses any warning.
+      - name: Build (zero warnings)
+        run: |
+          set -o pipefail
+          swift build 2>&1 | tee build.log
+          if grep -qi "warning:" build.log; then
+            echo "::error::warnings present — marduk's update gate would refuse this build"
+            exit 1
+          fi
+
       - name: Test
         run: swift test
+
+      # The same headless boot as ci.yml — no Karabiner, no TCC.
+      - name: Smoke (daemon boots, serves socket, stops clean)
+        run: |
+          .build/debug/marduk start --foreground &
+          DAEMON=$!
+          ok=0
+          for i in $(seq 1 30); do
+            if .build/debug/marduk status | grep -q "Daemon:  running"; then ok=1; break; fi
+            sleep 1
+          done
+          .build/debug/marduk status || true
+          test "$ok" -eq 1
+          .build/debug/marduk stop
+          for i in $(seq 1 15); do kill -0 $DAEMON 2>/dev/null || break; sleep 1; done
+          if wait $DAEMON; then EXIT=0; else EXIT=$?; fi
+          echo "daemon exit code: $EXIT"
+          test "$EXIT" -eq 0

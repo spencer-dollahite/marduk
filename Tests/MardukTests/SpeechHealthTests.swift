@@ -151,10 +151,10 @@ final class SpeechHealthTests: XCTestCase {
     // MARK: - The silent window before the first syllable
 
     private func silentStartup(speaking: Bool = true, paused: Bool = false,
-                               spoke: Bool = false,
-                               since: TimeInterval? = 0.2) -> Bool {
+                               heard: Bool = false,
+                               since: TimeInterval? = 0.4) -> Bool {
         SpeechHealth.isSilentStartup(isSpeaking: speaking, isPaused: paused,
-                                     sawEvidenceOfSpeech: spoke,
+                                     heardAudio: heard,
                                      sinceHandover: since)
     }
 
@@ -168,10 +168,42 @@ final class SpeechHealthTests: XCTestCase {
                       "a cold synthesizer can take half a second to speak")
     }
 
-    /// Evidence of speech ends it immediately — from there the press
-    /// means what it always meant.
+    /// Evidence of speech ends it — from there the press means what it
+    /// always meant. Past the bounce floor, that is: the window's first
+    /// quarter-second belongs to the switch, whatever the synthesizer
+    /// claims (see the next test).
     func testAudioEndsTheSilentWindow() {
-        XCTAssertFalse(silentStartup(spoke: true))
+        XCTAssertFalse(silentStartup(heard: true, since: 0.4))
+        XCTAssertFalse(silentStartup(heard: true, since: 1.0))
+    }
+
+    /// THE FOURTH CAUSE (field 2026-09-22, macOS 27). didStart now fires
+    /// ~10ms after handover, before any sound, and the duplicate press
+    /// that follows the button's real press 0.02–0.2s later found the
+    /// guard already stood down: 62 presses absorbed on macOS 26, 4 on 27,
+    /// the rest killing the read they had asked for. Two answers, both
+    /// pinned here: the evidence the guard accepts is the WORD BOUNDARY
+    /// (`heardAudio`, which the engine sets from nothing else — see the
+    /// drift guard below), and inside `bounceFloor` no evidence counts at
+    /// all — nobody asks for a read and silences it a quarter-second on.
+    func testABouncedPressIsIgnoredEvenWhenTheSynthesizerClaimsAudio() {
+        XCTAssertTrue(silentStartup(heard: true, since: 0.02),
+                      "the 27 shape: 'audible' at 10ms, bounce at 20ms")
+        XCTAssertTrue(silentStartup(heard: true, since: 0.2))
+        XCTAssertTrue(silentStartup(heard: false, since: 0.2))
+        XCTAssertFalse(silentStartup(heard: true, since: SpeechHealth.bounceFloor),
+                       "the floor is a floor — a press at it is a decision")
+        XCTAssertTrue(SpeechHealth.bounceFloor < SpeechHealth.startupGrace,
+                      "the bounce floor is the near edge of the silent "
+                        + "window, never past it")
+    }
+
+    /// If boundaries lapse, the cost is bounded and known: the button is
+    /// a no-op for `startupGrace` and works again after, so a wedged read
+    /// can still be silenced (and Escape never consults this at all).
+    func testWithoutABoundaryTheGuardHoldsOnlyForTheGraceWindow() {
+        XCTAssertTrue(silentStartup(heard: false, since: 1.0))
+        XCTAssertFalse(silentStartup(heard: false, since: SpeechHealth.startupGrace))
     }
 
     /// A PAUSED read has spoken. Its press means "stop this and read the
@@ -294,6 +326,54 @@ final class SpeechHealthTests: XCTestCase {
         XCTAssertEqual(verdict(canRespeak: false), .giveUp)
     }
 
+    // MARK: - Recovery: a cancel, which is how macOS 27 reports a stop
+
+    private func cancel(current: Bool = true, heard: Bool = false,
+                        stopped: Bool = false, elapsed: TimeInterval = 0.05,
+                        retried: Bool = false,
+                        canRespeak: Bool = true) -> SpeechHealth.FinishVerdict {
+        SpeechHealth.cancelVerdict(isCurrentUtterance: current,
+                                   heardAudio: heard,
+                                   stopRequested: stopped,
+                                   elapsed: elapsed,
+                                   alreadyRetried: retried,
+                                   canRespeak: canRespeak)
+    }
+
+    /// The macOS 27 field shape, dozens of times in one log: `speak #N`,
+    /// `didStart` at 0.01s, `didCancel` at 0.06s, no stop line, silence.
+    /// Every one of those WAS a stop of ours (the read button's, see the
+    /// silent-window tests) and so must stay `.stopped` — the retry must
+    /// never fight a stop, however it was caused. This pins that a
+    /// cancel with the stop flag set is a stop, evidence or no evidence.
+    func testACancelAfterOurOwnStopIsAStop() {
+        XCTAssertEqual(cancel(stopped: true), .stopped)
+        XCTAssertEqual(cancel(stopped: true, heard: true), .spoken,
+                       "…and one the user heard is an ordinary end")
+    }
+
+    /// The insurance: a cancel nobody asked for, before any sound, in
+    /// milliseconds, is the queue eating the utterance — the macOS 26
+    /// phantom in its macOS 27 costume. Retried, once, like a finish.
+    func testAnUnaskedCancelBeforeAnySoundIsRetried() {
+        XCTAssertEqual(cancel(), .retry)
+        XCTAssertEqual(cancel(retried: true), .giveUp)
+        XCTAssertEqual(cancel(canRespeak: false), .giveUp)
+        XCTAssertEqual(cancel(current: false), .stale)
+    }
+
+    /// A cancel after a second of speaking time was SOMEBODY's stop, even
+    /// one the flag cannot name (the rebuild's stop on the instance the
+    /// watchdog gave up on lands here). It ends, and it is never logged as
+    /// "reported no start" — that would be a lie about an utterance that
+    /// had every chance to speak.
+    func testASlowCancelIsAStopNotAPhantom() {
+        XCTAssertEqual(cancel(elapsed: SpeechHealth.phantomWindow), .stopped)
+        XCTAssertEqual(cancel(elapsed: 3.0), .stopped)
+        XCTAssertEqual(cancel(elapsed: SpeechHealth.phantomWindow - 0.001),
+                       .retry)
+    }
+
     // MARK: - Drift guard
 
     private func speechEngineSource() throws -> String {
@@ -354,6 +434,44 @@ final class SpeechHealthTests: XCTestCase {
                       "stop() schedules the queue flush but no longer arms "
                         + "the handoff guard, so the next utterance is "
                         + "handed to an instance that can still swallow it")
+    }
+
+    /// The fourth cause was didStart being taken for audio. The boundary
+    /// callback is the only place allowed to say the user can hear
+    /// something: a `heardAudioForCurrent = true` anywhere else (didStart
+    /// is the tempting one) reopens the hole on macOS 27.
+    func testOnlyTheWordBoundarySetsHeardAudio() throws {
+        let source = try speechEngineSource()
+        let sets = source.components(separatedBy: "heardAudioForCurrent = true").count - 1
+        XCTAssertEqual(sets, 1, "heardAudio must be set by the word boundary "
+                         + "callback and nothing else")
+        guard let didStart = source.range(of: "didStart utterance: AVSpeechUtterance) {"),
+              let didFinish = source.range(of: "didFinish utterance: AVSpeechUtterance) {")
+        else { return XCTFail("the delegate methods moved") }
+        let body = String(source[didStart.upperBound..<didFinish.lowerBound])
+        XCTAssertFalse(body.contains("heardAudioForCurrent = true"),
+                       "didStart is not evidence of audio on macOS 27")
+        // …and the read button's question is answered from it, not from
+        // didStart's flag.
+        guard let starting = source.range(of: "var isStartingSilently: Bool {"),
+              let end = source.range(of: "\n    }\n", range: starting.upperBound..<source.endIndex)
+        else { return XCTFail("isStartingSilently moved") }
+        let question = String(source[starting.upperBound..<end.lowerBound])
+        XCTAssertTrue(question.contains("heardAudio: heardAudioForCurrent"))
+        XCTAssertFalse(question.contains("sawStartForCurrent"))
+    }
+
+    /// A cancel is judged, never just torn down — that is what lets a
+    /// phantom delivered as `didCancel` come back on its own.
+    func testACancelIsJudgedBeforeItIsTornDown() throws {
+        let source = try speechEngineSource()
+        guard let didCancel = source.range(of: "didCancel utterance: AVSpeechUtterance) {"),
+              let verdictAt = source.range(of: "SpeechHealth.cancelVerdict(",
+                                           range: didCancel.upperBound..<source.endIndex),
+              let finishAt = source.range(of: "finish(utterance)",
+                                          range: didCancel.upperBound..<source.endIndex)
+        else { return XCTFail("didCancel no longer consults the cancel verdict") }
+        XCTAssertTrue(verdictAt.lowerBound < finishAt.lowerBound)
     }
 
     // MARK: - The field sequence, start to finish

@@ -16,11 +16,12 @@ import Foundation
 /// `stop()` and then hand over a new utterance in the SAME turn, so when
 /// the flush lands after that enqueue it removes the brand-new utterance
 /// along with the old one. The newcomer comes straight back to the
-/// delegate as an END, with no start, having spoken nothing. (It arrives
-/// as `didFinish`, not `didCancel`: in a full field log covering hundreds
-/// of stops there is not one `didCancel` line — on macOS 26 a cancelled
-/// utterance reports as finished, which is also why paged continuation
-/// keys off `stopRequested` rather than the callback.)
+/// delegate as an END, with no start, having spoken nothing. (On macOS 26
+/// it arrives as `didFinish`, not `didCancel`: in a full field log
+/// covering hundreds of stops there is not one `didCancel` line — a
+/// cancelled utterance reports as finished, which is also why paged
+/// continuation keys off `stopRequested` rather than the callback. macOS
+/// 27 changed BOTH signals — see "the fourth cause" below.)
 ///
 /// That timing is why the bug looked random and why the very same
 /// selection read fine on the next press: by then the synthesizer is idle,
@@ -31,6 +32,34 @@ import Foundation
 /// instance with an unresolved stop. `finishVerdict` recovers from one
 /// that happened anyway, because the guard can only act on the signals the
 /// synthesizer gives us and it gives us very few.
+///
+/// **The fourth cause — macOS 27 (field 2026-09-22).** The same complaint
+/// came back the week after the upgrade ("sometimes it starts reading
+/// perfectly and other times it goes quiet and never reads the text, and
+/// music resumes"), with a new shape in the log: `didStart` after 0.01s,
+/// `didCancel` 0.02–0.6s later, no stop line, then the user's second press
+/// two seconds on, which reads fine `[fresh synthesizer: stop flush
+/// unconfirmed]`. Two things had changed underneath us. (1) `didStart` now
+/// fires the instant the queue ACCEPTS the utterance — 1148 of 1316
+/// utterances started in under 50ms, against 0.2–1.0s on macOS 26 — so it
+/// is no longer evidence of audio, and the third cause's guard (which took
+/// didStart as proof) stood down the moment it fired: 62 duplicate presses
+/// absorbed on macOS 26, 4 on 27, and the rest went to the "audibly
+/// speaking → stop" branch and killed the read this button had just asked
+/// for. (2) A stop now reports `didCancel`, routinely (236 lines in one
+/// log), and that path went straight to teardown — no verdict, no log of
+/// why. The missing stop line was the same lie: `stop(reason:)` reported
+/// "landed before it made a sound" only when didStart had not come, and on
+/// 27 it always had. The "stop flush unconfirmed" on the retry press is
+/// the proof a `stop()` of ours fired: nothing else arms that flag.
+///
+/// The fix is to stop trusting didStart for anything the user can feel:
+/// the read button's guard now wants a WORD BOUNDARY (the synthesizer
+/// saying "I am about to voice this word" — proof of audio on every macOS
+/// so far) and, belt and braces, treats any press inside `bounceFloor` of
+/// the handover as the bounce it is; the stop line reports against the
+/// same evidence; and a cancel is judged like a finish, so a phantom that
+/// arrives as `didCancel` is retried instead of mistaken for Escape.
 enum SpeechHealth {
 
     // MARK: - Prevention: which instance is safe to speak into
@@ -105,6 +134,17 @@ enum SpeechHealth {
     /// keypress must not be swallowed indefinitely by a wedge.
     static let startupGrace: TimeInterval = 1.5
 
+    /// A read-button press this soon after the button's own read was
+    /// handed over is not a decision, it is the switch bouncing (or a
+    /// repeat the HID layer never flagged): nobody asks for a read and
+    /// silences it a quarter-second later. The duplicate presses in every
+    /// field log land 0.02–0.2s after the first, on both macOS 26 and 27.
+    /// Inside this floor the press is ignored even when the synthesizer
+    /// swears it is audible — which on macOS 27 it does at 0.01s, before
+    /// any sound (the fourth cause). Escape is not covered: Escape means
+    /// stop.
+    static let bounceFloor: TimeInterval = 0.25
+
     /// True while a read has been handed to the synthesizer and has made
     /// NO SOUND YET.
     ///
@@ -124,15 +164,25 @@ enum SpeechHealth {
     /// in one session, each ending 0.10-0.56s after a press, each followed
     /// by "fresh synthesizer: stop flush unconfirmed").
     ///
+    /// - Parameter heardAudio: a WORD-BOUNDARY callback arrived for this
+    ///   utterance. Not didStart: on macOS 27 didStart fires when the queue
+    ///   accepts the utterance, 10ms after handover and well before any
+    ///   sound, so taking it as evidence reopened this exact hole (the
+    ///   fourth cause, 2026-09-22). The boundary is the synthesizer
+    ///   announcing the word it is about to voice — the one callback that
+    ///   has meant audio on every macOS so far. If boundaries ever lapse
+    ///   the cost is bounded: the button is a no-op for `startupGrace` of
+    ///   an audible read, and Escape still stops it.
+    ///
     /// `isPaused` is excluded deliberately: a paused read HAS spoken, and
     /// its press means something else entirely (stop the old read, read
     /// the new selection).
     static func isSilentStartup(isSpeaking: Bool, isPaused: Bool,
-                                sawEvidenceOfSpeech: Bool,
+                                heardAudio: Bool,
                                 sinceHandover: TimeInterval?) -> Bool {
-        guard isSpeaking, !isPaused, !sawEvidenceOfSpeech,
-              let since = sinceHandover else { return false }
-        return since < startupGrace
+        guard isSpeaking, !isPaused, let since = sinceHandover else { return false }
+        if since < bounceFloor { return true }
+        return !heardAudio && since < startupGrace
     }
 
     // MARK: - Recovery: reading a finish that spoke nothing
@@ -178,6 +228,36 @@ enum SpeechHealth {
         guard !sawEvidenceOfSpeech else { return .spoken }
         guard !stopRequested else { return .stopped }
         guard elapsed < phantomWindow else { return .giveUp }
+        guard !alreadyRetried, canRespeak else { return .giveUp }
+        return .retry
+    }
+
+    /// The same judgment for a `didCancel`, which on macOS 27 is how a
+    /// stop — ours or the queue's — comes back. It used to go straight to
+    /// teardown, so a phantom delivered as a cancel could never be
+    /// retried, and the log could not say whether a cancel was Escape or
+    /// the synthesizer eating a read.
+    ///
+    /// Stricter than the finish verdict in two places, because a cancel
+    /// is a stop until proven otherwise:
+    /// - `heardAudio` is the word boundary ONLY. didStart is not evidence
+    ///   here (the fourth cause) — but neither is its absence proof of
+    ///   silence on macOS 26, so a finish keeps its didStart-or-boundary
+    ///   test where the retry risk runs the other way.
+    /// - A cancel past `phantomWindow` is `.stopped`, never `.giveUp`: it
+    ///   arrived after a second of speaking time, so somebody stopped it,
+    ///   even if we cannot name who (a rebuild's stop on the instance the
+    ///   4s watchdog gave up on lands here). Ending it is right; logging
+    ///   "reported no start" about it would be a lie.
+    static func cancelVerdict(isCurrentUtterance: Bool,
+                              heardAudio: Bool,
+                              stopRequested: Bool,
+                              elapsed: TimeInterval,
+                              alreadyRetried: Bool,
+                              canRespeak: Bool) -> FinishVerdict {
+        guard isCurrentUtterance else { return .stale }
+        guard !heardAudio else { return .spoken }
+        guard !stopRequested, elapsed < phantomWindow else { return .stopped }
         guard !alreadyRetried, canRespeak else { return .giveUp }
         return .retry
     }

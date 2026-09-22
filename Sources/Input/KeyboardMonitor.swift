@@ -884,6 +884,11 @@ final class KeyboardMonitor {
                 // on its way. Doing nothing is the whole fix; past the
                 // grace window the press works normally again, so a
                 // genuinely wedged synthesizer can still be stopped.
+                // "Starting" is judged on a WORD BOUNDARY plus a bounce
+                // floor, not on didStart — macOS 27 fires didStart 10ms
+                // after handover, before any sound, and taking it as
+                // audio let the duplicate press through again (the fourth
+                // cause, 2026-09-22; see SpeechHealth).
                 if isReadStarting() {
                     fputs("[keyboard] read press ignored — the read is "
                         + "still starting\n", stderr)

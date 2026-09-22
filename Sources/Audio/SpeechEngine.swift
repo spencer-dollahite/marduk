@@ -944,6 +944,15 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// silent is what keeps the phantom retry from re-speaking a read the
     /// user already heard.
     private var sawStartForCurrent = false
+    /// The STRONGER evidence: a word-boundary callback for the current
+    /// utterance. Only this one drives what the user can feel — the read
+    /// button's "is it audible yet" and the stop line in the log — because
+    /// on macOS 27 didStart fires when the queue accepts the utterance,
+    /// ~10ms after handover and before any sound (the fourth cause,
+    /// 2026-09-22). `sawStartForCurrent` keeps didStart for the phantom
+    /// retry, where the risk runs the other way (re-speaking something the
+    /// user heard) and didStart's absence is still worth something.
+    private var heardAudioForCurrent = false
     private var wedgeRebuilt = false
 
     /// What we know about the CURRENT synthesizer instance's readiness to
@@ -1097,6 +1106,7 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         }
         currentUtterance = utterance
         sawStartForCurrent = false
+        heardAudioForCurrent = false
         utteranceSeq += 1
         let chars = (utterance.speechString as NSString).length
         utteranceInfo[ObjectIdentifier(utterance)] = UtteranceInfo(
@@ -1219,9 +1229,13 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
         // ends a read the user never heard a syllable of. Sometimes that
         // is exactly right (Escape while a read is spinning up), so this
         // reports rather than refuses — the callers who must not do it
-        // decline before they get here.
-        if let utterance = currentUtterance, !sawStartForCurrent {
+        // decline before they get here. Judged on the word boundary, not
+        // didStart: keyed to didStart this line went silent on macOS 27,
+        // where didStart precedes every stop, and the fourth cause had to
+        // be inferred from a "stop flush unconfirmed" two seconds later.
+        if let utterance = currentUtterance, !heardAudioForCurrent {
             fputs("[speech] stop (\(reason)) landed on \(tag(utterance)) "
+                + String(format: "%.2fs in, ", elapsed(utterance))
                 + "before it made a sound\n", stderr)
         }
         // INTENT, recorded explicitly. Window continuation used to key off
@@ -1304,12 +1318,14 @@ final class SpeechEngine: NSObject, @unchecked Sendable {
     /// queue accepts the utterance, which is why a second read-button
     /// press landing in this window used to be read as "silence the read
     /// you are hearing" when there was nothing to hear. See
-    /// `SpeechHealth.isSilentStartup`.
+    /// `SpeechHealth.isSilentStartup`. Evidence is the word boundary, never
+    /// didStart — on macOS 27 didStart is as early and as empty as
+    /// `isSpeaking` itself.
     var isStartingSilently: Bool {
         SpeechHealth.isSilentStartup(
             isSpeaking: synthesizer.isSpeaking,
             isPaused: synthesizer.isPaused,
-            sawEvidenceOfSpeech: sawStartForCurrent,
+            heardAudio: heardAudioForCurrent,
             sinceHandover: currentUtterance.map { elapsed($0) })
     }
 
@@ -1371,30 +1387,7 @@ extension SpeechEngine: AVSpeechSynthesizerDelegate {
             fputs("[speech] \(tag(utterance)) reported no start (\(why)) "
                 + "— ending the read\n", stderr)
         }
-        if verdict == .retry {
-            phantomRetried = true
-            fputs("[speech] re-speaking \(tag(utterance)) on a fresh "
-                + "synthesizer\n", stderr)
-            rebuildSynthesizer()
-            // A read restarts from the segment start (readBase) — it had
-            // spoken nothing, so its start IS where to resume. Anything
-            // else (an announcement, an SSML line) is re-issued as an
-            // identical utterance: a dropped announcement is a dropped
-            // MESSAGE, and this product has no scrollback to catch it.
-            if readText != nil {
-                respeak(from: readBase)
-            } else {
-                respeakSwallowed(utterance)
-            }
-            // The re-speak can bail (empty remainder). Returning then would
-            // strand a live READING capture over a read that is never going
-            // to speak — so hand over only once the replacement utterance is
-            // actually in flight, and otherwise fall through and end
-            // honestly.
-            if currentUtterance !== utterance { return }
-            fputs("[speech] the re-speak produced nothing to say — ending\n",
-                  stderr)
-        }
+        if verdict == .retry, retrySwallowed(utterance) { return }
         // Window continuation: a paged read whose WINDOW ended naturally
         // keeps going — load the next window instead of tearing down.
         // Only didFinish continues (didCancel is a user stop); the check
@@ -1417,13 +1410,65 @@ extension SpeechEngine: AVSpeechSynthesizerDelegate {
         finish(utterance)
     }
 
+    /// Say a swallowed utterance again, on a fresh instance. Returns true
+    /// once the replacement is in flight — the caller then owes nothing to
+    /// the utterance that spoke nothing. Shared by didFinish and didCancel,
+    /// which is how the same phantom presents on macOS 26 and 27.
+    private func retrySwallowed(_ utterance: AVSpeechUtterance) -> Bool {
+        phantomRetried = true
+        fputs("[speech] re-speaking \(tag(utterance)) on a fresh "
+            + "synthesizer\n", stderr)
+        rebuildSynthesizer()
+        // A read restarts from the segment start (readBase) — it had
+        // spoken nothing, so its start IS where to resume. Anything
+        // else (an announcement, an SSML line) is re-issued as an
+        // identical utterance: a dropped announcement is a dropped
+        // MESSAGE, and this product has no scrollback to catch it.
+        if readText != nil {
+            respeak(from: readBase)
+        } else {
+            respeakSwallowed(utterance)
+        }
+        // The re-speak can bail (empty remainder). Returning then would
+        // strand a live READING capture over a read that is never going
+        // to speak — so hand over only once the replacement utterance is
+        // actually in flight, and otherwise fall through and end
+        // honestly.
+        if currentUtterance !== utterance { return true }
+        fputs("[speech] the re-speak produced nothing to say — ending\n",
+              stderr)
+        return false
+    }
+
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        // Rare on macOS 26 — a full field log covering hundreds of stops
-        // contains no didCancel at all; cancelled utterances arrive as
-        // didFinish. Kept honest rather than assumed away.
+        // Never seen on macOS 26 (cancelled utterances arrive as didFinish
+        // there); ROUTINE on macOS 27, where every stop of ours comes back
+        // this way — and so does the queue's, which is why a cancel gets
+        // the same judgment as a finish. Before this it went straight to
+        // teardown: a phantom delivered as a cancel could never be retried
+        // and left no trace of what it was (the fourth cause, 2026-09-22).
+        let took = elapsed(utterance)
+        let verdict = SpeechHealth.cancelVerdict(
+            isCurrentUtterance: utterance === currentUtterance,
+            heardAudio: heardAudioForCurrent,
+            stopRequested: stopRequested,
+            elapsed: took,
+            alreadyRetried: phantomRetried,
+            canRespeak: readText != nil || info(utterance) != nil)
         fputs("[speech] didCancel \(tag(utterance)) after "
-            + String(format: "%.2f", elapsed(utterance)) + "s"
-            + (utterance === currentUtterance ? "" : " (stale)") + "\n", stderr)
+            + String(format: "%.2f", took) + "s (\(verdict))\n", stderr)
+        if verdict == .retry {
+            fputs("[speech] \(tag(utterance)) cancelled without a stop of "
+                + "ours and before any sound — nothing was spoken\n", stderr)
+            if retrySwallowed(utterance) { return }
+        } else if verdict == .giveUp {
+            let why = phantomRetried ? "already retried once"
+                : "nothing left to say it with"
+            fputs("[speech] \(tag(utterance)) cancelled unasked before any "
+                + "sound (\(why)) — ending the read\n", stderr)
+        }
+        // No window continuation on a cancel: a cancel is a stop until
+        // proven a phantom, and a phantom was handled above.
         finish(utterance)
     }
 
@@ -1436,12 +1481,17 @@ extension SpeechEngine: AVSpeechSynthesizerDelegate {
         // readText and so never reach the branch below), because what it
         // guards is "was anything spoken", not "is this a read".
         if utterance === currentUtterance {
-            if !sawStartForCurrent {
+            // Logged for EVERY utterance, not only when didStart lapsed:
+            // this is the first-sound timestamp the fourth cause was
+            // diagnosed without. didStart's latency stopped meaning
+            // anything on macOS 27; this one still does.
+            if !heardAudioForCurrent {
                 fputs("[speech] first word boundary \(tag(utterance)) after "
                     + String(format: "%.2f", elapsed(utterance))
                     + "s — audio confirmed\n", stderr)
             }
             sawStartForCurrent = true
+            heardAudioForCurrent = true
             handoff.speechStarted()
         }
         // Track the voice's position for read motions — full-text coordinates

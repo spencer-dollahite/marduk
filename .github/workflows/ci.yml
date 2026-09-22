@@ -7,15 +7,35 @@ on:
 
 jobs:
   build-test:
-    # Pinned to the tested major — macos-latest drifting under us would
-    # conflate "our regression" with "new macOS". future-macos.yml probes
-    # newer images on demand.
-    runs-on: macos-26
+    # PINNED images — macos-latest drifting under us would conflate "our
+    # regression" with "new macOS". Both legs GATE. macOS 26 is the
+    # tested major every release user runs; `xcode-27` is GitHub's macOS
+    # 27 image (there is no `macos-27` label — actions/runner-images
+    # #14404 moved the Xcode 27 preview image onto a macOS 27 base on
+    # 2026-09-16) and it is here because the developer's own Mac now
+    # builds with Xcode 27: on 2026-09-22 the 26 leg passed a commit
+    # that Swift 6.4 refused under the zero-warning gate, which is
+    # exactly the failure this workflow exists to catch first.
+    #
+    # Why gating and not continue-on-error: a continue-on-error job
+    # still reports conclusion=failure through the check-runs API, and
+    # that is what the daemon's update gate (`remoteCheckStatus`) and
+    # `u` read — so a "soft" leg would hold auto-updates and speak
+    # "checks failing" exactly as a hard one does, while looking green
+    # on the workflow page (measured 2026-09-22 on the probe workflow).
+    # The image is still preview-labelled: if it ever queues for long,
+    # `uu` express installs stay CI-ungated by design, and dropping the
+    # leg is one line here.
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [macos-26, xcode-27]
+    runs-on: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@v5
 
       - name: Toolchain
-        run: swift --version
+        run: sw_vers && swift --version
 
       # Marduk's own update gate refuses builds with ANY warning —
       # CI enforces the same bar so a push that would fail on the

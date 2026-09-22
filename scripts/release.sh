@@ -54,7 +54,10 @@ git push origin main "v$VERSION"
 
 echo "==> Waiting for CI on the release commit"
 sleep 15
-RUN_ID=$(gh run list --commit "$(git rev-parse HEAD)" --limit 1 \
+# Pinned to the CI workflow: a probe dispatched against the same commit
+# (future-macos.yml) would otherwise be the newest run and get watched
+# in CI's place.
+RUN_ID=$(gh run list --workflow CI --commit "$(git rev-parse HEAD)" --limit 1 \
     --json databaseId --jq '.[0].databaseId')
 gh run watch "$RUN_ID" --exit-status
 

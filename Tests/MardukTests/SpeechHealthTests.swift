@@ -348,7 +348,7 @@ final class SpeechHealthTests: XCTestCase {
     /// cancel with the stop flag set is a stop, evidence or no evidence.
     func testACancelAfterOurOwnStopIsAStop() {
         XCTAssertEqual(cancel(stopped: true), .stopped)
-        XCTAssertEqual(cancel(stopped: true, heard: true), .spoken,
+        XCTAssertEqual(cancel(heard: true, stopped: true), .spoken,
                        "…and one the user heard is an ordinary end")
     }
 
